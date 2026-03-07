@@ -1,3 +1,4 @@
+from fastapi.responses import HTMLResponse
 import os
 import uuid
 from typing import Dict, Any
@@ -146,3 +147,150 @@ def chat(inp: ChatIn, x_demo_key: str | None = Header(default=None)):
         return {"message": "✅ Dados suficientes. Gerando relatório estruturado…", "report": report}
 
     return {"message": next_missing(data)}
+    @app.get("/widget", response_class=HTMLResponse)
+def widget():
+    return HTMLResponse(f"""
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>S&M OS 6.1 — Demo</title>
+  <style>
+    body {{ margin:0; font-family:system-ui,Segoe UI,Arial; background:#07080c; color:#eef1f7; }}
+    .wrap {{ max-width:900px; margin:0 auto; padding:18px; }}
+    .box {{ background:#0f111a; border:1px solid rgba(245,196,81,.25); border-radius:18px; overflow:hidden; }}
+    .head {{ padding:16px 18px; background:linear-gradient(135deg,#0b0d12,#171b24); border-bottom:3px solid #f5c451; }}
+    .title {{ font-weight:800; letter-spacing:.3px; }}
+    .sub {{ opacity:.8; font-size:13px; margin-top:4px; }}
+    #chatLog {{ height:420px; overflow:auto; padding:16px; background:#07080c; }}
+    .row {{ display:flex; gap:10px; padding:14px; background:#0b0d12; border-top:1px solid rgba(255,255,255,.08); }}
+    input {{ flex:1; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:#0f111a; color:#eef1f7; outline:none; }}
+    button {{ padding:12px 14px; border-radius:12px; border:1px solid rgba(245,196,81,.35);
+      background:linear-gradient(180deg,#f5c451,#c9921c); font-weight:900; cursor:pointer; color:#1a1204; }}
+    .pill {{ display:flex; gap:10px; padding:14px; background:#0b0d12; border-top:1px solid rgba(255,255,255,.08); align-items:center; }}
+    .badge {{ font-size:12px; color:rgba(245,196,81,.95); border:1px solid rgba(245,196,81,.25); padding:6px 10px; border-radius:999px; background:rgba(245,196,81,.06); }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="box">
+      <div class="head">
+        <div class="title">S&M OS 6.1 — Diagnóstico Jurídico Inteligente (DEMO)</div>
+        <div class="sub">Chat guiado • Relatório estruturado • Sem expor o módulo interno</div>
+      </div>
+
+      <div class="pill">
+        <span class="badge">Ativação</span>
+        <input id="keyInput" placeholder="Cole aqui o código DEMO_KEY" />
+        <button id="keyBtn">Ativar</button>
+      </div>
+
+      <div id="chatLog"></div>
+
+      <div class="row">
+        <input id="chatInput" placeholder="Digite aqui..." disabled />
+        <button id="chatSend" disabled>Enviar</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const DEMO_KEY_STORE = "sm_os_demo_key";
+  const BACKEND_URL = ""; // same origin
+  let sessionId = null;
+  let DEMO_KEY = localStorage.getItem(DEMO_KEY_STORE) || "";
+
+  const log = document.getElementById("chatLog");
+  const input = document.getElementById("chatInput");
+  const btn = document.getElementById("chatSend");
+  const keyInput = document.getElementById("keyInput");
+  const keyBtn = document.getElementById("keyBtn");
+
+  keyInput.value = DEMO_KEY;
+
+  function addMsg(role, text){
+    const wrap = document.createElement("div");
+    wrap.style.marginBottom = "12px";
+    wrap.style.display = "flex";
+    wrap.style.justifyContent = role === "user" ? "flex-end" : "flex-start";
+
+    const bubble = document.createElement("div");
+    bubble.style.maxWidth = "78%";
+    bubble.style.padding = "12px 12px";
+    bubble.style.borderRadius = "14px";
+    bubble.style.whiteSpace = "pre-wrap";
+    bubble.style.lineHeight = "1.45";
+    bubble.style.fontSize = "14px";
+
+    if(role === "user"){
+      bubble.style.background = "rgba(245,196,81,.16)";
+      bubble.style.border = "1px solid rgba(245,196,81,.22)";
+    } else {
+      bubble.style.background = "rgba(255,255,255,.06)";
+      bubble.style.border = "1px solid rgba(255,255,255,.10)";
+    }
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function startSession(){
+    const res = await fetch(`/session/new`, {
+      method:"POST",
+      headers: { "x-demo-key": DEMO_KEY }
+    });
+    const data = await res.json();
+    if(!res.ok){
+      addMsg("assistant", "Erro ao iniciar sessão: " + (data.detail || res.status));
+      return;
+    }
+    sessionId = data.session_id;
+    addMsg("assistant", data.message);
+    input.disabled = false;
+    btn.disabled = false;
+    input.focus();
+  }
+
+  async function send(){
+    const text = input.value.trim();
+    if(!text) return;
+    input.value = "";
+    addMsg("user", text);
+
+    const res = await fetch(`/chat`, {
+      method:"POST",
+      headers: {"Content-Type":"application/json", "x-demo-key": DEMO_KEY},
+      body: JSON.stringify({ session_id: sessionId, message: text })
+    });
+    const data = await res.json();
+    if(!res.ok){
+      addMsg("assistant", "Erro: " + (data.detail || res.status));
+      return;
+    }
+    addMsg("assistant", data.message);
+    if(data.report){
+      addMsg("assistant", "✅ RELATÓRIO GERADO:\\n\\n" + data.report);
+    }
+  }
+
+  keyBtn.addEventListener("click", () => {
+    DEMO_KEY = keyInput.value.trim();
+    localStorage.setItem(DEMO_KEY_STORE, DEMO_KEY);
+    addMsg("assistant", "Código registrado. Iniciando…");
+    startSession();
+  });
+
+  btn.addEventListener("click", send);
+  input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") send(); });
+
+  if(DEMO_KEY){
+    addMsg("assistant", "Código encontrado. Clique em Ativar para iniciar.");
+  } else {
+    addMsg("assistant", "Cole o código DEMO_KEY e clique em Ativar.");
+  }
+</script>
+</body>
+</html>
+""")
