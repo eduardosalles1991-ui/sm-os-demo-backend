@@ -1,3 +1,191 @@
+import os
+import uuid
+from typing import Dict, Any, Optional
+
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from openai import OpenAI
+
+
+# =======================
+# CONFIG
+# =======================
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
+DEMO_KEY = os.getenv("DEMO_KEY", "")  # REQUIRED
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+
+# =======================
+# APP (MUST exist for uvicorn main:app)
+# =======================
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[ALLOWED_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+FIELDS_ORDER = [
+    ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
+    ("fase", "Qual a fase? (consultivo / pré-contencioso / processo / recurso / execução)"),
+    ("objetivo_cliente", "Qual o objetivo do cliente? (o que ele quer obter)"),
+    ("partes", "Quem são as partes? (autor/réu e relação entre eles)"),
+    ("fatos_cronologia", "Conte os fatos em ordem (cronologia objetiva; datas aproximadas ok)."),
+    ("provas_existentes", "Quais provas/documentos você já tem? (liste)"),
+    ("urgencia_prazo", "Há urgência ou prazo crítico? (qual?)"),
+    ("valor_envovido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
+]
+
+REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
+
+SYSTEM_OS = """Você é o S&M OS 6.1 (Diagnóstico Jurídico Inteligente).
+Regras: Compliance OAB, LGPD, sigilo. Proibido inventar fatos/provas/jurisprudência.
+Separar FATO/INF/HIP. Força da tese não é promessa de êxito.
+
+Saída obrigatória:
+1. CLASSIFICAÇÃO DO CASO
+2. SÍNTESE
+3. QUESTÃO JURÍDICA
+4. ANÁLISE TÉCNICA
+5. FORÇA DA TESE
+6. CONFIABILIDADE DA ANÁLISE
+7. PROVAS
+8. RISCOS
+9. CENÁRIOS
+10. ANÁLISE ECONÔMICA (se houver base mínima)
+11. RENTABILIDADE (se houver base mínima)
+12. SCORES (0–100)
+13. RED TEAM
+14. ESTRATÉGIA
+15. AÇÕES PRIORITÁRIAS
+16. PENDÊNCIAS
+17. ALERTAS
+18. REFLEXÃO FINAL
+
+Se dados insuficientes: rotular ANÁLISE PRELIMINAR e conclusões condicionais.
+"""
+
+
+# =======================
+# HELPERS
+# =======================
+def auth_or_401(x_demo_key: Optional[str]):
+    if not DEMO_KEY:
+        raise HTTPException(status_code=500, detail="Server misconfigured: DEMO_KEY not set.")
+    if not x_demo_key or x_demo_key != DEMO_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def next_missing(state: Dict[str, Any]) -> str:
+    for key, question in FIELDS_ORDER:
+        if not state.get(key):
+            return question
+    return ""
+
+
+def is_sufficient(state: Dict[str, Any]) -> bool:
+    return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
+
+
+def generate_report(state: Dict[str, Any]) -> str:
+    if client is None:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY não configurada no Render (Environment).")
+
+    user_case = f"""CASO (dados coletados):
+- Área/Subárea: {state.get('area_subarea')}
+- Fase: {state.get('fase')}
+- Objetivo: {state.get('objetivo_cliente')}
+- Partes: {state.get('partes')}
+- Fatos (cronologia): {state.get('fatos_cronologia')}
+- Provas existentes: {state.get('provas_existentes')}
+- Urgência/Prazo: {state.get('urgencia_prazo')}
+- Valor envolvido: {state.get('valor_envovido')}
+"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_OS},
+            {"role": "user", "content": user_case},
+        ],
+        temperature=TEMPERATURE,
+    )
+    return resp.choices[0].message.content
+
+
+# =======================
+# MODELS
+# =======================
+class SessionOut(BaseModel):
+    session_id: str
+    message: str
+    state: Dict[str, Any]
+
+
+class ChatIn(BaseModel):
+    session_id: str
+    message: str
+    state: Dict[str, Any] = {}
+
+
+class ChatOut(BaseModel):
+    message: str
+    state: Dict[str, Any]
+    report: Optional[str] = None
+
+
+# =======================
+# API
+# =======================
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": "sm-os-demo",
+        "version": "0.2.0",
+        "has_openai_key": bool(OPENAI_API_KEY),
+        "allowed_origin": ALLOWED_ORIGIN,
+    }
+
+
+@app.post("/session/new", response_model=SessionOut)
+def session_new(x_demo_key: Optional[str] = Header(default=None)):
+    auth_or_401(x_demo_key)
+    sid = str(uuid.uuid4())
+    state: Dict[str, Any] = {}
+    return SessionOut(session_id=sid, message="Vamos iniciar o diagnóstico.\n\n" + FIELDS_ORDER[0][1], state=state)
+
+
+@app.post("/chat", response_model=ChatOut)
+def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
+    auth_or_401(x_demo_key)
+
+    state = inp.state or {}
+
+    # Guardar respuesta en el primer campo faltante
+    for key, _question in FIELDS_ORDER:
+        if not state.get(key):
+            state[key] = (inp.message or "").strip()
+            break
+
+    if is_sufficient(state):
+        report = generate_report(state)
+        return ChatOut(message="✅ Dados suficientes. Gerando relatório estruturado…", state=state, report=report)
+
+    return ChatOut(message=next_missing(state), state=state)
+
+
+# =======================
+# WIDGET (iframe)
+# =======================
 @app.get("/widget", response_class=HTMLResponse)
 def widget():
     return HTMLResponse(
@@ -49,9 +237,10 @@ def widget():
   </div>
 
 <script>
-  const STORE="sm_os_demo_key";
+  const STORE_KEY="sm_os_demo_key";
+  let DEMO_KEY=localStorage.getItem(STORE_KEY)||"";
   let sessionId=null;
-  let DEMO_KEY=localStorage.getItem(STORE)||"";
+  let state={};
 
   const log=document.getElementById("chatLog");
   const input=document.getElementById("chatInput");
@@ -84,24 +273,20 @@ def widget():
     log.scrollTop=log.scrollHeight;
   }
 
-  async function fetchWithTimeout(url, options={}, ms=60000){
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), ms);
-    try{
-      const res = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(id);
-      return res;
-    } catch (e){
-      clearTimeout(id);
-      throw e;
+  async function fetchJson(url, options){
+    const res = await fetch(url, options);
+    let data = {};
+    try { data = await res.json(); } catch(e) {}
+    if(!res.ok){
+      const msg = data.detail || data.message || ("HTTP " + res.status);
+      throw new Error(msg);
     }
+    return data;
   }
 
-  function setBusy(isBusy){
-    input.disabled = isBusy || !sessionId;
-    btn.disabled = isBusy || !sessionId;
-    keyBtn.disabled = isBusy;
-    resetBtn.disabled = isBusy;
+  function setReady(ready){
+    input.disabled = !ready;
+    btn.disabled = !ready;
   }
 
   async function startSession(){
@@ -109,85 +294,64 @@ def widget():
       addMsg("assistant","Cole o DEMO_KEY e clique em Ativar.");
       return;
     }
-    setBusy(true);
+    setReady(false);
     addMsg("assistant","⏳ Iniciando sessão…");
     try{
-      const res=await fetchWithTimeout("/session/new",{method:"POST",headers:{"x-demo-key":DEMO_KEY}}, 60000);
-      const data=await res.json();
-      if(!res.ok){
-        addMsg("assistant","Erro ao iniciar: "+(data.detail||res.status));
-        sessionId=null;
-        setBusy(false);
-        return;
-      }
-      sessionId=data.session_id;
-      addMsg("assistant",data.message);
-      setBusy(false);
+      const data = await fetchJson("/session/new", { method:"POST", headers:{ "x-demo-key": DEMO_KEY }});
+      sessionId = data.session_id;
+      state = data.state || {};
+      addMsg("assistant", data.message);
+      setReady(true);
       input.focus();
-    }catch(e){
-      addMsg("assistant","⚠️ Falha de rede/timeout ao iniciar. Se o Render estava dormindo, tente novamente em 10s.");
-      sessionId=null;
-      setBusy(false);
+    } catch(err){
+      addMsg("assistant", "⚠️ Erro ao iniciar: " + err.message);
+      setReady(false);
     }
   }
 
   async function send(){
-    const text=input.value.trim();
+    const text = input.value.trim();
     if(!text) return;
     input.value="";
-    addMsg("user",text);
+    addMsg("user", text);
+    setReady(false);
+    addMsg("assistant", "⏳ Processando…");
 
-    setBusy(true);
-    addMsg("assistant","⏳ Processando…");
     try{
-      const res=await fetchWithTimeout("/chat",{
+      const payload = { session_id: sessionId || "local", message: text, state: state || {} };
+      const data = await fetchJson("/chat", {
         method:"POST",
-        headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},
-        body:JSON.stringify({session_id:sessionId,message:text})
-      }, 60000);
-
-      const data=await res.json().catch(()=> ({}));
-
-      if(!res.ok){
-        addMsg("assistant","Erro: "+(data.detail||res.status));
-        setBusy(false);
-        return;
-      }
-
-      // sessão inválida (Render reiniciou) → orientar reinício
-      if((data.message||"").includes("Sessão inválida")){
-        addMsg("assistant","⚠️ A sessão expirou (provável reinício do servidor). Clique em Reiniciar e continue.");
-        sessionId=null;
-        setBusy(false);
-        return;
-      }
-
-      addMsg("assistant",data.message||"(sem mensagem)");
+        headers:{ "Content-Type":"application/json", "x-demo-key": DEMO_KEY },
+        body: JSON.stringify(payload)
+      });
+      state = data.state || state;
+      addMsg("assistant", data.message || "(sem mensagem)");
       if(data.report){
-        addMsg("assistant","✅ RELATÓRIO GERADO:\\n\\n"+data.report);
+        addMsg("assistant", "✅ RELATÓRIO GERADO:\\n\\n" + data.report);
       }
-      setBusy(false);
-    }catch(e){
-      addMsg("assistant","⚠️ Falha de rede/timeout. Se o Render dormiu, aguarde 10–20s e clique em Reiniciar.");
-      setBusy(false);
+      setReady(true);
+    } catch(err){
+      addMsg("assistant", "⚠️ Falha: " + err.message + "\\nClique em Reiniciar e continue.");
+      setReady(false);
     }
   }
 
-  keyBtn.addEventListener("click",()=>{
-    DEMO_KEY=keyInput.value.trim();
-    localStorage.setItem(STORE,DEMO_KEY);
+  keyBtn.addEventListener("click", ()=>{
+    DEMO_KEY = keyInput.value.trim();
+    localStorage.setItem(STORE_KEY, DEMO_KEY);
     addMsg("assistant","Código registrado.");
     startSession();
   });
 
-  resetBtn.addEventListener("click",()=>{
-    sessionId=null;
-    addMsg("assistant","🔄 Reiniciando diagnóstico…");
+  resetBtn.addEventListener("click", ()=>{
+    sessionId = null;
+    state = {};
+    addMsg("assistant","🔄 Reiniciando…");
     startSession();
   });
 
-  btn.addEventListener("click",send);
-  input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") send(); });
+  btn.addEventListener("click", send);
+  input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") send(); });
 
   addMsg("assistant", DEMO_KEY ? "Código encontrado. Clique em Ativar." : "Cole o DEMO_KEY e clique em Ativar.");
 </script>
