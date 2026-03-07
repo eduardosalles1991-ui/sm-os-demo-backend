@@ -6,7 +6,10 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
+# OpenAI client: se crea SOLO si hay key (para no crashear el servidor)
 from openai import OpenAI
+
 
 # =======================
 # CONFIG
@@ -16,12 +19,10 @@ ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.
 DEMO_KEY = os.getenv("DEMO_KEY", "")  # REQUIRED
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-# =======================
-# APP
-# =======================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.1.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,6 +106,12 @@ def is_sufficient(data: Dict[str, Any]) -> bool:
 
 
 def generate_report(data: Dict[str, Any]) -> str:
+    if client is None:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY não configurada no Render (Environment)."
+        )
+
     user_case = f"""CASO (dados coletados):
 - Área/Subárea: {data.get('area_subarea')}
 - Fase: {data.get('fase')}
@@ -139,7 +146,14 @@ class ChatIn(BaseModel):
 # =======================
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "sm-os-demo", "version": "0.1.0"}
+    return {
+        "ok": True,
+        "service": "sm-os-demo",
+        "version": "0.1.1",
+        "python": os.getenv("PYTHON_VERSION", "unknown"),
+        "has_openai_key": bool(OPENAI_API_KEY),
+        "allowed_origin": ALLOWED_ORIGIN,
+    }
 
 
 @app.post("/session/new")
@@ -160,13 +174,11 @@ def chat(inp: ChatIn, x_demo_key: str | None = Header(default=None)):
 
     data = s["data"]
 
-    # Save the user's answer into the first missing field
     for key, _question in QUESTION_ORDER:
         if not data.get(key):
             data[key] = inp.message.strip()
             break
 
-    # If sufficient, generate report
     if is_sufficient(data):
         report = generate_report(data)
         return {"message": "✅ Dados suficientes. Gerando relatório estruturado…", "report": report}
@@ -175,11 +187,10 @@ def chat(inp: ChatIn, x_demo_key: str | None = Header(default=None)):
 
 
 # =======================
-# WIDGET (for iframe)
+# WIDGET (iframe)
 # =======================
 @app.get("/widget", response_class=HTMLResponse)
 def widget():
-    # No DEMO_KEY inside HTML: user enters it (you can still password-protect the WP page)
     return HTMLResponse(
         """<!doctype html>
 <html lang="pt-BR">
