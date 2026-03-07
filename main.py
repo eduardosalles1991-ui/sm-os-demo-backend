@@ -1,20 +1,26 @@
-from fastapi.responses import HTMLResponse
 import os
 import uuid
 from typing import Dict, Any
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
+# =======================
+# CONFIG
+# =======================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
-DEMO_KEY = os.getenv("DEMO_KEY", "")
+DEMO_KEY = os.getenv("DEMO_KEY", "")  # REQUIRED
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# =======================
+# APP
+# =======================
 app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.1.0")
 
 app.add_middleware(
@@ -76,11 +82,16 @@ Saída obrigatória:
 Se dados insuficientes: rotular ANÁLISE PRELIMINAR e conclusões condicionais.
 """
 
+
+# =======================
+# HELPERS
+# =======================
 def auth_or_401(x_demo_key: str | None):
     if not DEMO_KEY:
         raise HTTPException(status_code=500, detail="Server misconfigured: DEMO_KEY not set.")
     if not x_demo_key or x_demo_key != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 def next_missing(data: Dict[str, Any]) -> str:
     for key, question in QUESTION_ORDER:
@@ -88,8 +99,10 @@ def next_missing(data: Dict[str, Any]) -> str:
             return question
     return ""
 
+
 def is_sufficient(data: Dict[str, Any]) -> bool:
     return all(bool(data.get(k)) for k in REQUIRED_FIELDS)
+
 
 def generate_report(data: Dict[str, Any]) -> str:
     user_case = f"""CASO (dados coletados):
@@ -112,13 +125,22 @@ def generate_report(data: Dict[str, Any]) -> str:
     )
     return resp.choices[0].message.content
 
+
+# =======================
+# MODELS
+# =======================
 class ChatIn(BaseModel):
     session_id: str
     message: str
 
+
+# =======================
+# API
+# =======================
 @app.get("/health")
 def health():
     return {"ok": True, "service": "sm-os-demo", "version": "0.1.0"}
+
 
 @app.post("/session/new")
 def session_new(x_demo_key: str | None = Header(default=None)):
@@ -127,9 +149,11 @@ def session_new(x_demo_key: str | None = Header(default=None)):
     SESSIONS[sid] = {"data": {}}
     return {"session_id": sid, "message": "Vamos iniciar o diagnóstico.\n\n" + QUESTION_ORDER[0][1]}
 
+
 @app.post("/chat")
 def chat(inp: ChatIn, x_demo_key: str | None = Header(default=None)):
     auth_or_401(x_demo_key)
+
     s = SESSIONS.get(inp.session_id)
     if not s:
         return {"message": "Sessão inválida. Recarregue a página para iniciar novamente."}
@@ -142,34 +166,41 @@ def chat(inp: ChatIn, x_demo_key: str | None = Header(default=None)):
             data[key] = inp.message.strip()
             break
 
+    # If sufficient, generate report
     if is_sufficient(data):
         report = generate_report(data)
         return {"message": "✅ Dados suficientes. Gerando relatório estruturado…", "report": report}
 
     return {"message": next_missing(data)}
-    @app.get("/widget", response_class=HTMLResponse)
+
+
+# =======================
+# WIDGET (for iframe)
+# =======================
+@app.get("/widget", response_class=HTMLResponse)
 def widget():
-    return HTMLResponse(f"""
-<!doctype html>
+    # No DEMO_KEY inside HTML: user enters it (you can still password-protect the WP page)
+    return HTMLResponse(
+        """<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>S&M OS 6.1 — Demo</title>
   <style>
-    body {{ margin:0; font-family:system-ui,Segoe UI,Arial; background:#07080c; color:#eef1f7; }}
-    .wrap {{ max-width:900px; margin:0 auto; padding:18px; }}
-    .box {{ background:#0f111a; border:1px solid rgba(245,196,81,.25); border-radius:18px; overflow:hidden; }}
-    .head {{ padding:16px 18px; background:linear-gradient(135deg,#0b0d12,#171b24); border-bottom:3px solid #f5c451; }}
-    .title {{ font-weight:800; letter-spacing:.3px; }}
-    .sub {{ opacity:.8; font-size:13px; margin-top:4px; }}
-    #chatLog {{ height:420px; overflow:auto; padding:16px; background:#07080c; }}
-    .row {{ display:flex; gap:10px; padding:14px; background:#0b0d12; border-top:1px solid rgba(255,255,255,.08); }}
-    input {{ flex:1; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); background:#0f111a; color:#eef1f7; outline:none; }}
-    button {{ padding:12px 14px; border-radius:12px; border:1px solid rgba(245,196,81,.35);
-      background:linear-gradient(180deg,#f5c451,#c9921c); font-weight:900; cursor:pointer; color:#1a1204; }}
-    .pill {{ display:flex; gap:10px; padding:14px; background:#0b0d12; border-top:1px solid rgba(255,255,255,.08); align-items:center; }}
-    .badge {{ font-size:12px; color:rgba(245,196,81,.95); border:1px solid rgba(245,196,81,.25); padding:6px 10px; border-radius:999px; background:rgba(245,196,81,.06); }}
+    body{margin:0;font-family:system-ui,Segoe UI,Arial;background:#07080c;color:#eef1f7}
+    .wrap{max-width:900px;margin:0 auto;padding:18px}
+    .box{background:#0f111a;border:1px solid rgba(245,196,81,.25);border-radius:18px;overflow:hidden}
+    .head{padding:16px 18px;background:linear-gradient(135deg,#0b0d12,#171b24);border-bottom:3px solid #f5c451}
+    .title{font-weight:800;letter-spacing:.3px}
+    .sub{opacity:.8;font-size:13px;margin-top:4px}
+    #chatLog{height:420px;overflow:auto;padding:16px;background:#07080c}
+    .row{display:flex;gap:10px;padding:14px;background:#0b0d12;border-top:1px solid rgba(255,255,255,.08)}
+    input{flex:1;padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0f111a;color:#eef1f7;outline:none}
+    button{padding:12px 14px;border-radius:12px;border:1px solid rgba(245,196,81,.35);
+      background:linear-gradient(180deg,#f5c451,#c9921c);font-weight:900;cursor:pointer;color:#1a1204}
+    .pill{display:flex;gap:10px;padding:14px;background:#0b0d12;border-top:1px solid rgba(255,255,255,.08);align-items:center}
+    .badge{font-size:12px;color:rgba(245,196,81,.95);border:1px solid rgba(245,196,81,.25);padding:6px 10px;border-radius:999px;background:rgba(245,196,81,.06)}
   </style>
 </head>
 <body>
@@ -182,7 +213,7 @@ def widget():
 
       <div class="pill">
         <span class="badge">Ativação</span>
-        <input id="keyInput" placeholder="Cole aqui o código DEMO_KEY" />
+        <input id="keyInput" placeholder="Cole aqui o DEMO_KEY" />
         <button id="keyBtn">Ativar</button>
       </div>
 
@@ -196,101 +227,80 @@ def widget():
   </div>
 
 <script>
-  const DEMO_KEY_STORE = "sm_os_demo_key";
-  const BACKEND_URL = ""; // same origin
-  let sessionId = null;
-  let DEMO_KEY = localStorage.getItem(DEMO_KEY_STORE) || "";
+  const STORE="sm_os_demo_key";
+  let sessionId=null;
+  let DEMO_KEY=localStorage.getItem(STORE)||"";
 
-  const log = document.getElementById("chatLog");
-  const input = document.getElementById("chatInput");
-  const btn = document.getElementById("chatSend");
-  const keyInput = document.getElementById("keyInput");
-  const keyBtn = document.getElementById("keyBtn");
+  const log=document.getElementById("chatLog");
+  const input=document.getElementById("chatInput");
+  const btn=document.getElementById("chatSend");
+  const keyInput=document.getElementById("keyInput");
+  const keyBtn=document.getElementById("keyBtn");
 
-  keyInput.value = DEMO_KEY;
+  keyInput.value=DEMO_KEY;
 
-  function addMsg(role, text){
-    const wrap = document.createElement("div");
-    wrap.style.marginBottom = "12px";
-    wrap.style.display = "flex";
-    wrap.style.justifyContent = role === "user" ? "flex-end" : "flex-start";
+  function addMsg(role,text){
+    const wrap=document.createElement("div");
+    wrap.style.marginBottom="12px";
+    wrap.style.display="flex";
+    wrap.style.justifyContent=role==="user"?"flex-end":"flex-start";
 
-    const bubble = document.createElement("div");
-    bubble.style.maxWidth = "78%";
-    bubble.style.padding = "12px 12px";
-    bubble.style.borderRadius = "14px";
-    bubble.style.whiteSpace = "pre-wrap";
-    bubble.style.lineHeight = "1.45";
-    bubble.style.fontSize = "14px";
+    const bubble=document.createElement("div");
+    bubble.style.maxWidth="78%";
+    bubble.style.padding="12px";
+    bubble.style.borderRadius="14px";
+    bubble.style.whiteSpace="pre-wrap";
+    bubble.style.lineHeight="1.45";
+    bubble.style.fontSize="14px";
+    bubble.style.background=role==="user"?"rgba(245,196,81,.16)":"rgba(255,255,255,.06)";
+    bubble.style.border=role==="user"?"1px solid rgba(245,196,81,.22)":"1px solid rgba(255,255,255,.10)";
+    bubble.textContent=text;
 
-    if(role === "user"){
-      bubble.style.background = "rgba(245,196,81,.16)";
-      bubble.style.border = "1px solid rgba(245,196,81,.22)";
-    } else {
-      bubble.style.background = "rgba(255,255,255,.06)";
-      bubble.style.border = "1px solid rgba(255,255,255,.10)";
-    }
-    bubble.textContent = text;
     wrap.appendChild(bubble);
     log.appendChild(wrap);
-    log.scrollTop = log.scrollHeight;
+    log.scrollTop=log.scrollHeight;
   }
 
   async function startSession(){
-    const res = await fetch(`/session/new`, {
-      method:"POST",
-      headers: { "x-demo-key": DEMO_KEY }
-    });
-    const data = await res.json();
-    if(!res.ok){
-      addMsg("assistant", "Erro ao iniciar sessão: " + (data.detail || res.status));
-      return;
-    }
-    sessionId = data.session_id;
-    addMsg("assistant", data.message);
-    input.disabled = false;
-    btn.disabled = false;
-    input.focus();
+    const res=await fetch("/session/new",{method:"POST",headers:{"x-demo-key":DEMO_KEY}});
+    const data=await res.json();
+    if(!res.ok){ addMsg("assistant","Erro ao iniciar: "+(data.detail||res.status)); return; }
+    sessionId=data.session_id;
+    addMsg("assistant",data.message);
+    input.disabled=false; btn.disabled=false; input.focus();
   }
 
   async function send(){
-    const text = input.value.trim();
+    const text=input.value.trim();
     if(!text) return;
-    input.value = "";
-    addMsg("user", text);
+    input.value="";
+    addMsg("user",text);
 
-    const res = await fetch(`/chat`, {
+    const res=await fetch("/chat",{
       method:"POST",
-      headers: {"Content-Type":"application/json", "x-demo-key": DEMO_KEY},
-      body: JSON.stringify({ session_id: sessionId, message: text })
+      headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},
+      body:JSON.stringify({session_id:sessionId,message:text})
     });
-    const data = await res.json();
-    if(!res.ok){
-      addMsg("assistant", "Erro: " + (data.detail || res.status));
-      return;
-    }
-    addMsg("assistant", data.message);
-    if(data.report){
-      addMsg("assistant", "✅ RELATÓRIO GERADO:\\n\\n" + data.report);
-    }
+    const data=await res.json();
+    if(!res.ok){ addMsg("assistant","Erro: "+(data.detail||res.status)); return; }
+
+    addMsg("assistant",data.message);
+    if(data.report){ addMsg("assistant","✅ RELATÓRIO GERADO:\\n\\n"+data.report); }
   }
 
-  keyBtn.addEventListener("click", () => {
-    DEMO_KEY = keyInput.value.trim();
-    localStorage.setItem(DEMO_KEY_STORE, DEMO_KEY);
-    addMsg("assistant", "Código registrado. Iniciando…");
+  keyBtn.addEventListener("click",()=>{
+    DEMO_KEY=keyInput.value.trim();
+    localStorage.setItem(STORE,DEMO_KEY);
+    addMsg("assistant","Código registrado. Iniciando…");
     startSession();
   });
 
-  btn.addEventListener("click", send);
-  input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") send(); });
+  btn.addEventListener("click",send);
+  input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") send(); });
 
-  if(DEMO_KEY){
-    addMsg("assistant", "Código encontrado. Clique em Ativar para iniciar.");
-  } else {
-    addMsg("assistant", "Cole o código DEMO_KEY e clique em Ativar.");
-  }
+  addMsg("assistant", DEMO_KEY ? "Código encontrado. Clique em Ativar." : "Cole o DEMO_KEY e clique em Ativar.");
 </script>
 </body>
 </html>
-""")
+"""
+    )
