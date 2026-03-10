@@ -3,7 +3,7 @@ import uuid
 from typing import Dict, Any, Optional
 
 import openai
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -15,16 +15,16 @@ from openai import OpenAI
 # =======================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
-DEMO_KEY = os.getenv("DEMO_KEY", "")  # REQUIRED
+DEMO_KEY = os.getenv("DEMO_KEY", "")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 
 # =======================
-# APP (must exist for uvicorn main:app)
+# APP
 # =======================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.3.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,7 +33,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 FIELDS_ORDER = [
     ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
@@ -45,7 +44,6 @@ FIELDS_ORDER = [
     ("urgencia_prazo", "Há urgência ou prazo crítico? (qual?)"),
     ("valor_envovido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
 ]
-
 REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
 SYSTEM_OS = """Você é o S&M OS 6.1 (Diagnóstico Jurídico Inteligente).
@@ -105,7 +103,6 @@ def get_client() -> OpenAI:
 
 def generate_report(state: Dict[str, Any]) -> str:
     client = get_client()
-
     user_case = f"""CASO (dados coletados):
 - Área/Subárea: {state.get('area_subarea')}
 - Fase: {state.get('fase')}
@@ -128,9 +125,7 @@ def generate_report(state: Dict[str, Any]) -> str:
 
 
 def friendly_openai_error(e: Exception) -> HTTPException:
-    # Most common cases
     if isinstance(e, openai.RateLimitError):
-        # includes insufficient_quota
         return HTTPException(
             status_code=429,
             detail="Sem crédito/quota na API no momento (insufficient_quota). Verifique Billing/Créditos na OpenAI."
@@ -143,7 +138,6 @@ def friendly_openai_error(e: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=f"BadRequest na OpenAI: {str(e)}")
     if isinstance(e, openai.APITimeoutError):
         return HTTPException(status_code=504, detail="Timeout na OpenAI. Tente novamente.")
-    # fallback
     return HTTPException(status_code=500, detail=f"Erro ao gerar relatório: {type(e).__name__}: {str(e)}")
 
 
@@ -176,7 +170,7 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
@@ -201,7 +195,6 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
 
     state = inp.state or {}
 
-    # Save answer into first missing field
     for key, _question in FIELDS_ORDER:
         if not state.get(key):
             state[key] = (inp.message or "").strip()
@@ -220,253 +213,266 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
 
 
 # =======================
-# PREMIUM WIDGET (iframe)
+# WIDGET HTML (TRANSPARENT EMBED MODE)
 # =======================
-WIDGET_HTML = r"""
+WIDGET_HTML_TRANSPARENT = r"""
 <!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>S&M OS 6.1 — Demo</title>
+  <title>S&M OS 6.1 — Widget</title>
   <style>
     :root{
-      --bg:#07080c;
-      --panel:#0f111a;
-      --panel2:#0b0d12;
+      --panel: rgba(15,17,26,.62);
+      --panel2: rgba(11,13,18,.55);
       --text:#eef1f7;
-      --muted:#a7afc0;
+      --muted:rgba(238,241,247,.72);
       --gold:#f5c451;
-      --gold2:#c9921c;
-      --line:rgba(255,255,255,.10);
+      --line:rgba(255,255,255,.12);
       --line2:rgba(245,196,81,.22);
-      --shadow: 0 18px 60px rgba(0,0,0,.55);
       --radius:18px;
     }
+
     *{box-sizing:border-box}
+    html, body { height:100%; }
     body{
       margin:0;
+      background: transparent !important; /* ✅ deixa o vídeo do WP aparecer */
+      color: var(--text);
       font-family: system-ui, -apple-system, Segoe UI, Inter, Arial;
-      background:
-        radial-gradient(900px 600px at 20% 0%, rgba(245,196,81,.08), transparent 50%),
-        radial-gradient(900px 600px at 90% 30%, rgba(83,143,255,.06), transparent 55%),
-        var(--bg);
-      color:var(--text);
     }
-    .wrap{max-width:1100px;margin:0 auto;padding:22px}
+
+    /* Remove qualquer "moldura" interna: ocupa 100% do iframe */
     .shell{
-      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-      border:1px solid rgba(255,255,255,.08);
-      border-radius:22px;
-      box-shadow:var(--shadow);
-      overflow:hidden;
+      height:100%;
+      display:flex;
+      flex-direction:column;
+      padding: 0;                 /* ✅ sem bordas internas pretas */
+      background: transparent;    /* ✅ */
     }
-    .topbar{
-      padding:16px 18px;
-      background:linear-gradient(135deg, #0b0d12, #171b24);
-      border-bottom:3px solid var(--gold);
+
+    /* HEADER interno leve */
+    .head{
+      margin: 0 0 10px 0;
+      padding: 12px 14px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      backdrop-filter: blur(10px);
       display:flex;
       align-items:center;
       justify-content:space-between;
       gap:12px;
     }
-    .brand{display:flex;align-items:center;gap:12px}
+    .brand{display:flex; align-items:center; gap:10px; min-width:0}
     .logo{
-      width:38px;height:38px;border-radius:12px;
-      background:linear-gradient(180deg, rgba(245,196,81,.25), rgba(245,196,81,.05));
-      border:1px solid var(--line2);
+      width:34px;height:34px;border-radius:12px;
       display:grid;place-items:center;
-      font-weight:900;color:var(--gold);
-      letter-spacing:.5px;
+      font-weight:900;
+      color: rgba(245,196,81,.95);
+      background: rgba(245,196,81,.12);
+      border: 1px solid var(--line2);
+      flex:0 0 auto;
     }
-    .title{font-weight:900;letter-spacing:.2px}
-    .subtitle{font-size:12.5px;color:var(--muted);margin-top:3px}
-    .right{
-      display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;
-    }
+    .twrap{min-width:0}
+    .title{font-weight:900; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+    .sub{margin-top:3px; font-size:12px; color:var(--muted)}
+
+    .pills{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}
     .pill{
       font-size:12px;
       padding:7px 10px;
       border-radius:999px;
       border:1px solid var(--line2);
-      background:rgba(245,196,81,.06);
-      color:rgba(245,196,81,.95);
+      background: rgba(245,196,81,.10);
+      color: rgba(245,196,81,.95);
       white-space:nowrap;
     }
+
+    /* MAIN GRID */
     .grid{
+      flex:1;
       display:grid;
       grid-template-columns: 1.2fr .8fr;
-      min-height:620px;
+      gap: 10px;
+      min-height: 0;
     }
     @media (max-width: 980px){
-      .grid{grid-template-columns: 1fr}
-      .side{display:none}
+      .grid{ grid-template-columns: 1fr; }
+      .side{ display:none; }
     }
+
+    /* CHAT PANEL */
     .chat{
-      background:rgba(0,0,0,.10);
-      border-right:1px solid rgba(255,255,255,.08);
       display:flex;
       flex-direction:column;
-      min-height:620px;
+      min-height:0;
+      gap:10px;
     }
+
     .activation{
-      display:flex;gap:10px;align-items:center;
+      display:flex; gap:10px; align-items:center;
       padding:12px 14px;
-      background:var(--panel2);
-      border-bottom:1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius);
+      background: var(--panel2);
+      border:1px solid var(--line);
+      backdrop-filter: blur(10px);
     }
     .badge{
-      font-size:12px;
-      padding:6px 10px;
+      font-size:12px; padding:6px 10px;
       border-radius:999px;
       border:1px solid var(--line2);
-      background:rgba(245,196,81,.06);
-      color:rgba(245,196,81,.95);
+      background: rgba(245,196,81,.10);
+      color: rgba(245,196,81,.95);
       white-space:nowrap;
     }
     .key{
       flex:1;
       padding:12px;
       border-radius:12px;
-      border:1px solid rgba(255,255,255,.12);
-      background:var(--panel);
-      color:var(--text);
+      border:1px solid rgba(255,255,255,.16);
+      background: rgba(0,0,0,.25);
+      color: var(--text);
       outline:none;
     }
     .btn{
       padding:12px 14px;
       border-radius:12px;
       border:1px solid rgba(245,196,81,.35);
-      background:linear-gradient(180deg, var(--gold), var(--gold2));
+      background: linear-gradient(180deg, rgba(245,196,81,.95), rgba(201,146,28,.95));
       font-weight:900;
       cursor:pointer;
       color:#1a1204;
-      transition: transform .06s ease;
     }
-    .btn:active{transform: scale(.98)}
     .btn2{
-      padding:12px 14px;border-radius:12px;
-      border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.06);
-      color:var(--text);
+      padding:12px 14px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
       font-weight:900;
       cursor:pointer;
     }
+
     .progress{
+      display:flex; align-items:center; gap:10px;
       padding:10px 14px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      border-bottom:1px solid rgba(255,255,255,.08);
-      background:rgba(0,0,0,.12);
+      border-radius: var(--radius);
+      background: var(--panel2);
+      border:1px solid var(--line);
+      backdrop-filter: blur(10px);
     }
     .bar{
-      height:8px;
-      border-radius:999px;
-      background:rgba(255,255,255,.08);
+      height:8px; border-radius:999px;
+      background: rgba(255,255,255,.10);
       overflow:hidden;
       flex:1;
     }
     .bar > div{
       height:100%;
       width:0%;
-      background:linear-gradient(90deg, var(--gold), rgba(245,196,81,.35));
-      border-right:1px solid rgba(0,0,0,.18);
+      background: linear-gradient(90deg, rgba(245,196,81,.95), rgba(245,196,81,.25));
       transition: width .25s ease;
     }
-    .step{font-size:12.5px;color:var(--muted);white-space:nowrap}
+    .step{font-size:12.5px; color:var(--muted); white-space:nowrap}
+
     #chatLog{
       flex:1;
+      min-height:0;
       overflow:auto;
-      padding:16px;
-      background:
-        radial-gradient(700px 500px at 15% 10%, rgba(245,196,81,.05), transparent 55%),
-        rgba(0,0,0,.10);
+      padding:14px;
+      border-radius: var(--radius);
+      background: rgba(0,0,0,.18);   /* ✅ deixa vídeo aparecer */
+      border:1px solid rgba(255,255,255,.10);
+      backdrop-filter: blur(6px);
     }
-    .row{
-      display:flex;
-      gap:10px;
-      padding:12px 14px;
-      background:var(--panel2);
-      border-top:1px solid rgba(255,255,255,.08);
-    }
-    .input{
-      flex:1;padding:12px;border-radius:12px;
-      border:1px solid rgba(255,255,255,.12);
-      background:var(--panel);
-      color:var(--text);
-      outline:none;
-    }
+
     .msgWrap{margin-bottom:12px;display:flex}
     .msgWrap.user{justify-content:flex-end}
     .bubble{
       max-width:78%;
-      padding:12px 12px;
+      padding:12px;
       border-radius:14px;
       white-space:pre-wrap;
       line-height:1.45;
       font-size:14px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.25);
+      box-shadow:none;            /* ✅ remove halo */
     }
     .bot .bubble{
-      background:rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.08);
+      border:1px solid rgba(255,255,255,.12);
     }
     .user .bubble{
-      background:rgba(245,196,81,.16);
+      background: rgba(245,196,81,.16);
       border:1px solid rgba(245,196,81,.22);
     }
+
     .notice{
       margin:10px 0;
       padding:10px 12px;
       border-radius:14px;
       border:1px solid rgba(255,255,255,.12);
-      background:rgba(255,255,255,.05);
-      color:rgba(255,255,255,.86);
+      background: rgba(255,255,255,.06);
+      color: rgba(255,255,255,.86);
       font-size:13px;
     }
-    .err{
-      border:1px solid rgba(255,112,112,.22);
-      background:rgba(255,112,112,.08);
-      color:#ffd6d6;
+    .err{ border-color: rgba(255,112,112,.25); background: rgba(255,112,112,.10); color:#ffd6d6; }
+    .ok{ border-color: rgba(122,255,170,.25); background: rgba(122,255,170,.10); color:#d8ffe8; }
+
+    .row{
+      display:flex; gap:10px;
+      padding:12px 14px;
+      border-radius: var(--radius);
+      background: var(--panel2);
+      border:1px solid var(--line);
+      backdrop-filter: blur(10px);
     }
-    .ok{
-      border:1px solid rgba(122,255,170,.22);
-      background:rgba(122,255,170,.08);
-      color:#d8ffe8;
+    .input{
+      flex:1;
+      padding:12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.16);
+      background: rgba(0,0,0,.25);
+      color: var(--text);
+      outline:none;
     }
+
+    /* SIDE PANEL */
     .side{
-      background:rgba(0,0,0,.10);
-      padding:14px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      min-height:0;
     }
     .card{
-      background:rgba(255,255,255,.05);
-      border:1px solid rgba(255,255,255,.10);
-      border-radius:16px;
+      border-radius: var(--radius);
+      background: var(--panel);
+      border:1px solid var(--line);
+      backdrop-filter: blur(10px);
       padding:14px;
-      margin-bottom:12px;
     }
     .card h3{
       margin:0 0 10px 0;
       font-size:13px;
-      letter-spacing:.2px;
-      color:rgba(245,196,81,.95);
+      color: rgba(245,196,81,.95);
     }
     .kv{
       display:grid;
       grid-template-columns: 1fr;
       gap:8px;
       font-size:13px;
-      color:rgba(255,255,255,.82);
+      color: rgba(255,255,255,.82);
     }
-    .kv b{color:rgba(255,255,255,.92)}
-    .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    .kv b{ color: rgba(255,255,255,.92); }
+
+    .actions{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}
     .smallbtn{
-      padding:10px 12px;border-radius:12px;
-      border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.06);
-      color:var(--text);
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
       font-weight:900;
       cursor:pointer;
       font-size:12.5px;
@@ -474,74 +480,70 @@ WIDGET_HTML = r"""
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="shell">
-      <div class="topbar">
-        <div class="brand">
-          <div class="logo">S&M</div>
-          <div>
-            <div class="title">Diagnóstico Jurídico Inteligente</div>
-            <div class="subtitle">S&M OS 6.1 • Chat guiado • Relatório estruturado</div>
-          </div>
+  <div class="shell">
+    <div class="head">
+      <div class="brand">
+        <div class="logo">S&M</div>
+        <div class="twrap">
+          <div class="title">Diagnóstico Jurídico Inteligente</div>
+          <div class="sub">S&M OS 6.1 • Chat guiado • Relatório estruturado</div>
         </div>
-        <div class="right">
-          <span class="pill">DEMO • Sem expor módulo interno</span>
-          <span class="pill" id="statusPill">Status: pronto</span>
+      </div>
+      <div class="pills">
+        <span class="pill">DEMO • Sem expor módulo interno</span>
+        <span class="pill" id="statusPill">Status: pronto</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="chat">
+        <div class="activation">
+          <span class="badge">Ativação</span>
+          <input class="key" id="keyInput" placeholder="Cole aqui o DEMO_KEY" />
+          <button class="btn" id="keyBtn">Ativar</button>
+          <button class="btn2" id="resetBtn">Reiniciar</button>
+        </div>
+
+        <div class="progress">
+          <div class="bar"><div id="barFill"></div></div>
+          <div class="step" id="stepText">Etapa 0/8</div>
+        </div>
+
+        <div id="chatLog"></div>
+
+        <div class="row">
+          <input class="input" id="chatInput" placeholder="Digite aqui..." disabled />
+          <button class="btn" id="chatSend" disabled>Enviar</button>
         </div>
       </div>
 
-      <div class="grid">
-        <div class="chat">
-          <div class="activation">
-            <span class="badge">Ativação</span>
-            <input class="key" id="keyInput" placeholder="Cole aqui o DEMO_KEY" />
-            <button class="btn" id="keyBtn">Ativar</button>
-            <button class="btn2" id="resetBtn">Reiniciar</button>
-          </div>
-
-          <div class="progress">
-            <div class="bar"><div id="barFill"></div></div>
-            <div class="step" id="stepText">Etapa 0/8</div>
-          </div>
-
-          <div id="chatLog"></div>
-
-          <div class="row">
-            <input class="input" id="chatInput" placeholder="Digite aqui..." disabled />
-            <button class="btn" id="chatSend" disabled>Enviar</button>
+      <div class="side">
+        <div class="card">
+          <h3>Dados capturados</h3>
+          <div class="kv" id="kv"></div>
+          <div class="actions">
+            <button class="smallbtn" id="copyStateBtn">Copiar dados</button>
+            <button class="smallbtn" id="copyReportBtn">Copiar relatório</button>
           </div>
         </div>
 
-        <div class="side">
-          <div class="card">
-            <h3>Dados capturados</h3>
-            <div class="kv" id="kv"></div>
-            <div class="actions">
-              <button class="smallbtn" id="copyStateBtn">Copiar dados</button>
-              <button class="smallbtn" id="copyReportBtn">Copiar relatório</button>
-            </div>
+        <div class="card">
+          <h3>Como usar (1 minuto)</h3>
+          <div class="kv">
+            <div>1) Ative com a DEMO_KEY</div>
+            <div>2) Responda 8 perguntas rápidas</div>
+            <div>3) Receba o relatório estruturado</div>
           </div>
+        </div>
 
-          <div class="card">
-            <h3>Como usar (1 minuto)</h3>
-            <div class="kv">
-              <div>1) Ative com a DEMO_KEY</div>
-              <div>2) Responda 8 perguntas rápidas</div>
-              <div>3) Receba o relatório estruturado</div>
-            </div>
+        <div class="card">
+          <h3>Nota de compliance</h3>
+          <div class="kv">
+            <div>Assistivo. Revisão humana obrigatória em decisões críticas.</div>
+            <div>Sem promessas. Sem fabricação de prova.</div>
           </div>
-
-          <div class="card">
-            <h3>Nota de compliance</h3>
-            <div class="kv">
-              <div>Assistivo. Revisão humana obrigatória em decisões críticas.</div>
-              <div>Sem promessas. Sem fabricação de prova.</div>
-            </div>
-          </div>
-
         </div>
       </div>
-
     </div>
   </div>
 
@@ -579,9 +581,7 @@ WIDGET_HTML = r"""
 
   keyInput.value = DEMO_KEY;
 
-  function setStatus(text){
-    statusPill.textContent = "Status: " + text;
-  }
+  function setStatus(text){ statusPill.textContent = "Status: " + text; }
 
   function progress(){
     let filled = 0;
@@ -691,7 +691,7 @@ WIDGET_HTML = r"""
       addMsg("bot", data.message || "(sem mensagem)");
       if(data.report){
         lastReport = data.report;
-        addNotice("✅ Relatório gerado. Você pode copiar no painel à direita.", "ok");
+        addNotice("✅ Relatório gerado. Você pode copiar no painel.", "ok");
         addMsg("bot", data.report);
       }
       setReady(true);
@@ -745,6 +745,11 @@ WIDGET_HTML = r"""
 </html>
 """
 
+
 @app.get("/widget", response_class=HTMLResponse)
-def widget():
-    return HTMLResponse(WIDGET_HTML)
+def widget(transparent: int = Query(default=0)):
+    # transparent=1 -> fundo transparente para aparecer o vídeo do WP
+    if transparent == 1:
+        return HTMLResponse(WIDGET_HTML_TRANSPARENT)
+    # fallback: se quiser, pode manter o modo antigo (não incluído)
+    return HTMLResponse(WIDGET_HTML_TRANSPARENT)
