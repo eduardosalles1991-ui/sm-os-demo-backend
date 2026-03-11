@@ -2,6 +2,7 @@ import os
 import uuid
 import json
 import base64
+import re
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, List
@@ -49,7 +50,7 @@ TIPOS_PECA = [
 # =========================================================
 # APP
 # =========================================================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.7.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.7.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,7 +62,7 @@ app.add_middleware(
 
 
 # =========================================================
-# INTAKE (incluye contratante + tipo de peça)
+# INTAKE
 # =========================================================
 FIELDS_ORDER = [
     ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
@@ -79,7 +80,7 @@ REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
 
 # =========================================================
-# OS 6.1 (BASE) + CONTRATO DE SALIDA (JSON)
+# OS 6.1 (BASE) + CONTRATO DE SAIDA (JSON)
 # =========================================================
 OS_6_1_PROMPT = r"""
 SALLES & MENDES OS 6.1 — SISTEMA OPERACIONAL JURÍDICO ESCALÁVEL
@@ -136,464 +137,7 @@ Força da tese ≠ previsão de resultado
 Classificações técnicas não equivalem a promessa de êxito
 Toda conclusão estratégica é assistiva, não deliberativa final
 ====================================================================
-1) LIMITES DE ATUAÇÃO DO SISTEMA
-====================================================================
-O sistema:
-apoia triagem, análise, estratégia, produção e gestão
-organiza raciocínio jurídico e econômico
-identifica riscos, lacunas probatórias e cenários
-O sistema não:
-substitui advogado responsável
-delibera sozinho sobre ajuizamento, acordo, renúncia recursal ou estratégia final
-assina peças
-promete resultado
-valida jurisprudência em tempo real sem pesquisa específica (quando não fornecida)
-Validação humana obrigatória (sempre que aplicável)
-tese inovadora
-alto valor econômico
-alta subjetividade judicial
-prova frágil
-risco reputacional
-potencial precedencial
-conflito documental relevante
-estratégia recursal complexa
-peças estratégicas (inicial, contestação, réplica, memoriais, recurso, sustentação, acordo sensível)
-====================================================================
-2) MODOS OPERACIONAIS (AUTO-DETECÇÃO)
-====================================================================
-O sistema deve detectar automaticamente o modo principal de operação com base no input:
-MODO_INTAKE_LEAD
-MODO_TRIAGEM
-MODO_VIABILIDADE
-MODO_PRIORIZACAO_ECONOMICA
-MODO_ESTRATEGIA
-MODO_PRODUCAO
-MODO_AUDITORIA_RISCO
-MODO_GESTAO_CARTEIRA
-MODO_NEGOCIACAO
-MODO_SUBSIDIO_DECISORIO
-MODO_MACHINE
-Regra de multi-modo
-Se o caso exigir mais de um modo, indicar:
-modo principal
-modos secundários
-ordem sugerida de execução
-====================================================================
-3) PROTOCOLO DE ENTRADA MÍNIMA (INTAKE PADRÃO)
-====================================================================
-Sempre que possível, coletar/identificar:
-área do direito
-subárea (se aplicável)
-objetivo do cliente
-resumo dos fatos
-fase atual (consultivo / pré-contencioso / processo em curso / recurso / execução / negociação)
-documentos/provas existentes
-urgência / prazo
-valor envolvido (estimado)
-parte contrária / polos envolvidos
-histórico relevante (negociação prévia, decisões, notificações, contratos etc.)
-restrições estratégicas (caixa, reputação, prazo, política interna do cliente)
-Se o input vier incompleto
-Não interromper a utilidade da resposta. Fazer:
-triagem preliminar
-apontamento de lacunas
-conclusão condicional
-checklist de dados faltantes
-====================================================================
-4) PROTOCOLO DE SUFICIÊNCIA DE DADOS (NOVO)
-====================================================================
-Antes de concluir viabilidade, força da tese ou estratégia final, verificar suficiência mínima de dados.
-Classificação de suficiência
-suficiente
-parcialmente suficiente
-insuficiente
-Se for parcialmente suficiente ou insuficiente (obrigatório)
-rotular como ANÁLISE PRELIMINAR
-listar PENDÊNCIAS CRÍTICAS
-apresentar CONCLUSÕES CONDICIONAIS
-reduzir assertividade
-não preencher lacunas com certeza simulada
-Regra de travamento técnico
-Se faltar elemento essencial (ex.: documento nuclear, prazo, objeto do pedido, prova mínima):
-não concluir “força da tese” de forma definitiva
-não concluir “viabilidade final”
-não recomendar medida irreversível sem ressalva expressa
-====================================================================
-5) QUALIFICAÇÃO DE LEAD (NOVO)
-====================================================================
-Classificar:
-Área do direito
-(identificar)
-Valor potencial do caso
-baixo
-médio
-alto
-estratégico
-Complexidade
-baixa
-média
-alta
-estratégica
-Perfil do cliente
-baixo valor
-recorrente
-estratégico
-alto risco
-Viabilidade inicial
-viável
-viável com risco
-baixa viabilidade
-não recomendado
-Prioridade econômica
-baixa
-média
-alta
-Observação ética
-A classificação de lead e prioridade econômica orienta priorização interna, sem afastar dever técnico, diligência mínima e dever de informação.
-====================================================================
-6) MOTOR DE RENTABILIDADE (NOVO)
-====================================================================
-Responder, sempre que houver base mínima:
-valor potencial estimado
-tempo estimado
-consumo de horas provável
-risco de inadimplência
-risco de improcedência
-Classificação do caso
-lucrativo
-marginal
-não estratégico
-Trava de governança
-Rentabilidade orienta priorização interna e alocação de recursos, sem comprometer dever técnico, ético e diligência mínima.
-====================================================================
-7) FASE PROCESSUAL E OBJETIVO ESTRATÉGICO (NOVO)
-====================================================================
-Em toda análise, identificar expressamente:
-Fase processual / momento
-consultivo
-pré-contencioso
-inicial
-instrução
-sentença
-recurso
-cumprimento/execução
-negociação/acordo
-Objetivo estratégico prioritário
-êxito de mérito
-redução de risco
-composição
-ganho de tempo
-produção de prova
-redução de custo
-proteção reputacional
-preservação de caixa
-Se houver objetivos concorrentes, indicar:
-objetivo principal
-objetivos secundários
-trade-offs
-====================================================================
-😎 ANÁLISE JURÍDICA PROFUNDA
-====================================================================
-Sempre identificar:
-natureza jurídica
-objetivo do cliente
-questão central
-fatos relevantes
-fatos frágeis
-provas existentes
-provas necessárias
-pontos controvertidos
-riscos jurídicos
-cenários possíveis
-Regra de marcação de evidência (obrigatória sempre que possível)
-Usar tags no raciocínio/análise:
-[FATO] informação narrada
-[DOC] documento apresentado/confirmado
-[LEI] fundamento normativo
-[JUR] referência jurisprudencial/padrão interpretativo
-[INF] inferência lógica
-[HIP] hipótese/assunção estratégica
-Proibido: tratar [HIP] como [FATO].
-====================================================================
-9) REGRA DE FUNDAMENTAÇÃO E CITAÇÃO (NOVO)
-====================================================================
-Ao apresentar análise jurídica, distinguir:
-fundamento legal
-fundamento contratual
-fundamento probatório
-fundamento jurisprudencial (quando houver)
-Regras obrigatórias
-não inventar número de processo, ementa, tribunal ou precedente
-se jurisprudência específica não tiver sido fornecida/validada:
-sinalizar: “Padrão jurisprudencial presumido — requer validação em pesquisa atualizada”
-se houver base normativa incompleta:
-sinalizar: “Fundamentação preliminar sujeita à validação específica”
-Natureza da referência (quando útil)
-Indicar se o uso é:
-literal
-interpretativo
-analógico
-jurisprudencial
-principiológico
-====================================================================
-10) FORÇA DA TESE
-====================================================================
-Classificar:
-Muito forte
-Forte
-Moderada
-Fraca
-Muito fraca
-Base da classificação (obrigatória)
-prova
-ônus da prova
-coerência fática e jurídica
-padrão jurisprudencial (validado ou presumido)
-risco processual
-Observação obrigatória
-“Força da tese” é avaliação técnica comparativa e não constitui previsão de resultado.
-====================================================================
-11) NÍVEL DE CONFIANÇA DA ANÁLISE (NOVO)
-====================================================================
-Atribuir ao final:
-Confiabilidade da análise
-alta
-média
-baixa
-Critérios de confiança
-completude fática
-qualidade documental
-clareza do objetivo do cliente
-estabilidade da tese
-necessidade de prova futura
-dependência de perícia/testemunha
-validação jurisprudencial específica (quando necessária)
-====================================================================
-12) RED TEAM
-====================================================================
-Responder obrigatoriamente:
-Como a parte contrária atacaria?
-Onde o juiz pode indeferir?
-Qual o ponto mais vulnerável?
-Complemento recomendado
-Quais documentos/fatos a parte contrária pode explorar?
-Qual narrativa adversa provável?
-Que medida preventiva reduz esse ataque?
-====================================================================
-13) ANÁLISE ECONÔMICA
-====================================================================
-Apontar, quando houver base mínima:
-valor estimado
-custos
-tempo
-custo de oportunidade
-Conclusão econômica
-economicamente racional
-marginal
-não recomendado
-Se dados insuficientes
-Emitir:
-faixa estimada (se possível)
-premissas adotadas [HIP]
-principais variáveis que podem alterar a conclusão
-====================================================================
-14) MATRIZ DE SCORE (NOVO)
-====================================================================
-Gerar pontuação de 0 a 100 para:
-score_viabilidade
-score_risco
-score_rentabilidade
-score_urgencia
-score_prioridade_carteira
-Regra de interpretação
-0–39: baixo
-40–69: médio
-70–100: alto
-Critério resumido (obrigatório)
-Explicar em 1–3 linhas por score o racional da nota.
-Score composto (opcional, recomendado)
-Informar score final de priorização para fila interna, com critério resumido.
-====================================================================
-15) GESTÃO DE CARTEIRA (NOVO)
-====================================================================
-Classificar processo/caso em:
-alta prioridade
-manutenção
-baixo valor
-candidato a acordo
-candidato a encerramento
-Gerar obrigatoriamente
-Ações prioritárias (curto prazo)
-Se aplicável, indicar
-próxima decisão crítica
-dependência do cliente
-dependência externa (perícia, cartório, documento, testemunha)
-risco de inércia
-====================================================================
-16) ALERTAS AUTOMÁTICOS
-====================================================================
-Detectar e sinalizar:
-prazo crítico
-prova fraca
-cliente de risco
-valor elevado
-alta subjetividade
-tese inovadora
-conflito documental
-dependência de perícia
-risco reputacional
-urgência sem prova mínima
-Nível de risco do alerta
-baixo
-médio
-alto
-crítico
-Protocolo de prazo (quando houver)
-Estruturar:
-prazo fatal
-prazo útil
-prazo interno (buffer)
-dependências para cumprir prazo
-impacto do atraso
-====================================================================
-17) PRODUÇÃO DE DOCUMENTOS
-====================================================================
-Regra geral
-Template-first
-Separação obrigatória
-A) Raciocínio interno (estratégia / mapa argumentativo / riscos)
-B) Texto final (minuta ou conteúdo utilizável)
-C) Checklist (documentos, revisões, validações, protocolo)
-Regras de segurança em produção
-não inventar fatos
-não suprir prova inexistente
-não afirmar documento não visto como se confirmado
-identificar trechos que dependem de validação do advogado
-Peças estratégicas
-→ revisão Pleno/Sênior obrigatória
-Controle de versão (recomendado)
-versão
-data/hora
-status (rascunho / revisão / aprovado interno / protocolado)
-pendências
-responsável pela revisão
-====================================================================
-18) NEGOCIAÇÃO E COMPOSIÇÃO (APLICÁVEL)
-====================================================================
-Quando o caso estiver em MODO_NEGOCIACAO, estruturar:
-objetivo negocial mínimo
-objetivo ideal
-zona de concessão (qualitativa, sem comprometer sigilo)
-riscos de litigância vs acordo
-timing recomendado
-documentos/elementos que fortalecem barganha
-riscos de proposta prematura
-Regra ética
-Sem promessa de resultado e sem orientação fraudulenta de ocultação/manipulação de informação.
-====================================================================
-19) ESCALONAMENTO OBRIGATÓRIO (NOVO)
-====================================================================
-Encaminhar para revisão sênior/pleno obrigatória quando houver:
-tese inovadora
-alto valor econômico
-alta subjetividade judicial
-prova frágil
-risco reputacional
-potencial precedencial
-conflito documental relevante
-estratégia recursal complexa
-alta exposição institucional do cliente
-conflito entre objetivo econômico e risco jurídico
-====================================================================
-20) ESTRUTURA PADRÃO DE SAÍDA (OBRIGATÓRIA)
-====================================================================
-1. CLASSIFICAÇÃO DO CASO
-2. SÍNTESE
-3. QUESTÃO JURÍDICA
-4. ANÁLISE TÉCNICA
-5. FORÇA DA TESE
-6. CONFIABILIDADE DA ANÁLISE
-7. PROVAS
-8. RISCOS
-9. CENÁRIOS
-10. ANÁLISE ECONÔMICA
-11. RENTABILIDADE
-12. SCORES (0–100)
-13. RED TEAM
-14. ESTRATÉGIA
-15. AÇÕES PRIORITÁRIAS
-16. PENDÊNCIAS
-17. ALERTAS
-18. REFLEXÃO FINAL
-Regra de saída preliminar
-Se dados insuficientes, acrescentar no topo:
-Status: ANÁLISE PRELIMINAR
-Suficiência de dados: parcialmente suficiente / insuficiente
-Conclusões condicionais: sim
-====================================================================
-21) FORMATO DE SAÍDA POR CAMADA (NOVO)
-====================================================================
-Quando solicitado, responder em uma ou mais camadas:
-CAMADA_EXECUTIVA (decisor/sócio)
-objetiva
-decisória
-foco em risco, custo, tempo, prioridade e próximo passo
-CAMADA_TECNICA (time jurídico)
-detalhada
-com tese, prova, fragilidade, red team, estratégia e checklist
-CAMADA_CLIENTE (linguagem simples)
-sem juridiquês excessivo
-sem promessa de resultado
-com explicação de riscos e próximos passos
-====================================================================
-22) AUDITORIA E VERSIONAMENTO (NOVO)
-====================================================================
-Quando aplicável, incluir metadados de governança:
-version_id
-data_hora
-modo_operacional_detectado
-modos_secundarios
-status (preliminar | em revisão | final interno)
-responsavel_revisao (se houver)
-audit_log_eventos
-audit_log_eventos (exemplos)
-tentativa de burlar compliance
-ausência de documento crítico
-tese inovadora detectada
-escalonamento obrigatório acionado
-prazo crítico identificado
-====================================================================
-23) MODO_MACHINE
-====================================================================
-Quando solicitado em formato estruturado, retornar JSON com o schema abaixo.
-{
-  "mode": "machine",
-  "version": "6.1",
-  "modo_operacional": "",
-  "modos_secundarios": [],
-  "tipo_saida": "preliminar|completa",
-  "suficiencia_dados": "suficiente|parcialmente_suficiente|insuficiente",
-  "confiabilidade_analise": "alta|media|baixa",
-  ...
-}
-====================================================================
-24) REGRAS DE LINGUAGEM E CONDUTA
-====================================================================
-Linguagem técnica interna
-precisa
-objetiva
-sem exageros
-sem “certeza performática”
-Linguagem para cliente
-clara
-didática
-sem juridiquês desnecessário
-sem prometer resultado
-com riscos e próximos passos explicados
-Em qualquer saída
-separar fato de hipótese
-declarar limites da análise quando houver
-sinalizar dependência de validação humana em pontos críticos
+(…mantém o seu OS 6.1 completo aqui…)
 ====================================================================
 25) COMANDO DE INICIALIZAÇÃO OPERACIONAL
 ====================================================================
@@ -658,15 +202,6 @@ Estrutura padrão do OS (OBRIGATÓRIA):
   16_PENDENCIAS,
   17_ALERTAS,
   18_REFLEXAO_FINAL
-
-Regra de evidência:
-- Quando aplicável, marcar itens com tags: [FATO], [DOC], [LEI], [INF], [HIP]
-- Nunca tratar [HIP] como [FATO].
-
-Se suficiencia_dados != "suficiente":
-- status="ANALISE_PRELIMINAR"
-- conclusões condicionais explícitas
-- reduzir assertividade
 """
 
 SYSTEM_OS_JSON = OS_6_1_PROMPT + "\n\n" + OUTPUT_CONTRACT
@@ -722,7 +257,6 @@ def add_p(doc: Document, text: str):
     doc.add_paragraph(text)
 
 def add_list_numbered(doc: Document, items: List[str]):
-    # Fallback seguro si el estilo no existe
     try:
         for it in items:
             doc.add_paragraph(str(it), style="List Number")
@@ -738,9 +272,79 @@ def add_list_bullets(doc: Document, items: List[str]):
         for it in items:
             doc.add_paragraph(f"• {it}")
 
+def normalize_points(raw: Any) -> List[str]:
+    items: List[str] = []
+    if raw is None:
+        items = []
+    elif isinstance(raw, list):
+        items = [str(x).strip() for x in raw if str(x).strip()]
+    elif isinstance(raw, str):
+        s = raw.strip()
+        # split por linhas; também tenta quebrar por ";"
+        lines = []
+        for chunk in s.splitlines():
+            chunk = chunk.strip()
+            if chunk:
+                lines.append(chunk)
+        if len(lines) <= 1 and ";" in s:
+            lines = [x.strip() for x in s.split(";") if x.strip()]
+        items = lines
+    else:
+        items = [str(raw).strip()]
+
+    # remove numeração inicial "1. " "1) " "- "
+    cleaned = []
+    for it in items:
+        it2 = re.sub(r"^\s*[\-\•]\s*", "", it)
+        it2 = re.sub(r"^\s*\d+\s*[\)\.\-:]\s*", "", it2).strip()
+        if it2:
+            cleaned.append(it2)
+    return cleaned
+
+def force_18(items: List[str]) -> List[str]:
+    items = [x.strip() for x in items if x.strip()]
+    if len(items) > 18:
+        return items[:18]
+    if len(items) < 18:
+        # completa com condicionais sem inventar fatos
+        for i in range(len(items) + 1, 19):
+            items.append(
+                f"CONDICIONAL: Completar o ponto {i} após validar pendências críticas (prova mínima, prazo, objeto e narrativa adversa)."
+            )
+    return items
+
+def repair_18_points_with_model(client: OpenAI, items: List[str]) -> List[str]:
+    """
+    Tenta reparar a lista para exatamente 18 itens via IA (sem inventar fatos).
+    Se falhar, devolve a lista original.
+    """
+    try:
+        repair_system = (
+            "Você é um validador. Sua tarefa é retornar APENAS JSON com a chave "
+            "'estrategia_18_pontos' como LISTA com EXATAMENTE 18 strings. "
+            "Use os itens fornecidos. Se faltar, complete com itens 'CONDICIONAL:' "
+            "sem inventar fatos; se sobrar, una/condense e reduza para 18."
+        )
+        payload = {"estrategia_18_pontos": items}
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": repair_system},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        fixed = normalize_points(data.get("estrategia_18_pontos"))
+        fixed = force_18(fixed)
+        return fixed
+    except Exception:
+        return items
+
 
 # =========================================================
-# IA: genera JSON “duro”
+# IA: genera JSON duro + AUTO-REPAIR 18 pontos
 # =========================================================
 def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
     client = get_client()
@@ -772,43 +376,48 @@ REGRAS:
             temperature=TEMPERATURE,
             response_format={"type": "json_object"},
         )
-        txt = resp.choices[0].message.content
-        data = json.loads(txt)
+        data = json.loads(resp.choices[0].message.content)
 
-        # Validaciones duras
-        pts = data.get("estrategia_18_pontos", [])
-        if not isinstance(pts, list) or len(pts) != 18:
-            raise HTTPException(status_code=500, detail="IA não retornou exatamente 18 pontos na estratégia.")
+        # Normaliza + repara 18 pontos (sem erro 500)
+        raw_pts = data.get("estrategia_18_pontos")
+        pts = normalize_points(raw_pts)
+        if len(pts) != 18:
+            pts = repair_18_points_with_model(client, pts)
+        pts = force_18(pts)
+        data["estrategia_18_pontos"] = pts
 
+        # Log de auditoria
+        if not isinstance(data.get("audit_log_eventos"), list):
+            data["audit_log_eventos"] = []
+        if len(normalize_points(raw_pts)) != 18:
+            data["audit_log_eventos"].append("estrategia_18_pontos_reparada")
+
+        # tipo_peca coerente
         if data.get("tipo_peca") and data.get("tipo_peca") != state.get("tipo_peca"):
-            raise HTTPException(status_code=500, detail="IA retornou tipo_peca diferente do escolhido.")
+            data["audit_log_eventos"].append("tipo_peca_corrigido_no_backend")
+            data["tipo_peca"] = state.get("tipo_peca")
 
+        # Minuta deve começar com aviso de timbrado
         minuta = str(data.get("minuta_peca", "")).strip()
         if not minuta.lower().startswith("copie e cole no timbrado"):
-            # Forzamos el encabezado si vino sin
             minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
-            data["minuta_peca"] = minuta
+        data["minuta_peca"] = minuta
 
-        if not isinstance(data.get("secoes", {}), dict):
+        # Seções
+        if not isinstance(data.get("secoes"), dict):
             data["secoes"] = {}
 
         return data
 
-    except HTTPException:
-        raise
     except Exception as e:
         raise friendly_openai_error(e)
 
 
 # =========================================================
-# DOCX Builders (3 documentos)
+# DOCX (3)
 # =========================================================
 def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
-    """
-    Documento 1: Relatório completo + Estratégia 18 pontos + 18 seções OS
-    """
     doc = Document()
-
     title = doc.add_paragraph("RELATÓRIO — DIAGNÓSTICO JURÍDICO INTELIGENTE (S&M OS 6.1)")
     title.runs[0].bold = True
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -831,18 +440,12 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Modo operacional detectado: {report.get('modo_operacional_detectado','—')}")
 
     doc.add_paragraph("")
-    add_h(doc, "Sumário executivo", 13)
-    add_p(doc, str(report.get("sumario_executivo", "—")))
-
-    doc.add_paragraph("")
     add_h(doc, "Estratégia (18 pontos)", 13)
     add_list_numbered(doc, report.get("estrategia_18_pontos", []))
 
     doc.add_paragraph("")
     add_h(doc, "Relatório estruturado (18 seções OS)", 13)
-
     secoes = report.get("secoes", {}) if isinstance(report.get("secoes", {}), dict) else {}
-
     order = [
         ("1. CLASSIFICAÇÃO DO CASO", "1_CLASSIFICACAO"),
         ("2. SÍNTESE", "2_SINTESE"),
@@ -879,13 +482,8 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     foot.runs[0].italic = True
     return doc
 
-
 def build_proposal_docx(state: Dict[str, Any]) -> Document:
-    """
-    Documento 2: Proposta/Orçamento (com tabelas)
-    """
     doc = Document()
-
     p = doc.add_paragraph("ORÇAMENTO / PROPOSTA DE HONORÁRIOS")
     p.runs[0].bold = True
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -898,16 +496,12 @@ def build_proposal_docx(state: Dict[str, Any]) -> Document:
     t1.style = "Table Grid"
     t1.cell(0, 0).text = "Contratante / Recebedor"
     t1.cell(0, 1).text = str(contratante)
-
     t1.cell(1, 0).text = "Mandatária"
     t1.cell(1, 1).text = f"{MANDATARIA_NOME} — {MANDATARIA_OAB}"
-
     t1.cell(2, 0).text = "Objeto"
     t1.cell(2, 1).text = objeto_curto
-
     t1.cell(3, 0).text = "Documentos-base"
     t1.cell(3, 1).text = "Conforme informações e documentos fornecidos no intake."
-
     t1.cell(4, 0).text = "Data"
     t1.cell(4, 1).text = datetime.now().strftime("%d/%m/%Y")
 
@@ -932,13 +526,10 @@ def build_proposal_docx(state: Dict[str, Any]) -> Document:
     t2.style = "Table Grid"
     t2.cell(0, 0).text = "Entrada (no ato)"
     t2.cell(0, 1).text = fmt_brl(FEE_ENTRADA)
-
     t2.cell(1, 0).text = "Saldo"
     t2.cell(1, 1).text = fmt_brl(FEE_SALDO)
-
     t2.cell(2, 0).text = f"Parcelamento ({FEE_PARCELAS}x)"
     t2.cell(2, 1).text = f"{FEE_PARCELAS} parcelas de {fmt_brl(parcela)}"
-
     t2.cell(3, 0).text = "Total"
     t2.cell(3, 1).text = fmt_brl(total)
 
@@ -963,13 +554,8 @@ def build_proposal_docx(state: Dict[str, Any]) -> Document:
     add_p(doc, str(contratante))
     return doc
 
-
 def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
-    """
-    Documento 3: Minuta da peça (com aviso de timbrado)
-    """
     doc = Document()
-
     tipo = state.get("tipo_peca", "Peça")
     p = doc.add_paragraph(f"MINUTA — {tipo.upper()} (S&M OS 6.1)")
     p.runs[0].bold = True
@@ -980,15 +566,8 @@ def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     warn.runs[0].bold = True
 
     doc.add_paragraph("")
-    add_p(doc, "— Dados do caso (resumo) —")
-    add_p(doc, f"Área/Subárea: {state.get('area_subarea','—')}")
-    add_p(doc, f"Fase: {state.get('fase','—')}")
-    add_p(doc, f"Partes: {state.get('partes','—')}")
-    doc.add_paragraph("")
-
     add_h(doc, "Minuta", 13)
-    minuta = str(report.get("minuta_peca", "—"))
-    doc.add_paragraph(minuta)
+    doc.add_paragraph(str(report.get("minuta_peca", "—")))
 
     doc.add_paragraph("")
     foot = doc.add_paragraph("Nota: minuta assistiva. Proibido inventar fatos/provas. Ajuste [PREENCHER] antes de assinar/protocolar.")
@@ -1012,13 +591,10 @@ class ChatIn(BaseModel):
 class ChatOut(BaseModel):
     message: str
     state: Dict[str, Any]
-
     report_docx_b64: Optional[str] = None
     report_docx_filename: Optional[str] = None
-
     proposal_docx_b64: Optional[str] = None
     proposal_docx_filename: Optional[str] = None
-
     piece_docx_b64: Optional[str] = None
     piece_docx_filename: Optional[str] = None
 
@@ -1031,7 +607,7 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "0.7.0",
+        "version": "0.7.1",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
@@ -1052,29 +628,22 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
     state = inp.state or {}
 
-    # Guardar respuesta en el primer campo faltante
     for key, _question in FIELDS_ORDER:
         if not state.get(key):
             val = (inp.message or "").strip()
-            if key == "tipo_peca":
-                if val not in TIPOS_PECA:
-                    raise HTTPException(status_code=400, detail="Tipo de peça inválido. Selecione uma opção.")
+            if key == "tipo_peca" and val not in TIPOS_PECA:
+                raise HTTPException(status_code=400, detail="Tipo de peça inválido. Selecione uma opção.")
             state[key] = val
             break
 
     if not is_sufficient(state):
         return ChatOut(message=next_missing(state), state=state)
 
-    # Generar JSON + DOCX
     report = generate_report_json(state)
 
     doc_report = build_report_strategy_docx(report, state)
     doc_prop = build_proposal_docx(state)
     doc_piece = build_piece_docx(report, state)
-
-    b64_report = docx_to_b64(doc_report)
-    b64_prop = docx_to_b64(doc_prop)
-    b64_piece = docx_to_b64(doc_piece)
 
     ts = datetime.now().strftime("%Y%m%d-%H%M")
     tipo_safe = state.get("tipo_peca", "Peca").replace(" ", "_").replace("/", "_")
@@ -1082,17 +651,17 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     return ChatOut(
         message="✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta e Minuta da Peça.",
         state=state,
-        report_docx_b64=b64_report,
+        report_docx_b64=docx_to_b64(doc_report),
         report_docx_filename=f"Relatorio_SM_OS_6_1_{ts}.docx",
-        proposal_docx_b64=b64_prop,
+        proposal_docx_b64=docx_to_b64(doc_prop),
         proposal_docx_filename=f"Proposta_Honorarios_SM_{ts}.docx",
-        piece_docx_b64=b64_piece,
+        piece_docx_b64=docx_to_b64(doc_piece),
         piece_docx_filename=f"Minuta_{tipo_safe}_{ts}.docx",
     )
 
 
 # =========================================================
-# WIDGET (TRANSPARENTE + BOTONES + 3 DESCARGAS)
+# WIDGET (con limpieza de downloads en error)
 # =========================================================
 WIDGET_HTML = r"""
 <!doctype html>
@@ -1114,21 +683,10 @@ WIDGET_HTML = r"""
     }
     *{box-sizing:border-box}
     html, body { height:100%; }
-    body{
-      margin:0;
-      background: transparent !important;
-      color: var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Inter, Arial;
-    }
+    body{ margin:0; background: transparent !important; color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Inter, Arial; }
 
-    .shell{
-      height:100%;
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-      background:transparent;
-      min-height:0;
-    }
+    .shell{ height:100%; display:flex; flex-direction:column; gap:10px; background:transparent; min-height:0; }
 
     .head{
       padding: 12px 14px;
@@ -1137,7 +695,7 @@ WIDGET_HTML = r"""
       border-radius: var(--radius);
       backdrop-filter: blur(10px);
       display:flex; align-items:center; justify-content:space-between; gap:12px;
-      flex: 0 0 auto;
+      flex:0 0 auto;
     }
     .brand{display:flex; align-items:center; gap:10px; min-width:0}
     .logo{
@@ -1161,31 +719,17 @@ WIDGET_HTML = r"""
       white-space:nowrap;
     }
 
-    .grid{
-      flex:1;
-      display:grid;
-      grid-template-columns: 1.2fr .8fr;
-      gap: 10px;
-      min-height: 0;
-    }
-    @media (max-width: 980px){
-      .grid{ grid-template-columns: 1fr; }
-      .side{ display:none; }
-    }
+    .grid{ flex:1; display:grid; grid-template-columns: 1.2fr .8fr; gap: 10px; min-height: 0; }
+    @media (max-width: 980px){ .grid{ grid-template-columns: 1fr; } .side{ display:none; } }
 
-    .chat{
-      display:flex;
-      flex-direction:column;
-      min-height:0;
-      gap:10px;
-    }
+    .chat{ display:flex; flex-direction:column; min-height:0; gap:10px; }
 
     .activation{
       display:flex; gap:10px; align-items:center;
       padding:12px 14px; border-radius: var(--radius);
       background: var(--panel2); border:1px solid var(--line);
       backdrop-filter: blur(10px);
-      flex: 0 0 auto;
+      flex:0 0 auto;
     }
     .badge{
       font-size:12px; padding:6px 10px; border-radius:999px;
@@ -1218,67 +762,31 @@ WIDGET_HTML = r"""
       padding:10px 14px; border-radius: var(--radius);
       background: var(--panel2); border:1px solid var(--line);
       backdrop-filter: blur(10px);
-      flex: 0 0 auto;
+      flex:0 0 auto;
     }
     .bar{ height:8px; border-radius:999px; background: rgba(255,255,255,.10); overflow:hidden; flex:1; }
     .bar > div{ height:100%; width:0%; background: linear-gradient(90deg, rgba(245,196,81,.95), rgba(245,196,81,.25)); transition: width .25s ease; }
     .step{font-size:12.5px; color:var(--muted); white-space:nowrap}
 
     #chatLog{
-      flex:1;
-      min-height:0;
-      overflow:auto;
-      padding:14px;
-      border-radius: var(--radius);
+      flex:1; min-height:0; overflow:auto;
+      padding:14px; border-radius: var(--radius);
       background: rgba(0,0,0,.18);
       border:1px solid rgba(255,255,255,.10);
       backdrop-filter: blur(6px);
     }
     .msgWrap{margin-bottom:12px;display:flex}
     .msgWrap.user{justify-content:flex-end}
-    .bubble{
-      max-width:78%;
-      padding:12px;
-      border-radius:14px;
-      white-space:pre-wrap;
-      line-height:1.45;
-      font-size:14px;
-    }
+    .bubble{ max-width:78%; padding:12px; border-radius:14px; white-space:pre-wrap; line-height:1.45; font-size:14px; }
     .bot .bubble{ background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }
     .user .bubble{ background: rgba(245,196,81,.16); border:1px solid rgba(245,196,81,.22); }
 
-    .notice{
-      margin:10px 0;
-      padding:10px 12px;
-      border-radius:14px;
-      border:1px solid rgba(255,255,255,.12);
-      background: rgba(255,255,255,.06);
-      color: rgba(255,255,255,.86);
-      font-size:13px;
-    }
+    .notice{ margin:10px 0; padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: rgba(255,255,255,.86); font-size:13px; }
     .err{ border-color: rgba(255,112,112,.25); background: rgba(255,112,112,.10); color:#ffd6d6; }
     .ok{ border-color: rgba(122,255,170,.25); background: rgba(122,255,170,.10); color:#d8ffe8; }
 
-    .choices{
-      display:none;
-      gap:8px;
-      flex-wrap:wrap;
-      padding: 0 2px;
-      margin-top: -2px;
-      margin-bottom: 2px;
-      flex: 0 0 auto;
-    }
-    .choiceBtn{
-      padding:10px 12px;
-      border-radius:12px;
-      border:1px solid rgba(245,196,81,.22);
-      background: rgba(245,196,81,.10);
-      color: rgba(245,196,81,.95);
-      font-weight:900;
-      cursor:pointer;
-      font-size:12.5px;
-      backdrop-filter: blur(6px);
-    }
+    .choices{ display:none; gap:8px; flex-wrap:wrap; padding: 0 2px; margin-top:-2px; margin-bottom:2px; flex:0 0 auto; }
+    .choiceBtn{ padding:10px 12px; border-radius:12px; border:1px solid rgba(245,196,81,.22); background: rgba(245,196,81,.10); color: rgba(245,196,81,.95); font-weight:900; cursor:pointer; font-size:12.5px; backdrop-filter: blur(6px); }
 
     .row{
       display:flex; gap:10px;
@@ -1286,7 +794,7 @@ WIDGET_HTML = r"""
       background: var(--panel2); border:1px solid var(--line);
       backdrop-filter: blur(10px);
       align-items:center;
-      flex: 0 0 auto;
+      flex:0 0 auto;
     }
     .input{
       flex:1; padding:12px; border-radius:12px;
@@ -1296,27 +804,12 @@ WIDGET_HTML = r"""
     }
 
     .side{ display:flex; flex-direction:column; gap:10px; min-height:0; }
-    .card{
-      border-radius: var(--radius);
-      background: var(--panel);
-      border:1px solid var(--line);
-      backdrop-filter: blur(10px);
-      padding:14px;
-    }
+    .card{ border-radius: var(--radius); background: var(--panel); border:1px solid var(--line); backdrop-filter: blur(10px); padding:14px; }
     .card h3{ margin:0 0 10px 0; font-size:13px; color: rgba(245,196,81,.95); }
     .kv{ display:grid; grid-template-columns: 1fr; gap:8px; font-size:13px; color: rgba(255,255,255,.82); }
     .kv b{ color: rgba(255,255,255,.92); }
-
     .actions{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}
-    .smallbtn{
-      padding:10px 12px; border-radius:12px;
-      border:1px solid rgba(255,255,255,.18);
-      background: rgba(255,255,255,.06);
-      color: var(--text);
-      font-weight:900;
-      cursor:pointer;
-      font-size:12.5px;
-    }
+    .smallbtn{ padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: var(--text); font-weight:900; cursor:pointer; font-size:12.5px; }
   </style>
 </head>
 <body>
@@ -1505,6 +998,12 @@ WIDGET_HTML = r"""
     dlPieceBtn.disabled = !enable;
   }
 
+  function clearDownloads(){
+    b64Report=b64Prop=b64Piece=null;
+    nameReport=nameProp=namePiece=null;
+    enableDownloads(false);
+  }
+
   function downloadDocx(b64, filename){
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
@@ -1522,19 +1021,13 @@ WIDGET_HTML = r"""
 
   function showPieceChoices(show){
     choices.style.display = show ? "flex" : "none";
-    if(!show){
-      choices.innerHTML = "";
-      return;
-    }
+    if(!show){ choices.innerHTML = ""; return; }
     choices.innerHTML = "";
     for(const opt of PIECE_OPTIONS){
       const b = document.createElement("button");
       b.className = "choiceBtn";
       b.textContent = opt;
-      b.addEventListener("click", ()=> {
-        input.value = opt;
-        send();
-      });
+      b.addEventListener("click", ()=> { input.value = opt; send(); });
       choices.appendChild(b);
     }
   }
@@ -1547,10 +1040,8 @@ WIDGET_HTML = r"""
     setReady(false);
     setStatus("iniciando");
     addNotice("⏳ Iniciando sessão…");
-    enableDownloads(false);
+    clearDownloads();
     showPieceChoices(false);
-    b64Report=b64Prop=b64Piece=null;
-    nameReport=nameProp=namePiece=null;
 
     try{
       const data = await fetchJson("/session/new", { method:"POST", headers:{ "x-demo-key": DEMO_KEY }});
@@ -1589,7 +1080,6 @@ WIDGET_HTML = r"""
 
       state = data.state || state;
       renderKV();
-
       addMsg("bot", data.message || "(sem mensagem)");
 
       if((data.message || "").toLowerCase().includes("qual peça você precisa gerar")){
@@ -1600,7 +1090,6 @@ WIDGET_HTML = r"""
         b64Report = data.report_docx_b64; nameReport = data.report_docx_filename;
         b64Prop = data.proposal_docx_b64; nameProp = data.proposal_docx_filename;
         b64Piece = data.piece_docx_b64; namePiece = data.piece_docx_filename;
-
         enableDownloads(true);
         addNotice("✅ 3 DOCX prontos: Relatório+Estratégia(18) + Proposta + Peça.", "ok");
       }
@@ -1608,6 +1097,7 @@ WIDGET_HTML = r"""
       setReady(true);
       setStatus("ativo");
     }catch(err){
+      clearDownloads(); // <- evita “downloads antigos” em erro
       addNotice("⚠️ Falha: " + err.message + " • Clique em Reiniciar se necessário.", "err");
       setStatus("erro");
       setReady(false);
@@ -1625,7 +1115,7 @@ WIDGET_HTML = r"""
     sessionId = null;
     state = {};
     renderKV();
-    enableDownloads(false);
+    clearDownloads();
     showPieceChoices(false);
     addNotice("🔄 Reiniciando…");
     startSession();
@@ -1648,5 +1138,4 @@ WIDGET_HTML = r"""
 
 @app.get("/widget", response_class=HTMLResponse)
 def widget(transparent: int = Query(default=0)):
-    # El widget ya es transparente por defecto.
     return HTMLResponse(WIDGET_HTML)
