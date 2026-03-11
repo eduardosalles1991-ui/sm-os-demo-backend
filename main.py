@@ -19,11 +19,14 @@ from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from pypdf import PdfReader
+
 
 # =========================================================
 # CONFIG
 # =========================================================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", MODEL)
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
 DEMO_KEY = os.getenv("DEMO_KEY", "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
@@ -36,7 +39,7 @@ FEE_PARCELAS_DEFAULT = int(os.getenv("FEE_PARCELAS", "10"))
 MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "Dra. Ester Cristina Salles Mendes")
 MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB/SP 105.488")
 
-# Honorários IA: límites (para no salir absurdo)
+# Honorários IA: límites
 FEE_MIN_TOTAL = int(os.getenv("FEE_MIN_TOTAL", "1500"))
 FEE_MAX_TOTAL = int(os.getenv("FEE_MAX_TOTAL", "250000"))
 FEE_DEFAULT_PARCELAS = int(os.getenv("FEE_DEFAULT_PARCELAS", "10"))
@@ -57,11 +60,14 @@ MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
 MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
 MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "20"))
 
+# excerpt limits (control tokens)
+MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "8000"))
+
 
 # =========================================================
 # APP
 # =========================================================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.8.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.9.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,7 +79,7 @@ app.add_middleware(
 
 
 # =========================================================
-# IN-MEMORY UPLOAD STORE (Render: ephemeral; ok para demo)
+# IN-MEMORY UPLOAD STORE (demo)
 # =========================================================
 UPLOADS: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> list(files)
 
@@ -98,7 +104,7 @@ REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
 
 # =========================================================
-# OS 6.1 (BASE) + CONTRATO JSON
+# OS 6.1 + CONTRACT JSON
 # =========================================================
 OS_6_1_PROMPT = r"""
 SALLES & MENDES OS 6.1 — SISTEMA OPERACIONAL JURÍDICO ESCALÁVEL
@@ -109,7 +115,7 @@ SALLES & MENDES OS 6.1 — SISTEMA OPERACIONAL JURÍDICO ESCALÁVEL
 OUTPUT_CONTRACT = r"""
 CONTRATO DE SAÍDA (OBRIGATÓRIO)
 - Retorne APENAS JSON (sem markdown).
-- Não invente fatos: se não estiver no intake, use [PREENCHER] e/ou "CONDICIONAL:".
+- Não invente fatos: se não estiver no intake/uploads, use [PREENCHER] e/ou "CONDICIONAL:".
 - estrategia_18_pontos: lista com EXATAMENTE 18 itens.
 - tipo_peca deve ecoar exatamente o escolhido.
 - minuta_peca deve iniciar com "Copie e cole no timbrado do seu escritório antes de finalizar."
@@ -259,12 +265,13 @@ def count_empty_sections(secoes: Dict[str, Any]) -> int:
 def repair_sections_with_model(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     prompt = (
         "Você deve retornar APENAS JSON com a chave 'secoes' contendo as 18 chaves do OS. "
-        "Preencha com base estrita no intake (sem inventar fatos). "
+        "Preencha com base estrita no intake/uploads (sem inventar fatos). "
         "Se faltar dado: use 'CONDICIONAL:' e '[PREENCHER]'. "
         "Não devolver tudo como '—'."
     )
     payload = {
         "intake": state,
+        "uploads": UPLOADS.get(state.get("_session_id",""), []),
         "estrategia_18_pontos": report.get("estrategia_18_pontos", []),
         "tipo_peca": state.get("tipo_peca"),
     }
@@ -278,64 +285,111 @@ def repair_sections_with_model(client: OpenAI, state: Dict[str, Any], report: Di
     return data.get("secoes", {}) if isinstance(data.get("secoes"), dict) else {}
 
 def sanitize_minuta(minuta: str, state: Dict[str, Any]) -> str:
-    """
-    Anti-alucinação: si aparecen hechos sensibles no presentes en intake -> los vuelve [PREENCHER].
-    """
     intake_text = " ".join([str(v) for v in state.values() if v]).lower()
-
     rules: List[Tuple[str, str]] = [
         ("demitid", "[PREENCHER: confirmar se houve demissão e em que condições]"),
         ("sem justa causa", "[PREENCHER: confirmar modalidade de desligamento]"),
         ("cat", "[PREENCHER: confirmar se houve emissão de CAT]"),
         ("inss", "[PREENCHER: confirmar se houve benefício INSS/afastamento]"),
         ("afast", "[PREENCHER: confirmar período de afastamento]"),
-        ("cirurg", "[PREENCHER: confirmar se houve cirurgia e laudos]"),
-        ("fratur", "[PREENCHER: confirmar diagnóstico (CID) e laudos]"),
     ]
-
     out = minuta
     for needle, repl in rules:
         if needle in out.lower() and needle not in intake_text:
-            # reemplaza frases que contengan el needle
             out = re.sub(rf"([^.]*\b{needle}\b[^.]*\.)", repl + "\n", out, flags=re.IGNORECASE)
-
     return out
 
 
 # =========================================================
-# Upload extraction (simple)
+# Upload extraction (PDF/DOCX/TXT local + Images via Vision)
 # =========================================================
-def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
+def extract_text_from_pdf(raw: bytes) -> str:
     try:
-        raw = base64.b64decode(b64)
-        low = filename.lower()
-
-        if low.endswith(".txt"):
-            return raw.decode("utf-8", errors="ignore")[:4000]
-
-        if low.endswith(".docx"):
-            d = Document(BytesIO(raw))
-            txt = "\n".join([p.text for p in d.paragraphs if p.text.strip()])
-            return txt[:4000]
-
-        # pdf/images: no extraemos en esta versión (se puede agregar pypdf o vision luego)
-        return ""
+        reader = PdfReader(BytesIO(raw))
+        parts = []
+        for p in reader.pages[:10]:
+            t = p.extract_text() or ""
+            if t.strip():
+                parts.append(t.strip())
+        txt = "\n\n".join(parts)
+        return txt[:MAX_EXCERPT_CHARS]
     except Exception:
         return ""
 
+def extract_text_from_docx(raw: bytes) -> str:
+    try:
+        d = Document(BytesIO(raw))
+        txt = "\n".join([p.text for p in d.paragraphs if p.text.strip()])
+        return txt[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def extract_text_from_txt(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8", errors="ignore")[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def ocr_image_with_openai(client: OpenAI, filename: str, mime: str, b64: str) -> str:
+    """
+    Vision/OCR: extrae información útil (sin prometer) y devuelve texto corto.
+    """
+    data_url = f"data:{mime};base64,{b64}"
+    sys = (
+        "Você é um extrator de texto/informações de um documento/imagem. "
+        "Extraia APENAS o que estiver visível. Não invente. "
+        "Retorne APENAS JSON: {'text': '...'} com um texto corrido curto, "
+        "incluindo datas, nomes, valores, números e elementos relevantes se aparecerem."
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[
+                {"role":"system","content":sys},
+                {"role":"user","content":[
+                    {"type":"text","text": f"Extraia o conteúdo relevante desta imagem ({filename})."},
+                    {"type":"image_url","image_url":{"url": data_url}}
+                ]}
+            ],
+            temperature=0.0,
+            response_format={"type":"json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return str(data.get("text","")).strip()[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
+    raw = base64.b64decode(b64)
+    low = filename.lower()
+
+    if low.endswith(".pdf") or mime == "application/pdf":
+        return extract_text_from_pdf(raw)
+
+    if low.endswith(".docx") or mime in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",):
+        return extract_text_from_docx(raw)
+
+    if low.endswith(".txt") or mime.startswith("text/"):
+        return extract_text_from_txt(raw)
+
+    if mime.startswith("image/") or low.endswith((".png",".jpg",".jpeg",".webp")):
+        client = get_client()
+        return ocr_image_with_openai(client, filename, mime or "image/jpeg", b64)
+
+    return ""
+
 
 # =========================================================
-# IA: honorários por caso (IA)
+# IA: honorários por caso
 # =========================================================
 def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     prompt = f"""
 Você é um assistente de precificação de honorários advocatícios (Brasil).
-Objetivo: sugerir valores JUSTOS e defensáveis (sem promessa de êxito).
-Respeite: tabela mínima OAB como referência (se não tiver, seja conservador).
+Objetivo: sugerir valores JUSTOS e defensáveis (sem promessa de êxxito).
 Saída: APENAS JSON com:
-- total
-- entrada
-- saldo
+- total (int)
+- entrada (int)
+- saldo (int)
 - parcelas (int)
 - justificativa_curta (3-6 linhas)
 - observacoes (lista curta)
@@ -345,7 +399,7 @@ Limites:
 - entrada entre 20% e 40% do total (salvo urgência alta)
 - parcelas entre 1 e 12
 
-Baseie-se em:
+Base:
 - fase: {state.get('fase')}
 - tipo_peca: {state.get('tipo_peca')}
 - área/subárea: {state.get('area_subarea')}
@@ -364,7 +418,6 @@ Baseie-se em:
     )
     data = json.loads(resp.choices[0].message.content)
 
-    # sane defaults
     total = int(max(FEE_MIN_TOTAL, min(FEE_MAX_TOTAL, int(float(data.get("total", FEE_ENTRADA_DEFAULT + FEE_SALDO_DEFAULT))))))
     parcelas = int(data.get("parcelas", FEE_DEFAULT_PARCELAS))
     parcelas = max(1, min(12, parcelas))
@@ -373,7 +426,6 @@ Baseie-se em:
     entrada = max(int(total * 0.2), min(int(total * 0.4), entrada))
 
     saldo = total - entrada
-
     return {
         "total": total,
         "entrada": entrada,
@@ -389,45 +441,42 @@ Baseie-se em:
 # =========================================================
 def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
     client = get_client()
+    sid = state.get("_session_id","")
+    file_list = []
+    for f in UPLOADS.get(sid, []):
+        file_list.append({
+            "name": f["filename"],
+            "mime": f["mime"],
+            "text_excerpt": (f.get("text_excerpt","") or "")[:1200]
+        })
 
-    files = UPLOADS.get(state.get("_session_id", ""), [])
-    file_list = [{"name": f["filename"], "mime": f["mime"], "text_excerpt": f.get("text_excerpt","")[:700]} for f in files]
-
-    user_case = {
-        "intake": state,
-        "uploads": file_list
-    }
+    user_payload = {"intake": state, "uploads": file_list}
 
     try:
         resp = client.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role":"system","content":SYSTEM_OS_JSON},
-                {"role":"user","content":json.dumps(user_case, ensure_ascii=False)}
+                {"role":"user","content":json.dumps(user_payload, ensure_ascii=False)}
             ],
             temperature=TEMPERATURE,
             response_format={"type":"json_object"},
         )
         data = json.loads(resp.choices[0].message.content)
 
-        # 18 puntos
         pts = normalize_points(data.get("estrategia_18_pontos"))
         if len(pts) != 18:
             pts = repair_18_points_with_model(client, pts)
         data["estrategia_18_pontos"] = force_18(pts)
 
-        # tipo_peca
         if data.get("tipo_peca") and data.get("tipo_peca") != state.get("tipo_peca"):
             data["tipo_peca"] = state.get("tipo_peca")
 
-        # minuta (timbrado + sanitizar)
         minuta = str(data.get("minuta_peca","")).strip()
         if not minuta.lower().startswith("copie e cole no timbrado"):
             minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
-        minuta = sanitize_minuta(minuta, state)
-        data["minuta_peca"] = minuta
+        data["minuta_peca"] = sanitize_minuta(minuta, state)
 
-        # seções: si vienen vacías, regenerar
         if not isinstance(data.get("secoes"), dict):
             data["secoes"] = {}
         if count_empty_sections(data["secoes"]) >= 10:
@@ -455,6 +504,12 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Partes: {state.get('partes','—')}")
     add_p(doc, f"Contratante/Recebedor: {state.get('contratante_nome','—')}")
     add_p(doc, f"Tipo de peça: {state.get('tipo_peca','—')}")
+
+    # lista de arquivos
+    sid = state.get("_session_id","")
+    files = [f["filename"] for f in UPLOADS.get(sid, [])]
+    if files:
+        add_p(doc, "Provas (arquivos anexados): " + ", ".join(files))
 
     doc.add_paragraph("")
     add_h(doc, "Classificações técnicas", 13)
@@ -518,8 +573,6 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
 
     contratante = state.get("contratante_nome") or "________________________________________"
     objeto_curto = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
-    validade = (datetime.now().date()).strftime("%d/%m/%Y")
-    validade_ate = (datetime.now().date()).strftime("%d/%m/%Y")
 
     total = int(fee.get("total", FEE_ENTRADA_DEFAULT + FEE_SALDO_DEFAULT))
     entrada = int(fee.get("entrada", FEE_ENTRADA_DEFAULT))
@@ -543,17 +596,7 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     t1.cell(5, 1).text = "Obrigação de meio. Sem promessa de êxito."
 
     doc.add_paragraph("")
-    add_h(doc, "1. Escopo dos serviços", 13)
-    escopo = [
-        "Análise técnica dos fatos e documentos informados.",
-        "Definição de estratégia jurídica (principal e subsidiária).",
-        "Elaboração de peças/manifestações cabíveis dentro do objeto contratado.",
-        "Acompanhamento e orientação estratégica durante o trâmite (conforme contratado).",
-    ]
-    add_list_bullets(doc, escopo)
-
-    doc.add_paragraph("")
-    add_h(doc, "2. Honorários (sugestão por caso)", 13)
+    add_h(doc, "Honorários (sugestão por caso)", 13)
     t2 = doc.add_table(rows=4, cols=2)
     t2.style = "Table Grid"
     t2.cell(0, 0).text = "Entrada (no ato)"
@@ -576,7 +619,7 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
         add_list_bullets(doc, [str(x) for x in obs])
 
     doc.add_paragraph("")
-    add_h(doc, "3. Condições e limites", 13)
+    add_h(doc, "Condições e limites", 13)
     cond = [
         "Não inclui custas, taxas, perícias, emolumentos, diligências, deslocamentos e despesas externas.",
         "Obrigação de meio, sem garantia de êxito ou promessa de resultado.",
@@ -648,6 +691,7 @@ class UploadOut(BaseModel):
     filename: str
     size_bytes: int
     stored: bool = True
+    text_extracted: bool = False
 
 
 # =========================================================
@@ -658,10 +702,11 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "0.8.0",
+        "version": "0.9.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
+        "vision_model": VISION_MODEL,
         "max_file_mb": MAX_FILE_MB,
         "max_files_per_session": MAX_FILES_PER_SESSION,
     }
@@ -701,16 +746,20 @@ def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None))
         raise HTTPException(status_code=400, detail=f"Limite total por sessão: {MAX_TOTAL_MB_PER_SESSION}MB.")
 
     file_id = str(uuid.uuid4())
-    text_excerpt = extract_text_from_upload(inp.filename, inp.mime, inp.b64)
+
+    # Extract text locally or via vision
+    text_excerpt = extract_text_from_upload(inp.filename, inp.mime or "", inp.b64)
+    text_extracted = bool(text_excerpt.strip())
 
     files.append({
         "file_id": file_id,
         "filename": inp.filename,
         "mime": inp.mime,
         "size_bytes": size,
-        "text_excerpt": text_excerpt
+        "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
     })
-    return UploadOut(file_id=file_id, filename=inp.filename, size_bytes=size)
+
+    return UploadOut(file_id=file_id, filename=inp.filename, size_bytes=size, text_extracted=text_extracted)
 
 @app.post("/chat", response_model=ChatOut)
 def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
@@ -719,7 +768,6 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     sid = state.get("_session_id") or inp.session_id
     state["_session_id"] = sid
 
-    # Captura respuesta en el primer campo faltante
     for key, _question in FIELDS_ORDER:
         if not state.get(key):
             val = (inp.message or "").strip()
@@ -728,22 +776,19 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             state[key] = val
             break
 
-    # Cuando estamos en la etapa de "provas", anexamos lista de archivos (si hay)
-    if state.get("provas_existentes") and sid in UPLOADS:
+    # anexar lista de arquivos al estado
+    if sid in UPLOADS:
         state["provas_arquivos"] = [f["filename"] for f in UPLOADS[sid]]
 
     if not is_sufficient(state):
         return ChatOut(message=next_missing(state), state=state)
 
-    # Genera reporte
     report = generate_report_json(state)
 
-    # Genera honorários por IA
     client = get_client()
     try:
         fee = generate_fee_json(client, state, report)
     except Exception:
-        # fallback si falla
         fee = {
             "total": FEE_ENTRADA_DEFAULT + FEE_SALDO_DEFAULT,
             "entrada": FEE_ENTRADA_DEFAULT,
@@ -753,7 +798,6 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             "observacoes": []
         }
 
-    # DOCX
     doc_report = build_report_strategy_docx(report, state)
     doc_prop = build_proposal_docx(state, fee)
     doc_piece = build_piece_docx(report, state)
@@ -774,7 +818,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
 
 
 # =========================================================
-# WIDGET (con upload)
+# WIDGET (upload enabled)
 # =========================================================
 WIDGET_HTML = f"""
 <!doctype html>
@@ -784,424 +828,144 @@ WIDGET_HTML = f"""
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>S&M OS 6.1 — Widget</title>
 <style>
-  :root {{
-    --panel: rgba(15,17,26,.62);
-    --panel2: rgba(11,13,18,.55);
-    --text:#eef1f7;
-    --muted:rgba(238,241,247,.72);
-    --gold:#f5c451;
-    --line:rgba(255,255,255,.12);
-    --line2:rgba(245,196,81,.22);
-    --radius:18px;
-  }}
-  *{{box-sizing:border-box}}
-  html, body {{ height:100%; }}
-  body{{ margin:0; background: transparent !important; color: var(--text);
-    font-family: system-ui, -apple-system, Segoe UI, Inter, Arial; }}
-  .shell{{ height:100%; display:flex; flex-direction:column; gap:10px; min-height:0; }}
-  .head{{ padding: 12px 14px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); backdrop-filter: blur(10px);
-    display:flex; align-items:center; justify-content:space-between; gap:12px; flex:0 0 auto; }}
-  .brand{{display:flex; align-items:center; gap:10px; min-width:0}}
-  .logo{{ width:34px;height:34px;border-radius:12px; display:grid;place-items:center;
-    font-weight:900; color: rgba(245,196,81,.95); background: rgba(245,196,81,.12);
-    border: 1px solid var(--line2); }}
-  .title{{font-weight:900; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}}
-  .sub{{margin-top:3px; font-size:12px; color:var(--muted)}}
-  .pills{{display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end}}
-  .pill{{ font-size:12px; padding:7px 10px; border-radius:999px; border:1px solid var(--line2);
-    background: rgba(245,196,81,.10); color: rgba(245,196,81,.95); }}
-  .grid{{ flex:1; display:grid; grid-template-columns: 1.2fr .8fr; gap: 10px; min-height: 0; }}
-  @media (max-width: 980px){{ .grid{{ grid-template-columns: 1fr; }} .side{{ display:none; }} }}
-  .chat{{ display:flex; flex-direction:column; min-height:0; gap:10px; }}
-  .activation{{ display:flex; gap:10px; align-items:center; padding:12px 14px; border-radius: var(--radius);
-    background: var(--panel2); border:1px solid var(--line); backdrop-filter: blur(10px); }}
-  .badge{{ font-size:12px; padding:6px 10px; border-radius:999px; border:1px solid var(--line2);
-    background: rgba(245,196,81,.10); color: rgba(245,196,81,.95); white-space:nowrap; }}
-  .key{{ flex:1; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.16);
-    background: rgba(0,0,0,.25); color: var(--text); outline:none; }}
-  .btn{{ padding:12px 14px; border-radius:12px; border:1px solid rgba(245,196,81,.35);
-    background: linear-gradient(180deg, rgba(245,196,81,.95), rgba(201,146,28,.95));
-    font-weight:900; cursor:pointer; color:#1a1204; }}
-  .btn2{{ padding:12px 14px; border-radius:12px; border:1px solid rgba(255,255,255,.18);
-    background: rgba(255,255,255,.06); color: var(--text); font-weight:900; cursor:pointer; }}
-  .progress{{ display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius: var(--radius);
-    background: var(--panel2); border:1px solid var(--line); backdrop-filter: blur(10px); }}
-  .bar{{ height:8px; border-radius:999px; background: rgba(255,255,255,.10); overflow:hidden; flex:1; }}
-  .bar > div{{ height:100%; width:0%; background: linear-gradient(90deg, rgba(245,196,81,.95), rgba(245,196,81,.25)); transition: width .25s ease; }}
-  .step{{font-size:12.5px; color:var(--muted); white-space:nowrap}}
-  #chatLog{{ flex:1; min-height:0; overflow:auto; padding:14px; border-radius: var(--radius);
-    background: rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.10); backdrop-filter: blur(6px); }}
-  .msgWrap{{margin-bottom:12px;display:flex}}
-  .msgWrap.user{{justify-content:flex-end}}
-  .bubble{{ max-width:78%; padding:12px; border-radius:14px; white-space:pre-wrap; line-height:1.45; font-size:14px; }}
-  .bot .bubble{{ background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12); }}
-  .user .bubble{{ background: rgba(245,196,81,.16); border:1px solid rgba(245,196,81,.22); }}
-  .notice{{ margin:10px 0; padding:10px 12px; border-radius:14px; border:1px solid rgba(255,255,255,.12);
-    background: rgba(255,255,255,.06); color: rgba(255,255,255,.86); font-size:13px; }}
-  .err{{ border-color: rgba(255,112,112,.25); background: rgba(255,112,112,.10); color:#ffd6d6; }}
-  .ok{{ border-color: rgba(122,255,170,.25); background: rgba(122,255,170,.10); color:#d8ffe8; }}
-  .choices{{ display:none; gap:8px; flex-wrap:wrap; padding: 0 2px; margin-top:-2px; margin-bottom:2px; }}
-  .choiceBtn{{ padding:10px 12px; border-radius:12px; border:1px solid rgba(245,196,81,.22);
-    background: rgba(245,196,81,.10); color: rgba(245,196,81,.95); font-weight:900; cursor:pointer; font-size:12.5px; }}
-  .row{{ display:flex; gap:10px; padding:12px 14px; border-radius: var(--radius);
-    background: var(--panel2); border:1px solid var(--line); backdrop-filter: blur(10px); align-items:center; }}
-  .input{{ flex:1; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.16);
-    background: rgba(0,0,0,.25); color: var(--text); outline:none; }}
-  .side{{ display:flex; flex-direction:column; gap:10px; min-height:0; }}
-  .card{{ border-radius: var(--radius); background: var(--panel); border:1px solid var(--line);
-    backdrop-filter: blur(10px); padding:14px; }}
-  .card h3{{ margin:0 0 10px 0; font-size:13px; color: rgba(245,196,81,.95); }}
-  .kv{{ display:grid; grid-template-columns: 1fr; gap:8px; font-size:13px; color: rgba(255,255,255,.82); }}
-  .kv b{{ color: rgba(255,255,255,.92); }}
-  .actions{{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px}}
-  .smallbtn{{ padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.18);
-    background: rgba(255,255,255,.06); color: var(--text); font-weight:900; cursor:pointer; font-size:12.5px; }}
-
-  .uploadBox{{ display:none; gap:10px; align-items:center; flex-wrap:wrap; padding:12px 14px; border-radius: var(--radius);
-    background: var(--panel2); border:1px solid var(--line); backdrop-filter: blur(10px); }}
-  .fileList{{ font-size:12px; color:var(--muted); }}
+  body{{margin:0;background:transparent;font-family:system-ui,-apple-system,Segoe UI,Inter,Arial;color:#eef1f7}}
+  .wrap{{padding:12px}}
+  .row{{display:flex;gap:10px;flex-wrap:wrap;align-items:center}}
+  input,button{{padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.35);color:#eef1f7}}
+  button{{cursor:pointer;border-color:rgba(245,196,81,.35);background:rgba(245,196,81,.14);font-weight:900}}
+  #log{{margin-top:12px;white-space:pre-wrap;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;min-height:220px}}
+  .hint{{opacity:.8;font-size:12px;margin-top:8px}}
 </style>
 </head>
 <body>
-<div class="shell">
-  <div class="head">
-    <div class="brand">
-      <div class="logo">S&M</div>
-      <div>
-        <div class="title">Diagnóstico Jurídico Inteligente</div>
-        <div class="sub">3 DOCX: Relatório+Estratégia(18) • Proposta dinâmica • Peça (timbrado)</div>
-      </div>
-    </div>
-    <div class="pills">
-      <span class="pill">DEMO</span>
-      <span class="pill" id="statusPill">Status: pronto</span>
-    </div>
+<div class="wrap">
+  <div class="row">
+    <input id="key" placeholder="DEMO_KEY" style="flex:1;min-width:240px"/>
+    <button id="start">Ativar</button>
+    <button id="reset">Reiniciar</button>
   </div>
 
-  <div class="grid">
-    <div class="chat">
-      <div class="activation">
-        <span class="badge">Ativação</span>
-        <input class="key" id="keyInput" placeholder="Cole aqui o DEMO_KEY"/>
-        <button class="btn" id="keyBtn">Ativar</button>
-        <button class="btn2" id="resetBtn">Reiniciar</button>
-      </div>
+  <div class="row" style="margin-top:10px">
+    <input type="file" id="files" multiple accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,application/pdf,image/*,text/*"/>
+    <button id="upload">Subir provas</button>
+  </div>
+  <div class="hint">Dica: PDF/DOCX/TXT extração local. Imagens usam Vision (custo maior). Limite: {MAX_FILE_MB}MB/arquivo.</div>
 
-      <div class="progress">
-        <div class="bar"><div id="barFill"></div></div>
-        <div class="step" id="stepText">Etapa 0/{len(REQUIRED_FIELDS)}</div>
-      </div>
+  <div id="log"></div>
 
-      <div id="chatLog"></div>
+  <div class="row" style="margin-top:10px">
+    <input id="msg" placeholder="Digite aqui..." style="flex:1;min-width:240px"/>
+    <button id="send">Enviar</button>
+  </div>
 
-      <div class="choices" id="choices"></div>
-
-      <div class="uploadBox" id="uploadBox">
-        <span class="badge">Provas</span>
-        <input type="file" id="fileInput" multiple />
-        <button class="btn2" id="uploadBtn">Subir</button>
-        <div class="fileList" id="fileList"></div>
-      </div>
-
-      <div class="row">
-        <input class="input" id="chatInput" placeholder="Digite aqui..." disabled />
-        <button class="btn" id="chatSend" disabled>Enviar</button>
-      </div>
-    </div>
-
-    <div class="side">
-      <div class="card">
-        <h3>Downloads</h3>
-        <div class="actions">
-          <button class="smallbtn" id="dlReportBtn" disabled>Baixar Relatório+Estratégia .docx</button>
-          <button class="smallbtn" id="dlPropBtn" disabled>Baixar Proposta .docx</button>
-          <button class="smallbtn" id="dlPieceBtn" disabled>Baixar Peça .docx</button>
-        </div>
-      </div>
-      <div class="card">
-        <h3>Dados capturados</h3>
-        <div class="kv" id="kv"></div>
-      </div>
-    </div>
+  <div class="row" style="margin-top:10px">
+    <button id="dl1" disabled>Baixar Relatório</button>
+    <button id="dl2" disabled>Baixar Proposta</button>
+    <button id="dl3" disabled>Baixar Peça</button>
   </div>
 </div>
 
 <script>
-const STORE_KEY="sm_os_demo_key";
+let DEMO_KEY="";
+let sessionId=null;
+let state={{}};
+let b1=null,n1=null,b2=null,n2=null,b3=null,n3=null;
 
-const fieldLabels = {{
-  area_subarea:"Área/Subárea",
-  fase:"Fase",
-  objetivo_cliente:"Objetivo",
-  partes:"Partes",
-  contratante_nome:"Contratante/Recebedor",
-  tipo_peca:"Tipo de peça",
-  fatos_cronologia:"Fatos",
-  provas_existentes:"Provas (texto)",
-  urgencia_prazo:"Urgência/Prazo",
-  valor_envovido:"Valor/Impacto",
-  notas_adicionais:"Notas adicionais"
-}};
-const fieldOrder = Object.keys(fieldLabels);
+const log=document.getElementById("log");
+const key=document.getElementById("key");
+const start=document.getElementById("start");
+const reset=document.getElementById("reset");
+const msg=document.getElementById("msg");
+const send=document.getElementById("send");
+const files=document.getElementById("files");
+const upload=document.getElementById("upload");
+const dl1=document.getElementById("dl1");
+const dl2=document.getElementById("dl2");
+const dl3=document.getElementById("dl3");
 
-const PIECE_OPTIONS = {json.dumps(TIPOS_PECA)};
-
-let DEMO_KEY = localStorage.getItem(STORE_KEY) || "";
-let sessionId = null;
-let state = {{}};
-
-let b64Report=null, nameReport=null;
-let b64Prop=null, nameProp=null;
-let b64Piece=null, namePiece=null;
-
-const log = document.getElementById("chatLog");
-const input = document.getElementById("chatInput");
-const btn = document.getElementById("chatSend");
-const keyInput = document.getElementById("keyInput");
-const keyBtn = document.getElementById("keyBtn");
-const resetBtn = document.getElementById("resetBtn");
-const statusPill = document.getElementById("statusPill");
-const barFill = document.getElementById("barFill");
-const stepText = document.getElementById("stepText");
-const kv = document.getElementById("kv");
-const choices = document.getElementById("choices");
-
-const uploadBox = document.getElementById("uploadBox");
-const fileInput = document.getElementById("fileInput");
-const uploadBtn = document.getElementById("uploadBtn");
-const fileList = document.getElementById("fileList");
-
-const dlReportBtn = document.getElementById("dlReportBtn");
-const dlPropBtn = document.getElementById("dlPropBtn");
-const dlPieceBtn = document.getElementById("dlPieceBtn");
-
-keyInput.value = DEMO_KEY;
-
-function setStatus(text){{ statusPill.textContent = "Status: " + text; }}
-
-function progress(){{
-  let filled=0;
-  for(const k of fieldOrder) if(state && state[k]) filled++;
-  const pct = Math.round((filled / fieldOrder.length) * 100);
-  barFill.style.width = pct + "%";
-  stepText.textContent = "Etapa " + filled + "/" + fieldOrder.length;
+function add(t){{ log.textContent += t + "\\n"; log.scrollTop=log.scrollHeight; }}
+async function fetchJson(url,opt) {{
+  const r=await fetch(url,opt);
+  let d={{}}; try{{ d=await r.json(); }}catch(e){{}}
+  if(!r.ok) throw new Error(d.detail||("HTTP "+r.status));
+  return d;
 }}
-
-function escapeHtml(s){{ return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }}
-
-function renderKV(){{
-  kv.innerHTML="";
-  for(const k of fieldOrder){{
-    const v = (state && state[k]) ? state[k] : "—";
-    const div = document.createElement("div");
-    div.innerHTML = "<b>"+fieldLabels[k]+":</b><br/>"+escapeHtml(String(v)).slice(0, 260);
-    kv.appendChild(div);
-  }}
-  progress();
-}}
-
-function addMsg(role, text){{
-  const wrap=document.createElement("div");
-  wrap.className="msgWrap "+(role==="user"?"user":"bot");
-  const b=document.createElement("div");
-  b.className="bubble";
-  b.textContent=text;
-  wrap.appendChild(b);
-  log.appendChild(wrap);
-  log.scrollTop=log.scrollHeight;
-
-  // Mostrar upload cuando el bot pregunta por provas/documentos
-  if(role==="bot" && text.toLowerCase().includes("provas/documentos")) {{
-    uploadBox.style.display="flex";
-  }}
-}}
-
-function addNotice(text, type="") {{
-  const div=document.createElement("div");
-  div.className="notice "+type;
-  div.textContent=text;
-  log.appendChild(div);
-  log.scrollTop=log.scrollHeight;
-}}
-
-async function fetchJson(url, options){{
-  const res=await fetch(url, options);
-  let data={{}};
-  try{{ data=await res.json(); }}catch(e){{}}
-  if(!res.ok) throw new Error(data.detail || data.message || ("HTTP "+res.status));
-  return data;
-}}
-
-function setReady(ready){{
-  input.disabled=!ready;
-  btn.disabled=!ready;
-}}
-
-function enableDownloads(enable){{
-  dlReportBtn.disabled=!enable;
-  dlPropBtn.disabled=!enable;
-  dlPieceBtn.disabled=!enable;
-}}
-
-function clearDownloads(){{
-  b64Report=b64Prop=b64Piece=null;
-  nameReport=nameProp=namePiece=null;
-  enableDownloads(false);
-}}
-
-function downloadDocx(b64, filename){{
-  const binary=atob(b64);
-  const bytes=new Uint8Array(binary.length);
-  for(let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+function enableDl(x){{ dl1.disabled=dl2.disabled=dl3.disabled=!x; }}
+function downloadDocx(b64,name){{
+  const bin=atob(b64);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
   const blob=new Blob([bytes],{{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}});
   const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");
-  a.href=url; a.download=filename||"arquivo.docx";
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  const a=document.createElement("a"); a.href=url; a.download=name||"arquivo.docx";
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }}
-
-function showPieceChoices(show){{
-  choices.style.display=show?"flex":"none";
-  if(!show){{ choices.innerHTML=""; return; }}
-  choices.innerHTML="";
-  for(const opt of PIECE_OPTIONS){{
-    const b=document.createElement("button");
-    b.className="choiceBtn";
-    b.textContent=opt;
-    b.addEventListener("click",()=>{{ input.value=opt; send(); }});
-    choices.appendChild(b);
-  }}
-}}
-
-async function startSession(){{
-  if(!DEMO_KEY){{ addNotice("Cole o DEMO_KEY e clique em Ativar.","err"); return; }}
-  setReady(false); setStatus("iniciando");
-  addNotice("⏳ Iniciando sessão…");
-  clearDownloads(); choices.innerHTML=""; choices.style.display="none";
-  uploadBox.style.display="none"; fileList.textContent="";
-
-  const data = await fetchJson("/session/new", {{
-    method:"POST",
-    headers:{{"x-demo-key":DEMO_KEY}}
-  }});
-  sessionId=data.session_id;
-  state=data.state||{{}};
-  renderKV();
-  addMsg("bot", data.message);
-  setReady(true); setStatus("ativo");
-  input.focus();
-}}
-
-async function send(){{
-  const text=input.value.trim();
-  if(!text) return;
-  input.value="";
-  addMsg("user", text);
-  showPieceChoices(false);
-
-  setReady(false); setStatus("processando");
-  addNotice("⏳ Processando…");
-
-  try {{
-    const payload={{session_id:sessionId||"local", message:text, state:state||{{}}}};
-    const data=await fetchJson("/chat", {{
-      method:"POST",
-      headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},
-      body:JSON.stringify(payload)
-    }});
-    state=data.state||state;
-    renderKV();
-    addMsg("bot", data.message||"(sem mensagem)");
-
-    if((data.message||"").toLowerCase().includes("qual peça você precisa gerar")) {{
-      showPieceChoices(true);
-    }}
-
-    if(data.report_docx_b64 && data.proposal_docx_b64 && data.piece_docx_b64){{
-      b64Report=data.report_docx_b64; nameReport=data.report_docx_filename;
-      b64Prop=data.proposal_docx_b64; nameProp=data.proposal_docx_filename;
-      b64Piece=data.piece_docx_b64; namePiece=data.piece_docx_filename;
-      enableDownloads(true);
-      addNotice("✅ 3 DOCX prontos.","ok");
-    }}
-
-    setReady(true); setStatus("ativo");
-  }} catch(err) {{
-    clearDownloads();
-    addNotice("⚠️ Falha: "+err.message, "err");
-    setStatus("erro");
-    setReady(false);
-  }}
-}}
-
-async function fileToB64(file){{
-  return new Promise((resolve,reject)=>{{
+async function fileToB64(f) {{
+  return new Promise((res,rej)=>{{
     const r=new FileReader();
-    r.onload=()=> {{
-      const s = r.result;
-      // s = data:mime;base64,XXXX
-      resolve(String(s).split(",")[1]);
-    }};
-    r.onerror=reject;
-    r.readAsDataURL(file);
+    r.onload=()=>res(String(r.result).split(",")[1]);
+    r.onerror=rej;
+    r.readAsDataURL(f);
   }});
 }}
 
-uploadBtn.addEventListener("click", async ()=>{{
-  if(!sessionId){{ addNotice("Ative a sessão antes de subir arquivos.","err"); return; }}
-  const files=[...fileInput.files];
-  if(!files.length) return;
+start.onclick = async ()=>{{
+  DEMO_KEY=key.value.trim();
+  add("Iniciando...");
+  const d=await fetchJson("/session/new",{{method:"POST",headers:{{"x-demo-key":DEMO_KEY}}}});
+  sessionId=d.session_id;
+  state=d.state||{{}};
+  add(d.message);
+}};
 
-  addNotice("⏳ Subindo arquivos…");
-  for(const f of files){{
-    const b64 = await fileToB64(f);
+reset.onclick = async ()=>{{
+  if(!DEMO_KEY) DEMO_KEY=key.value.trim();
+  add("Reiniciando...");
+  const d=await fetchJson("/session/new",{{method:"POST",headers:{{"x-demo-key":DEMO_KEY}}}});
+  sessionId=d.session_id;
+  state=d.state||{{}};
+  enableDl(false); b1=b2=b3=null;
+  add(d.message);
+}};
+
+upload.onclick = async ()=>{{
+  if(!sessionId){{ add("Ative antes de subir."); return; }}
+  const list=[...files.files];
+  if(!list.length) return;
+  for(const f of list){{
+    add("Subindo: "+f.name);
+    const b64=await fileToB64(f);
     const payload={{session_id:sessionId, filename:f.name, mime:f.type||"application/octet-stream", b64:b64}};
-    try {{
-      const out = await fetchJson("/upload", {{
-        method:"POST",
-        headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},
-        body:JSON.stringify(payload)
-      }});
-      fileList.textContent += "✅ " + out.filename + " (" + out.size_bytes + " bytes)\\n";
-    }} catch(err) {{
-      fileList.textContent += "❌ " + f.name + " — " + err.message + "\\n";
-    }}
+    const out=await fetchJson("/upload",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
+    add("OK: "+out.filename+" | text="+out.text_extracted);
   }}
-  addNotice("Arquivos processados. Continue respondendo a pergunta de provas (ou prossiga).","ok");
-}});
+  add("Uploads finalizados.");
+}};
 
-keyBtn.addEventListener("click", ()=>{{
-  DEMO_KEY=keyInput.value.trim();
-  localStorage.setItem(STORE_KEY, DEMO_KEY);
-  addNotice("Código registrado.");
-  startSession();
-}});
+send.onclick = async ()=>{{
+  if(!sessionId){{ add("Ative primeiro."); return; }}
+  const text=msg.value.trim(); if(!text) return;
+  msg.value="";
+  add("Você: "+text);
+  const payload={{session_id:sessionId,message:text,state:state}};
+  const d=await fetchJson("/chat",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
+  state=d.state||state;
+  add("IA: "+d.message);
 
-resetBtn.addEventListener("click", ()=>{{
-  sessionId=null; state={{}};
-  renderKV(); clearDownloads();
-  uploadBox.style.display="none"; fileList.textContent="";
-  addNotice("🔄 Reiniciando…");
-  startSession();
-}});
+  if(d.report_docx_b64){{ b1=d.report_docx_b64; n1=d.report_docx_filename; }}
+  if(d.proposal_docx_b64){{ b2=d.proposal_docx_b64; n2=d.proposal_docx_filename; }}
+  if(d.piece_docx_b64){{ b3=d.piece_docx_b64; n3=d.piece_docx_filename; }}
+  if(b1&&b2&&b3) enableDl(true);
+}};
 
-btn.addEventListener("click", send);
-input.addEventListener("keydown",(e)=>{{ if(e.key==="Enter") send(); }});
-
-dlReportBtn.addEventListener("click", ()=>{{ if(b64Report) downloadDocx(b64Report, nameReport); }});
-dlPropBtn.addEventListener("click", ()=>{{ if(b64Prop) downloadDocx(b64Prop, nameProp); }});
-dlPieceBtn.addEventListener("click", ()=>{{ if(b64Piece) downloadDocx(b64Piece, namePiece); }});
-
-renderKV();
-addNotice(DEMO_KEY ? "Código encontrado. Clique em Ativar." : "Cole o DEMO_KEY e clique em Ativar.");
-setStatus("pronto");
+dl1.onclick=()=>{{ if(b1) downloadDocx(b1,n1); }};
+dl2.onclick=()=>{{ if(b2) downloadDocx(b2,n2); }};
+dl3.onclick=()=>{{ if(b3) downloadDocx(b3,n3); }};
 </script>
 </body>
 </html>
 """
 
 @app.get("/widget", response_class=HTMLResponse)
-def widget(transparent: int = Query(default=0)):
+def widget():
     return HTMLResponse(WIDGET_HTML)
