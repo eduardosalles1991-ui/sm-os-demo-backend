@@ -3,6 +3,7 @@ import uuid
 import json
 import base64
 import re
+import unicodedata
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
@@ -27,23 +28,30 @@ from pypdf import PdfReader
 # =========================================================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", MODEL)
+
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
 DEMO_KEY = os.getenv("DEMO_KEY", "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
-# Proposta defaults (fallback)
-FEE_ENTRADA_DEFAULT = int(os.getenv("FEE_ENTRADA", "5000"))
-FEE_SALDO_DEFAULT = int(os.getenv("FEE_SALDO", "20000"))
-FEE_PARCELAS_DEFAULT = int(os.getenv("FEE_PARCELAS", "10"))
 MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "Dra. Ester Cristina Salles Mendes")
 MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB/SP 105.488")
 
-# Honorários IA: límites
 FEE_MIN_TOTAL = int(os.getenv("FEE_MIN_TOTAL", "1500"))
 FEE_MAX_TOTAL = int(os.getenv("FEE_MAX_TOTAL", "250000"))
 FEE_DEFAULT_PARCELAS = int(os.getenv("FEE_DEFAULT_PARCELAS", "10"))
 FEE_VALIDITY_DAYS = int(os.getenv("FEE_VALIDITY_DAYS", "7"))
+
+# fallback
+FEE_ENTRADA_DEFAULT = int(os.getenv("FEE_ENTRADA", "5000"))
+FEE_SALDO_DEFAULT = int(os.getenv("FEE_SALDO", "20000"))
+FEE_PARCELAS_DEFAULT = int(os.getenv("FEE_PARCELAS", "10"))
+
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
+MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
+MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "20"))
+MAX_IMAGES_PER_SESSION = int(os.getenv("MAX_IMAGES_PER_SESSION", "6"))
+MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "8000"))
 
 TIPOS_PECA = [
     "Notificação Extrajudicial",
@@ -55,19 +63,11 @@ TIPOS_PECA = [
     "Petição Intermediária (Manifestação)",
 ]
 
-# Upload limits
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
-MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
-MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "20"))
-
-# excerpt limits (control tokens)
-MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "8000"))
-
 
 # =========================================================
 # APP
 # =========================================================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="0.9.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -77,11 +77,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# =========================================================
-# IN-MEMORY UPLOAD STORE (demo)
-# =========================================================
-UPLOADS: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> list(files)
+# Uploads em memória (demo). Em produção: S3/Cloudflare R2.
+UPLOADS: Dict[str, List[Dict[str, Any]]] = {}
 
 
 # =========================================================
@@ -93,23 +90,24 @@ FIELDS_ORDER = [
     ("objetivo_cliente", "Qual o objetivo do cliente? (o que ele quer obter)"),
     ("partes", "Quem são as partes? (autor/réu e relação entre eles)"),
     ("contratante_nome", "Qual o nome completo do Contratante/Recebedor para a Proposta de Honorários?"),
-    ("tipo_peca", "Qual peça você precisa gerar? (selecione uma opção)"),
-    ("fatos_cronologia", "Conte os fatos em ordem (inclua: afastamento, CAT, demissão, retorno, etc. se houver)."),
+    ("tipo_peca", "Qual peça você precisa gerar? (digite o número ou o nome)"),
+    ("fatos_cronologia", "Conte os fatos em ordem (inclua: demissão/afastamento/CAT/INSS se houver)."),
     ("provas_existentes", "Quais provas/documentos você já tem? (liste) — Você também pode subir arquivos agora."),
     ("urgencia_prazo", "Há urgência ou prazo crítico? (qual?)"),
     ("valor_envovido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
-    ("notas_adicionais", "Alguma informação adicional relevante? (ex.: foi demitido após o evento, houve INSS, etc.)"),
+    ("notas_adicionais", "Alguma informação adicional relevante? (detalhes que não cabiam antes)"),
 ]
 REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
 
 # =========================================================
-# OS 6.1 + CONTRACT JSON
+# OS 6.1 PROMPT (cole seu OS completo aqui ou use env var)
 # =========================================================
-OS_6_1_PROMPT = r"""
+OS_6_1_PROMPT = os.getenv("OS_6_1_PROMPT", "").strip() or r"""
 SALLES & MENDES OS 6.1 — SISTEMA OPERACIONAL JURÍDICO ESCALÁVEL
 (VOLUME + ESTRATÉGICO + CONSULTIVO + PRODUTO)
-(…cole o seu OS 6.1 completo aqui…)
+
+>>> COLE AQUI O TEXTO COMPLETO DO SEU OS 6.1 <<<
 """
 
 OUTPUT_CONTRACT = r"""
@@ -134,15 +132,6 @@ def auth_or_401(x_demo_key: Optional[str]):
     if not x_demo_key or x_demo_key != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-def next_missing(state: Dict[str, Any]) -> str:
-    for key, question in FIELDS_ORDER:
-        if not state.get(key):
-            return question
-    return ""
-
-def is_sufficient(state: Dict[str, Any]) -> bool:
-    return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
-
 def get_client() -> OpenAI:
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY não configurada no Render (Environment).")
@@ -154,6 +143,58 @@ def friendly_openai_error(e: Exception) -> HTTPException:
     if isinstance(e, openai.AuthenticationError):
         return HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
     return HTTPException(status_code=500, detail=f"Erro OpenAI: {type(e).__name__}: {str(e)}")
+
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def pecas_list_text() -> str:
+    return "Escolha uma opção:\n" + "\n".join([f"{i+1}) {p}" for i, p in enumerate(TIPOS_PECA)])
+
+def map_tipo_peca(user_text: str) -> Optional[str]:
+    t = _norm(user_text)
+
+    if t.isdigit():
+        idx = int(t) - 1
+        if 0 <= idx < len(TIPOS_PECA):
+            return TIPOS_PECA[idx]
+
+    aliases = {
+        "notificacao extrajudicial": "Notificação Extrajudicial",
+        "notificacion extrajudicial": "Notificação Extrajudicial",
+        "peticao inicial": "Petição Inicial",
+        "peticion inicial": "Petição Inicial",
+        "inicial": "Petição Inicial",
+        "contestacao": "Contestação",
+        "replica": "Réplica",
+        "recurso": "Recurso",
+        "minuta de acordo": "Minuta de Acordo",
+        "acordo": "Minuta de Acordo",
+        "peticao intermediaria": "Petição Intermediária (Manifestação)",
+        "manifestacao": "Petição Intermediária (Manifestação)",
+    }
+    if t in aliases:
+        return aliases[t]
+
+    for opt in TIPOS_PECA:
+        if _norm(opt) == t:
+            return opt
+    return None
+
+def next_missing(state: Dict[str, Any]) -> str:
+    for key, question in FIELDS_ORDER:
+        if not state.get(key):
+            if key == "tipo_peca":
+                return question + "\n\n" + pecas_list_text() + "\n\nDica: você pode digitar o número (ex.: 2)."
+            if key == "provas_existentes":
+                return question + "\n\nDica: você pode subir PDF/DOCX/TXT e imagens como prova."
+            return question
+    return ""
+
+def is_sufficient(state: Dict[str, Any]) -> bool:
+    return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
 
 def docx_to_b64(doc: Document) -> str:
     buf = BytesIO()
@@ -254,20 +295,16 @@ def count_empty_sections(secoes: Dict[str, Any]) -> int:
     empty = 0
     for k in keys:
         v = secoes.get(k)
-        if v is None:
-            empty += 1
-            continue
-        s = str(v).strip()
-        if s == "" or s == "—" or s == "-":
+        s = str(v).strip() if v is not None else ""
+        if s in ("", "—", "-"):
             empty += 1
     return empty
 
 def repair_sections_with_model(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     prompt = (
-        "Você deve retornar APENAS JSON com a chave 'secoes' contendo as 18 chaves do OS. "
+        "Retorne APENAS JSON com a chave 'secoes' contendo as 18 chaves do OS. "
         "Preencha com base estrita no intake/uploads (sem inventar fatos). "
-        "Se faltar dado: use 'CONDICIONAL:' e '[PREENCHER]'. "
-        "Não devolver tudo como '—'."
+        "Se faltar dado: use 'CONDICIONAL:' e '[PREENCHER]'. Não devolver tudo como '—'."
     )
     payload = {
         "intake": state,
@@ -301,7 +338,7 @@ def sanitize_minuta(minuta: str, state: Dict[str, Any]) -> str:
 
 
 # =========================================================
-# Upload extraction (PDF/DOCX/TXT local + Images via Vision)
+# Upload extraction: PDF/DOCX/TXT local + images via Vision
 # =========================================================
 def extract_text_from_pdf(raw: bytes) -> str:
     try:
@@ -311,8 +348,7 @@ def extract_text_from_pdf(raw: bytes) -> str:
             t = p.extract_text() or ""
             if t.strip():
                 parts.append(t.strip())
-        txt = "\n\n".join(parts)
-        return txt[:MAX_EXCERPT_CHARS]
+        return "\n\n".join(parts)[:MAX_EXCERPT_CHARS]
     except Exception:
         return ""
 
@@ -331,15 +367,11 @@ def extract_text_from_txt(raw: bytes) -> str:
         return ""
 
 def ocr_image_with_openai(client: OpenAI, filename: str, mime: str, b64: str) -> str:
-    """
-    Vision/OCR: extrae información útil (sin prometer) y devuelve texto corto.
-    """
     data_url = f"data:{mime};base64,{b64}"
     sys = (
         "Você é um extrator de texto/informações de um documento/imagem. "
         "Extraia APENAS o que estiver visível. Não invente. "
-        "Retorne APENAS JSON: {'text': '...'} com um texto corrido curto, "
-        "incluindo datas, nomes, valores, números e elementos relevantes se aparecerem."
+        "Retorne APENAS JSON: {'text': '...'} com um texto curto útil (datas, valores, nomes, números)."
     )
     try:
         resp = client.chat.completions.create(
@@ -361,12 +393,13 @@ def ocr_image_with_openai(client: OpenAI, filename: str, mime: str, b64: str) ->
 
 def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
     raw = base64.b64decode(b64)
-    low = filename.lower()
+    low = (filename or "").lower()
+    mime = mime or ""
 
     if low.endswith(".pdf") or mime == "application/pdf":
         return extract_text_from_pdf(raw)
 
-    if low.endswith(".docx") or mime in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document",):
+    if low.endswith(".docx") or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         return extract_text_from_docx(raw)
 
     if low.endswith(".txt") or mime.startswith("text/"):
@@ -385,30 +418,30 @@ def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
 def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     prompt = f"""
 Você é um assistente de precificação de honorários advocatícios (Brasil).
-Objetivo: sugerir valores JUSTOS e defensáveis (sem promessa de êxxito).
-Saída: APENAS JSON com:
+Objetivo: sugerir valores JUSTOS e defensáveis (sem promessa de êxito).
+Retorne APENAS JSON com:
 - total (int)
 - entrada (int)
 - saldo (int)
 - parcelas (int)
 - justificativa_curta (3-6 linhas)
-- observacoes (lista curta)
+- observacoes (lista)
 
 Limites:
 - total >= {FEE_MIN_TOTAL} e <= {FEE_MAX_TOTAL}
-- entrada entre 20% e 40% do total (salvo urgência alta)
-- parcelas entre 1 e 12
+- entrada 20% a 40% (salvo urgência alta)
+- parcelas 1 a 12
 
 Base:
-- fase: {state.get('fase')}
-- tipo_peca: {state.get('tipo_peca')}
-- área/subárea: {state.get('area_subarea')}
-- valor_envovido: {state.get('valor_envovido')}
-- risco_improcedencia: {report.get('risco_improcedencia')}
-- forca_tese: {report.get('forca_tese')}
-- confiabilidade: {report.get('confiabilidade_analise')}
-- urgencia: {state.get('urgencia_prazo')}
-- provas: {state.get('provas_existentes')}
+fase={state.get('fase')}
+tipo_peca={state.get('tipo_peca')}
+area={state.get('area_subarea')}
+valor={state.get('valor_envovido')}
+urgencia={state.get('urgencia_prazo')}
+provas={state.get('provas_existentes')}
+forca_tese={report.get('forca_tese')}
+confiabilidade={report.get('confiabilidade_analise')}
+risco_improcedencia={report.get('risco_improcedencia')}
 """
     resp = client.chat.completions.create(
         model=MODEL,
@@ -424,8 +457,8 @@ Base:
 
     entrada = int(float(data.get("entrada", int(total * 0.25))))
     entrada = max(int(total * 0.2), min(int(total * 0.4), entrada))
-
     saldo = total - entrada
+
     return {
         "total": total,
         "entrada": entrada,
@@ -437,11 +470,12 @@ Base:
 
 
 # =========================================================
-# IA: reporte JSON completo
+# IA: report JSON completo
 # =========================================================
 def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
     client = get_client()
     sid = state.get("_session_id","")
+
     file_list = []
     for f in UPLOADS.get(sid, []):
         file_list.append({
@@ -489,7 +523,7 @@ def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =========================================================
-# DOCX Builders
+# DOCX builders
 # =========================================================
 def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     doc = Document()
@@ -505,7 +539,6 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Contratante/Recebedor: {state.get('contratante_nome','—')}")
     add_p(doc, f"Tipo de peça: {state.get('tipo_peca','—')}")
 
-    # lista de arquivos
     sid = state.get("_session_id","")
     files = [f["filename"] for f in UPLOADS.get(sid, [])]
     if files:
@@ -518,7 +551,6 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Risco de improcedência: {report.get('risco_improcedencia','—')}")
     add_p(doc, f"Suficiência de dados: {report.get('suficiencia_dados','—')}")
     add_p(doc, f"Status: {report.get('status','—')}")
-    add_p(doc, f"Modo operacional detectado: {report.get('modo_operacional_detectado','—')}")
 
     doc.add_paragraph("")
     add_h(doc, "Estratégia (18 pontos)", 13)
@@ -547,13 +579,9 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
         ("17. ALERTAS", "17_ALERTAS"),
         ("18. REFLEXÃO FINAL", "18_REFLEXAO_FINAL"),
     ]
-    for title, key in order:
-        add_h(doc, title, 12)
-        body = secoes.get(key, "CONDICIONAL: seção não preenchida — rever intake.")
-        if isinstance(body, list):
-            add_list_bullets(doc, [str(x) for x in body])
-        else:
-            add_p(doc, str(body))
+    for t, k in order:
+        add_h(doc, t, 12)
+        add_p(doc, str(secoes.get(k, "CONDICIONAL: seção não preenchida — rever intake.")))
 
     doc.add_paragraph("")
     foot = doc.add_paragraph(
@@ -563,7 +591,6 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     foot.runs[0].italic = True
     return doc
 
-
 def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     doc = Document()
     p = doc.add_paragraph("ORÇAMENTO / PROPOSTA DE HONORÁRIOS")
@@ -572,7 +599,7 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     doc.add_paragraph("")
 
     contratante = state.get("contratante_nome") or "________________________________________"
-    objeto_curto = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
+    objeto = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
 
     total = int(fee.get("total", FEE_ENTRADA_DEFAULT + FEE_SALDO_DEFAULT))
     entrada = int(fee.get("entrada", FEE_ENTRADA_DEFAULT))
@@ -587,7 +614,7 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     t1.cell(1, 0).text = "Mandatária"
     t1.cell(1, 1).text = f"{MANDATARIA_NOME} — {MANDATARIA_OAB}"
     t1.cell(2, 0).text = "Objeto"
-    t1.cell(2, 1).text = objeto_curto
+    t1.cell(2, 1).text = objeto
     t1.cell(3, 0).text = "Data"
     t1.cell(3, 1).text = datetime.now().strftime("%d/%m/%Y")
     t1.cell(4, 0).text = "Validade da proposta"
@@ -612,21 +639,14 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     add_h(doc, "Justificativa (curta)", 13)
     add_p(doc, fee.get("justificativa_curta","—") or "—")
 
-    obs = fee.get("observacoes", [])
-    if isinstance(obs, list) and obs:
-        doc.add_paragraph("")
-        add_h(doc, "Observações", 13)
-        add_list_bullets(doc, [str(x) for x in obs])
-
     doc.add_paragraph("")
     add_h(doc, "Condições e limites", 13)
-    cond = [
-        "Não inclui custas, taxas, perícias, emolumentos, diligências, deslocamentos e despesas externas.",
-        "Obrigação de meio, sem garantia de êxito ou promessa de resultado.",
-        "Se surgir demanda autônoma fora do objeto, será feito orçamento complementar.",
-        "Em caso de inadimplemento, poderá haver suspensão de atos não urgentes até regularização (salvo deveres éticos)."
-    ]
-    add_list_bullets(doc, cond)
+    add_list_bullets(doc, [
+        "Não inclui custas, taxas, perícias, emolumentos e despesas externas.",
+        "Obrigação de meio, sem garantia de êxito.",
+        "Demanda fora do escopo: orçamento complementar.",
+        "Inadimplemento pode suspender atos não urgentes (salvo deveres éticos)."
+    ])
 
     doc.add_paragraph("")
     add_p(doc, f"{MANDATARIA_NOME} — {MANDATARIA_OAB}")
@@ -634,7 +654,6 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     add_p(doc, "Aceite do cliente: ______________________________________________")
     add_p(doc, str(contratante))
     return doc
-
 
 def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     doc = Document()
@@ -658,7 +677,7 @@ def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
 
 
 # =========================================================
-# MODELS
+# API MODELS
 # =========================================================
 class SessionOut(BaseModel):
     session_id: str
@@ -690,26 +709,28 @@ class UploadOut(BaseModel):
     file_id: str
     filename: str
     size_bytes: int
-    stored: bool = True
-    text_extracted: bool = False
+    text_extracted: bool
 
 
 # =========================================================
-# API
+# ROUTES
 # =========================================================
 @app.get("/health")
 def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "0.9.0",
+        "version": "1.0.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
         "vision_model": VISION_MODEL,
-        "max_file_mb": MAX_FILE_MB,
-        "max_files_per_session": MAX_FILES_PER_SESSION,
     }
+
+# alias /healt (por si el user escribe así)
+@app.get("/healt")
+def healt():
+    return health()
 
 @app.post("/session/new", response_model=SessionOut)
 def session_new(x_demo_key: Optional[str] = Header(default=None)):
@@ -718,7 +739,7 @@ def session_new(x_demo_key: Optional[str] = Header(default=None)):
     UPLOADS[sid] = []
     return SessionOut(
         session_id=sid,
-        message="Vamos iniciar o diagnóstico.\n\n" + FIELDS_ORDER[0][1],
+        message="Vamos iniciar o diagnóstico.\n\n" + next_missing({"_session_id": sid}),
         state={"_session_id": sid}
     )
 
@@ -745,10 +766,15 @@ def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None))
     if total > MAX_TOTAL_MB_PER_SESSION * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Limite total por sessão: {MAX_TOTAL_MB_PER_SESSION}MB.")
 
-    file_id = str(uuid.uuid4())
+    # limit images
+    is_image = (inp.mime or "").startswith("image/") or (inp.filename or "").lower().endswith((".png",".jpg",".jpeg",".webp"))
+    if is_image:
+        img_count = sum(1 for f in files if (f.get("mime","") or "").startswith("image/"))
+        if img_count >= MAX_IMAGES_PER_SESSION:
+            raise HTTPException(status_code=400, detail=f"Limite de imagens por sessão: {MAX_IMAGES_PER_SESSION}.")
 
-    # Extract text locally or via vision
-    text_excerpt = extract_text_from_upload(inp.filename, inp.mime or "", inp.b64)
+    file_id = str(uuid.uuid4())
+    text_excerpt = extract_text_from_upload(inp.filename, inp.mime, inp.b64)
     text_extracted = bool(text_excerpt.strip())
 
     files.append({
@@ -768,23 +794,33 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     sid = state.get("_session_id") or inp.session_id
     state["_session_id"] = sid
 
+    # aplica entrada no primeiro campo faltante
     for key, _question in FIELDS_ORDER:
         if not state.get(key):
             val = (inp.message or "").strip()
-            if key == "tipo_peca" and val not in TIPOS_PECA:
-                raise HTTPException(status_code=400, detail="Tipo de peça inválido. Selecione uma opção.")
-            state[key] = val
+            if key == "tipo_peca":
+                mapped = map_tipo_peca(val)
+                if not mapped:
+                    return ChatOut(
+                        message="❗Tipo de peça inválido.\n\n" + pecas_list_text() + "\n\nDica: digite o número (ex.: 2) ou o nome.",
+                        state=state
+                    )
+                state[key] = mapped
+            else:
+                state[key] = val
             break
 
-    # anexar lista de arquivos al estado
+    # anexa nomes de arquivos ao state
     if sid in UPLOADS:
         state["provas_arquivos"] = [f["filename"] for f in UPLOADS[sid]]
 
     if not is_sufficient(state):
         return ChatOut(message=next_missing(state), state=state)
 
+    # gera report
     report = generate_report_json(state)
 
+    # honorários dinâmicos
     client = get_client()
     try:
         fee = generate_fee_json(client, state, report)
@@ -798,6 +834,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             "observacoes": []
         }
 
+    # docx
     doc_report = build_report_strategy_docx(report, state)
     doc_prop = build_proposal_docx(state, fee)
     doc_piece = build_piece_docx(report, state)
@@ -818,7 +855,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
 
 
 # =========================================================
-# WIDGET (upload enabled)
+# WIDGET (visual full, Enter envia, input nunca “sale”)
 # =========================================================
 WIDGET_HTML = f"""
 <!doctype html>
@@ -828,42 +865,175 @@ WIDGET_HTML = f"""
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>S&M OS 6.1 — Widget</title>
 <style>
-  body{{margin:0;background:transparent;font-family:system-ui,-apple-system,Segoe UI,Inter,Arial;color:#eef1f7}}
-  .wrap{{padding:12px}}
-  .row{{display:flex;gap:10px;flex-wrap:wrap;align-items:center}}
-  input,button{{padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.35);color:#eef1f7}}
-  button{{cursor:pointer;border-color:rgba(245,196,81,.35);background:rgba(245,196,81,.14);font-weight:900}}
-  #log{{margin-top:12px;white-space:pre-wrap;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px;min-height:220px}}
-  .hint{{opacity:.8;font-size:12px;margin-top:8px}}
+  :root {{
+    --panel: rgba(10, 12, 18, .55);
+    --panel2: rgba(10, 12, 18, .40);
+    --line: rgba(255,255,255,.14);
+    --text: rgba(245,248,255,.92);
+    --muted: rgba(245,248,255,.70);
+    --gold: #f5c451;
+  }}
+  *{{ box-sizing:border-box; }}
+  html, body {{ height:100%; margin:0; }}
+  body {{ background: transparent !important; color: var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Inter, Arial; overflow:hidden; }}
+
+  /* Layout que garante input sempre dentro */
+  .app {{
+    height: 100%;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    padding: 12px;
+    overflow:hidden;
+  }}
+
+  .top {{
+    flex: 0 0 auto;
+    display:flex;
+    gap:10px;
+    align-items:center;
+    justify-content:space-between;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    backdrop-filter: blur(10px);
+  }}
+
+  .brand {{
+    display:flex; align-items:center; gap:10px; min-width:0;
+  }}
+  .logo {{
+    width:34px;height:34px;border-radius:12px;
+    display:grid;place-items:center;
+    font-weight:900;
+    color: rgba(245,196,81,.95);
+    border:1px solid rgba(245,196,81,.25);
+    background: rgba(245,196,81,.12);
+  }}
+  .titles {{ min-width:0; }}
+  .t1 {{ font-weight:900; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+  .t2 {{ font-size:12px; color: var(--muted); }}
+
+  .actions {{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end;
+  }}
+  input, button {{
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.18);
+    background: rgba(0,0,0,.25);
+    color: var(--text);
+    padding: 10px 12px;
+    outline:none;
+  }}
+  .key {{ width: 340px; max-width: 60vw; }}
+  .btn {{
+    border-color: rgba(245,196,81,.35);
+    background: rgba(245,196,81,.14);
+    font-weight:900;
+    cursor:pointer;
+  }}
+  .btn:hover {{ background: rgba(245,196,81,.20); }}
+  .btn2 {{
+    cursor:pointer;
+    background: rgba(255,255,255,.06);
+  }}
+
+  .mid {{
+    flex: 1 1 auto;
+    min-height: 0;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    overflow:hidden;
+  }}
+
+  .uploadRow {{
+    flex: 0 0 auto;
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    backdrop-filter: blur(10px);
+  }}
+  .hint {{ font-size:12px; color: var(--muted); }}
+
+  .log {{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow:auto;
+    padding: 14px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,.20);
+    backdrop-filter: blur(8px);
+    white-space: pre-wrap;
+    line-height: 1.45;
+  }}
+
+  .bottom {{
+    flex: 0 0 auto;
+    display:flex; gap:10px; align-items:center;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    backdrop-filter: blur(10px);
+  }}
+  .msg {{ flex:1; min-width: 160px; }}
+  .downloads {{
+    flex: 0 0 auto;
+    display:flex; gap:10px; flex-wrap:wrap;
+  }}
+
+  @media (max-width: 780px) {{
+    .key {{ width: 100%; max-width: 100%; }}
+    .actions {{ width: 100%; justify-content:flex-start; }}
+    .top {{ flex-direction:column; align-items:flex-start; }}
+  }}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="row">
-    <input id="key" placeholder="DEMO_KEY" style="flex:1;min-width:240px"/>
-    <button id="start">Ativar</button>
-    <button id="reset">Reiniciar</button>
-  </div>
+  <div class="app">
+    <div class="top">
+      <div class="brand">
+        <div class="logo">S&M</div>
+        <div class="titles">
+          <div class="t1">Diagnóstico Jurídico Inteligente</div>
+          <div class="t2">S&M OS 6.1 • Demo • PDF/DOCX/TXT + Imagens (Vision)</div>
+        </div>
+      </div>
 
-  <div class="row" style="margin-top:10px">
-    <input type="file" id="files" multiple accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,application/pdf,image/*,text/*"/>
-    <button id="upload">Subir provas</button>
-  </div>
-  <div class="hint">Dica: PDF/DOCX/TXT extração local. Imagens usam Vision (custo maior). Limite: {MAX_FILE_MB}MB/arquivo.</div>
+      <div class="actions">
+        <input id="key" class="key" placeholder="DEMO_KEY" />
+        <button id="start" class="btn">Ativar</button>
+        <button id="reset" class="btn2">Reiniciar</button>
+      </div>
+    </div>
 
-  <div id="log"></div>
+    <div class="mid">
+      <div class="uploadRow">
+        <input type="file" id="files" multiple
+          accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,application/pdf,image/*,text/*"/>
+        <button id="upload" class="btn2">Subir provas</button>
+        <div class="hint">Dica: PDF/DOCX/TXT extração local. Imagens usam Vision (custo maior).</div>
+      </div>
 
-  <div class="row" style="margin-top:10px">
-    <input id="msg" placeholder="Digite aqui..." style="flex:1;min-width:240px"/>
-    <button id="send">Enviar</button>
-  </div>
+      <div id="log" class="log"></div>
 
-  <div class="row" style="margin-top:10px">
-    <button id="dl1" disabled>Baixar Relatório</button>
-    <button id="dl2" disabled>Baixar Proposta</button>
-    <button id="dl3" disabled>Baixar Peça</button>
+      <div class="bottom">
+        <input id="msg" class="msg" placeholder="Digite aqui... (Enter envia)" />
+        <button id="send" class="btn">Enviar</button>
+        <div class="downloads">
+          <button id="dl1" class="btn2" disabled>Baixar Relatório</button>
+          <button id="dl2" class="btn2" disabled>Baixar Proposta</button>
+          <button id="dl3" class="btn2" disabled>Baixar Peça</button>
+        </div>
+      </div>
+    </div>
   </div>
-</div>
 
 <script>
 let DEMO_KEY="";
@@ -884,13 +1054,16 @@ const dl2=document.getElementById("dl2");
 const dl3=document.getElementById("dl3");
 
 function add(t){{ log.textContent += t + "\\n"; log.scrollTop=log.scrollHeight; }}
+
 async function fetchJson(url,opt) {{
   const r=await fetch(url,opt);
   let d={{}}; try{{ d=await r.json(); }}catch(e){{}}
   if(!r.ok) throw new Error(d.detail||("HTTP "+r.status));
   return d;
 }}
+
 function enableDl(x){{ dl1.disabled=dl2.disabled=dl3.disabled=!x; }}
+
 function downloadDocx(b64,name){{
   const bin=atob(b64);
   const bytes=new Uint8Array(bin.length);
@@ -900,6 +1073,7 @@ function downloadDocx(b64,name){{
   const a=document.createElement("a"); a.href=url; a.download=name||"arquivo.docx";
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }}
+
 async function fileToB64(f) {{
   return new Promise((res,rej)=>{{
     const r=new FileReader();
@@ -909,17 +1083,22 @@ async function fileToB64(f) {{
   }});
 }}
 
-start.onclick = async ()=>{{
+async function doStart() {{
   DEMO_KEY=key.value.trim();
+  if(!DEMO_KEY) {{ add("Cole o DEMO_KEY e clique em Ativar."); return; }}
   add("Iniciando...");
   const d=await fetchJson("/session/new",{{method:"POST",headers:{{"x-demo-key":DEMO_KEY}}}});
   sessionId=d.session_id;
   state=d.state||{{}};
+  enableDl(false); b1=b2=b3=null;
   add(d.message);
-}};
+}}
+
+start.onclick = doStart;
 
 reset.onclick = async ()=>{{
   if(!DEMO_KEY) DEMO_KEY=key.value.trim();
+  if(!DEMO_KEY) {{ add("Cole o DEMO_KEY e clique em Ativar."); return; }}
   add("Reiniciando...");
   const d=await fetchJson("/session/new",{{method:"POST",headers:{{"x-demo-key":DEMO_KEY}}}});
   sessionId=d.session_id;
@@ -937,16 +1116,18 @@ upload.onclick = async ()=>{{
     const b64=await fileToB64(f);
     const payload={{session_id:sessionId, filename:f.name, mime:f.type||"application/octet-stream", b64:b64}};
     const out=await fetchJson("/upload",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
-    add("OK: "+out.filename+" | text="+out.text_extracted);
+    add("OK: "+out.filename+" | text_extracted="+out.text_extracted);
   }}
   add("Uploads finalizados.");
 }};
 
-send.onclick = async ()=>{{
+async function doSend() {{
   if(!sessionId){{ add("Ative primeiro."); return; }}
-  const text=msg.value.trim(); if(!text) return;
+  const text=msg.value.trim();
+  if(!text) return;
   msg.value="";
   add("Você: "+text);
+
   const payload={{session_id:sessionId,message:text,state:state}};
   const d=await fetchJson("/chat",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
   state=d.state||state;
@@ -956,11 +1137,23 @@ send.onclick = async ()=>{{
   if(d.proposal_docx_b64){{ b2=d.proposal_docx_b64; n2=d.proposal_docx_filename; }}
   if(d.piece_docx_b64){{ b3=d.piece_docx_b64; n3=d.piece_docx_filename; }}
   if(b1&&b2&&b3) enableDl(true);
-}};
+}}
+
+send.onclick = doSend;
+
+/* ENTER ENVIA (sem quebrar layout) */
+msg.addEventListener("keydown",(e)=>{{
+  if(e.key==="Enter") {{
+    e.preventDefault();
+    doSend();
+  }}
+}});
 
 dl1.onclick=()=>{{ if(b1) downloadDocx(b1,n1); }};
 dl2.onclick=()=>{{ if(b2) downloadDocx(b2,n2); }};
 dl3.onclick=()=>{{ if(b3) downloadDocx(b3,n3); }};
+
+add("Cole o DEMO_KEY e clique em Ativar.");
 </script>
 </body>
 </html>
