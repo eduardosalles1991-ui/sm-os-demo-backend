@@ -7,7 +7,7 @@ import re
 import unicodedata
 from io import BytesIO
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import openai
 from openai import OpenAI
@@ -25,31 +25,32 @@ from pypdf import PdfReader
 
 
 # =========================================================
-# CONFIG
+# CONFIG (ENV)
 # =========================================================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", MODEL)
-
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
 DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
-# ⚠️ pedido: sacar "Ester Cristina" del presupuesto
-MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(PREENCHER)")
-MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB/SP 105.488")
+# ✅ Tu pedido: placeholders, no nombres reales
+MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(Nome do Mandatario/a)")
+MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB: (Numero de OAB)")
 
-# Honorarios dinámicos (límites)
+# Limits / governance
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
+MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
+MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "25"))
+MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "9000"))
+
+# Honorarios guardrails (puedes ajustar)
 FEE_MIN_TOTAL = int(os.getenv("FEE_MIN_TOTAL", "1500"))
 FEE_MAX_TOTAL = int(os.getenv("FEE_MAX_TOTAL", "250000"))
 FEE_VALIDITY_DAYS = int(os.getenv("FEE_VALIDITY_DAYS", "7"))
 
-# Upload limits
-MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
-MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
-MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "20"))
-MAX_IMAGES_PER_SESSION = int(os.getenv("MAX_IMAGES_PER_SESSION", "6"))
-MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "8000"))
+# Prompt OS via ENV (NO dentro del .py)
+OS_6_1_PROMPT = (os.getenv("OS_6_1_PROMPT") or "").strip()
+PROMPT_LOADED = bool(OS_6_1_PROMPT) and (len(OS_6_1_PROMPT) > 1200)
 
 TIPOS_PECA = [
     "Notificação Extrajudicial",
@@ -61,7 +62,7 @@ TIPOS_PECA = [
     "Petição Intermediária (Manifestação)",
 ]
 
-FIELDS_ORDER = [
+FIELDS_ORDER: List[Tuple[str, str]] = [
     ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
     ("fase", "Qual a fase? (consultivo / pré-contencioso / processo / recurso / execução)"),
     ("objetivo_cliente", "Qual o objetivo do cliente? (o que ele quer obter)"),
@@ -76,28 +77,11 @@ FIELDS_ORDER = [
 ]
 REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
-# OS prompt via ENV
-OS_6_1_PROMPT = (os.getenv("OS_6_1_PROMPT") or "").strip()
-PROMPT_LOADED = bool(OS_6_1_PROMPT) and ("COLE AQUI" not in OS_6_1_PROMPT.upper()) and (len(OS_6_1_PROMPT) > 1500)
-
-OUTPUT_CONTRACT = r"""
-CONTRATO DE SAÍDA (OBRIGATÓRIO)
-- Retorne APENAS JSON (sem markdown).
-- Não invente fatos: se não estiver no intake/uploads, use [PREENCHER] e/ou "CONDICIONAL:".
-- estrategia_18_pontos: lista com EXATAMENTE 18 itens (conteúdo útil; não pode ser 18x "CONDICIONAL:" vazio).
-- tipo_peca deve ecoar exatamente o escolhido.
-- minuta_peca deve iniciar com "Copie e cole no timbrado do seu escritório antes de finalizar."
-- secoes: objeto com 18 chaves (1_CLASSIFICACAO ... 18_REFLEXAO_FINAL) e conteúdo útil (não devolver tudo como "—").
-- Campos obrigatórios: forca_tese, risco_improcedencia, confiabilidade_analise, suficiencia_dados, status.
-"""
-
-SYSTEM_OS_JSON = (OS_6_1_PROMPT + "\n\n" + OUTPUT_CONTRACT).strip()
-
 
 # =========================================================
 # APP
 # =========================================================
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="1.3.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="1.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN],
@@ -106,7 +90,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOADS: Dict[str, List[Dict[str, Any]]] = {}  # in-memory demo
+# In-memory demo storage
+UPLOADS: Dict[str, List[Dict[str, Any]]] = {}
 
 
 # =========================================================
@@ -118,10 +103,12 @@ def auth_or_401(x_demo_key: Optional[str]):
     if not x_demo_key or x_demo_key != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+
 def get_client() -> OpenAI:
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured (Render env).")
     return OpenAI(api_key=OPENAI_API_KEY)
+
 
 def friendly_openai_error(e: Exception) -> HTTPException:
     if isinstance(e, openai.RateLimitError):
@@ -130,14 +117,17 @@ def friendly_openai_error(e: Exception) -> HTTPException:
         return HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
     return HTTPException(status_code=500, detail=f"OpenAI error: {type(e).__name__}: {str(e)}")
 
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
     s = re.sub(r"\s+", " ", s)
     return s
 
+
 def pecas_list_text() -> str:
     return "Escolha uma opção:\n" + "\n".join([f"{i+1}) {p}" for i, p in enumerate(TIPOS_PECA)])
+
 
 def map_tipo_peca(user_text: str) -> Optional[str]:
     t = _norm(user_text)
@@ -158,6 +148,7 @@ def map_tipo_peca(user_text: str) -> Optional[str]:
         "minuta de acordo": "Minuta de Acordo",
         "manifestacao": "Petição Intermediária (Manifestação)",
         "peticao intermediaria": "Petição Intermediária (Manifestação)",
+        "manifestação": "Petição Intermediária (Manifestação)",
     }
     if t in aliases:
         return aliases[t]
@@ -166,27 +157,32 @@ def map_tipo_peca(user_text: str) -> Optional[str]:
             return opt
     return None
 
+
 def next_missing(state: Dict[str, Any]) -> str:
     for key, question in FIELDS_ORDER:
         if not state.get(key):
             if key == "tipo_peca":
                 return question + "\n\n" + pecas_list_text() + "\n\nDica: digite o número (ex.: 2) ou o nome."
             if key == "provas_existentes":
-                return question + "\n\nDica: você pode subir PDF/DOCX/TXT e imagens como prova."
+                return question + "\n\nDica: você pode subir PDF/DOCX/TXT (e imagens, se quiser)."
             return question
     return ""
 
+
 def is_sufficient(state: Dict[str, Any]) -> bool:
     return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
+
 
 def docx_to_b64(doc: Document) -> str:
     buf = BytesIO()
     doc.save(buf)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+
 def fmt_brl(value: int) -> str:
     s = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
+
 
 def add_h(doc: Document, text: str, size=14):
     p = doc.add_paragraph()
@@ -195,8 +191,10 @@ def add_h(doc: Document, text: str, size=14):
     r.font.size = Pt(size)
     p.space_after = Pt(6)
 
+
 def add_p(doc: Document, text: str):
     doc.add_paragraph(text)
+
 
 def add_list_numbered(doc: Document, items: List[str]):
     try:
@@ -205,6 +203,7 @@ def add_list_numbered(doc: Document, items: List[str]):
     except Exception:
         for i, it in enumerate(items, start=1):
             doc.add_paragraph(f"{i}. {it}")
+
 
 def normalize_points(raw: Any) -> List[str]:
     if isinstance(raw, list):
@@ -221,26 +220,60 @@ def normalize_points(raw: Any) -> List[str]:
             cleaned.append(it2)
     return cleaned
 
+
 def force_18(items: List[str]) -> List[str]:
     items = [x.strip() for x in items if x.strip()]
     if len(items) > 18:
         items = items[:18]
     while len(items) < 18:
         i = len(items) + 1
-        items.append(f"CONDICIONAL: Completar o ponto {i} após validar pendências críticas (prova mínima, prazo, objeto e narrativa adversa).")
+        items.append(
+            f"CONDICIONAL: Completar o ponto {i} após validar pendências críticas (prova mínima, prazo, objeto e narrativa adversa)."
+        )
     return items
+
+
+def is_placeholder(s: str) -> bool:
+    t = (s or "").strip().lower()
+    if not t:
+        return True
+    if "[preencher]" in t:
+        return True
+    if "seção não preenchida" in t or "secao nao preenchida" in t:
+        return True
+    if t in ("—", "-", "n/a", "na"):
+        return True
+    return False
+
 
 def looks_bad_18(items: List[str]) -> bool:
     if len(items) != 18:
         return True
     cond = sum(1 for x in items if _norm(x).startswith("condicional"))
-    short = sum(1 for x in items if len(x) < 12)
+    short = sum(1 for x in items if len(x) < 14)
     return cond >= 10 or short >= 12
 
-def validate_notificacao(minuta: str) -> bool:
-    m = (minuta or "").lower()
-    must = ["notificação", "extrajudicial", "dos fatos", "do direito", "dos pedidos"]
-    return all(x in m for x in must) and len(m) > 900
+
+def validate_minuta(tipo_peca: str, minuta: str) -> bool:
+    m = (minuta or "").strip()
+    if len(m) < 900:
+        return False
+    ml = m.lower()
+    if not ml.startswith("copie e cole no timbrado"):
+        return False
+    # Validadores mínimos por tipo (evita minuta vazia / errada)
+    if tipo_peca == "Notificação Extrajudicial":
+        must = ["notificação", "extrajudicial", "dos fatos", "do direito", "dos pedidos"]
+        return all(x in ml for x in must)
+    if tipo_peca == "Petição Inicial":
+        must = ["excelent", "dos fatos", "do direito", "dos pedidos"]
+        return all(x in ml for x in must)
+    if tipo_peca == "Contestação":
+        must = ["contest", "prelim", "mérito", "pedido"]
+        return ("contest" in ml) and ("mérito" in ml or "merito" in ml) and ("pedido" in ml)
+    # Demais: validação genérica
+    return True
+
 
 # =========================================================
 # Upload extract (PDF/DOCX/TXT)
@@ -257,6 +290,7 @@ def extract_text_from_pdf(raw: bytes) -> str:
     except Exception:
         return ""
 
+
 def extract_text_from_docx(raw: bytes) -> str:
     try:
         d = Document(BytesIO(raw))
@@ -265,11 +299,13 @@ def extract_text_from_docx(raw: bytes) -> str:
     except Exception:
         return ""
 
+
 def extract_text_from_txt(raw: bytes) -> str:
     try:
         return raw.decode("utf-8", errors="ignore")[:MAX_EXCERPT_CHARS]
     except Exception:
         return ""
+
 
 def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
     raw = base64.b64decode(b64)
@@ -281,144 +317,181 @@ def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
         return extract_text_from_docx(raw)
     if low.endswith(".txt") or mime.startswith("text/"):
         return extract_text_from_txt(raw)
-    return ""  # imágenes: opcional (Vision) si lo querés luego
+    # imagens: opcional (no mínimo, não quebra)
+    return ""
 
 
 # =========================================================
-# IA: reparación / honorarios / reporte
+# IA prompts (Opción 2 con reintentos)
 # =========================================================
-def repair_18_points_with_model(client: OpenAI, state: Dict[str, Any], items: List[str]) -> List[str]:
-    sys = (
-        "Retorne APENAS JSON: {'estrategia_18_pontos':[...]} com EXATAMENTE 18 itens.\n"
-        "Baseie-se no intake. Não invente fatos. Se faltar dado, use 'CONDICIONAL:' mas com conteúdo útil.\n"
-    )
-    payload = {"intake": state, "estrategia_18_pontos_atual": items}
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role":"system","content":sys},{"role":"user","content":json.dumps(payload, ensure_ascii=False)}],
-        temperature=0.2,
-        response_format={"type":"json_object"},
-    )
-    data = json.loads(resp.choices[0].message.content)
-    return force_18(normalize_points(data.get("estrategia_18_pontos")))
-
-def repair_report_with_model(client: OpenAI, state: Dict[str, Any], uploads_short: List[Dict[str, Any]]) -> Dict[str, Any]:
-    sys = (
-        "Retorne APENAS JSON com estas chaves:\n"
-        "- forca_tese\n- risco_improcedencia\n- confiabilidade_analise\n- suficiencia_dados\n- status\n"
-        "- estrategia_18_pontos (18 itens)\n- minuta_peca\n- secoes (18 chaves: 1_CLASSIFICACAO ... 18_REFLEXAO_FINAL)\n"
-        "Não invente fatos. Use [PREENCHER] e CONDICIONAL se faltar dados.\n"
-        "minuta_peca deve começar com: 'Copie e cole no timbrado do seu escritório antes de finalizar.'\n"
-    )
-    payload = {"intake": state, "uploads": uploads_short}
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role":"system","content":sys},{"role":"user","content":json.dumps(payload, ensure_ascii=False)}],
-        temperature=0.2,
-        response_format={"type":"json_object"},
-    )
-    return json.loads(resp.choices[0].message.content)
-
-def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = f"""
-Retorne APENAS JSON com:
-total(int), entrada(int), saldo(int), parcelas(int), justificativa_curta(str).
-Sem promessa de êxito. Obrigação de meio.
-Limites total: {FEE_MIN_TOTAL}–{FEE_MAX_TOTAL}.
-Critérios: fase, complexidade, urgência, valor em disputa, volume de prova, risco, esforço.
-Base:
-fase={state.get('fase')}
-tipo={state.get('tipo_peca')}
-area={state.get('area_subarea')}
-valor={state.get('valor_envovido')}
-urgencia={state.get('urgencia_prazo')}
-provas={state.get('provas_existentes')}
-forca={report.get('forca_tese')}
-risco={report.get('risco_improcedencia')}
-confiabilidade={report.get('confiabilidade_analise')}
+OUTPUT_SCHEMA_PROMPT = r"""
+RETORNE APENAS JSON (sem markdown).
+Regras obrigatórias:
+- Não inventar fatos: use apenas intake + uploads. Se faltar dado, use "CONDICIONAL:" com explicação útil.
+- NÃO usar "[PREENCHER]" nos campos técnicos: forca_tese, risco_improcedencia, confiabilidade_analise, suficiencia_dados.
+- forca_tese ∈ {"Muito forte","Forte","Moderada","Fraca","Muito fraca"}.
+- risco_improcedencia ∈ {"Baixo","Médio","Alto"}.
+- confiabilidade_analise ∈ {"Alta","Média","Baixa"}.
+- suficiencia_dados ∈ {"suficiente","parcialmente_suficiente","insuficiente"}.
+- status ∈ {"COMPLETA","ANÁLISE PRELIMINAR"} (se insuficiente/parcialmente → ANÁLISE PRELIMINAR).
+- estrategia_18_pontos: lista com EXATAMENTE 18 itens, todos úteis (evitar itens vazios).
+- secoes: objeto com 18 chaves: 
+  1_CLASSIFICACAO,2_SINTESE,3_QUESTAO_JURIDICA,4_ANALISE_TECNICA,5_FORCA_DA_TESE,6_CONFIABILIDADE,
+  7_PROVAS,8_RISCOS,9_CENARIOS,10_ANALISE_ECONOMICA,11_RENTABILIDADE,12_SCORES,13_RED_TEAM,
+  14_ESTRATEGIA,15_ACOES_PRIORITARIAS,16_PENDENCIAS,17_ALERTAS,18_REFLEXAO_FINAL
+  Cada seção deve ter conteúdo com no mínimo 3-6 linhas (não devolver "—").
+- minuta_peca: texto completo da peça escolhida, iniciando com:
+  "Copie e cole no timbrado do seu escritório antes de finalizar."
+  Deve conter estrutura mínima compatível com o tipo (FATOS / DIREITO / PEDIDOS).
 """
+
+REPAIR_PROMPT = r"""
+Você vai REFAZER a saída para corrigir falhas.
+Retorne APENAS JSON conforme o schema.
+Objetivo: preencher os campos técnicos (sem [PREENCHER]), garantir 18 pontos úteis e minuta completa.
+Não invente fatos. Use CONDICIONAL com explicação útil quando faltar dado.
+"""
+
+MINUTA_ONLY_PROMPT = r"""
+Gere APENAS JSON: {"minuta_peca": "..."}.
+A minuta deve ser COMPLETA e começar com:
+"Copie e cole no timbrado do seu escritório antes de finalizar."
+Estrutura mínima: Endereçamento + Qualificação (com placeholders) + FATOS + DIREITO + PEDIDOS + Valor da causa (se aplicável) + Provas + Requerimentos finais.
+Não invente fatos: use o intake.
+Use [PREENCHER] apenas para dados formais (vara/comarca/qualificação/CPF/CNPJ/endereço) que não foram informados.
+"""
+
+SECOES_ONLY_PROMPT = r"""
+Gere APENAS JSON: {"secoes": {...}, "forca_tese": "...", "risco_improcedencia":"...", "confiabilidade_analise":"...", "suficiencia_dados":"...", "status":"..."}.
+Sem [PREENCHER] nos campos técnicos.
+secoes deve ter as 18 chaves do OS e conteúdo útil (mínimo 3-6 linhas por seção).
+"""
+
+
+def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.2) -> Dict[str, Any]:
     r = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role":"system","content":prompt},{"role":"user","content":"Gerar honorários por caso."}],
-        temperature=0.2,
-        response_format={"type":"json_object"},
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=temperature,
+        response_format={"type": "json_object"},
     )
-    d = json.loads(r.choices[0].message.content)
-    total = int(max(FEE_MIN_TOTAL, min(FEE_MAX_TOTAL, int(float(d.get("total", 6000))))))
-    entrada = int(float(d.get("entrada", int(total*0.3))))
-    entrada = max(int(total*0.2), min(int(total*0.4), entrada))
-    saldo = total - entrada
-    parcelas = int(d.get("parcelas", 6))
-    parcelas = max(1, min(12, parcelas))
-    return {
-        "total": total, "entrada": entrada, "saldo": saldo, "parcelas": parcelas,
-        "justificativa_curta": str(d.get("justificativa_curta","")).strip()[:1000]
-    }
+    return json.loads(r.choices[0].message.content)
 
-def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
+
+def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    sid = state.get("_session_id", "")
+    uploads_short = [
+        {
+            "filename": f["filename"],
+            "mime": f["mime"],
+            "text_excerpt": (f.get("text_excerpt") or "")[:1800],
+        }
+        for f in UPLOADS.get(sid, [])
+    ]
+    return {"intake": state, "uploads": uploads_short}
+
+
+def validate_report_json(tipo_peca: str, data: Dict[str, Any]) -> List[str]:
+    issues = []
+
+    # campos técnicos no pueden ser placeholder
+    for k in ["forca_tese", "risco_improcedencia", "confiabilidade_analise", "suficiencia_dados", "status"]:
+        if is_placeholder(str(data.get(k, ""))):
+            issues.append(f"{k}_placeholder")
+
+    # estrategia 18
+    pts = force_18(normalize_points(data.get("estrategia_18_pontos")))
+    if looks_bad_18(pts):
+        issues.append("estrategia_18_ruim")
+    data["estrategia_18_pontos"] = pts
+
+    # secoes 18
+    secs = data.get("secoes")
+    if not isinstance(secs, dict):
+        issues.append("secoes_missing")
+    else:
+        required_keys = [
+            "1_CLASSIFICACAO","2_SINTESE","3_QUESTAO_JURIDICA","4_ANALISE_TECNICA","5_FORCA_DA_TESE","6_CONFIABILIDADE",
+            "7_PROVAS","8_RISCOS","9_CENARIOS","10_ANALISE_ECONOMICA","11_RENTABILIDADE","12_SCORES","13_RED_TEAM",
+            "14_ESTRATEGIA","15_ACOES_PRIORITARIAS","16_PENDENCIAS","17_ALERTAS","18_REFLEXAO_FINAL"
+        ]
+        missing = [k for k in required_keys if k not in secs]
+        if missing:
+            issues.append("secoes_keys_missing")
+        poor = 0
+        for k in required_keys:
+            v = str(secs.get(k, "")).strip()
+            if is_placeholder(v) or len(v) < 120:
+                poor += 1
+        if poor >= 6:
+            issues.append("secoes_pobres")
+
+    # minuta
+    minuta = str(data.get("minuta_peca", "")).strip()
+    if not minuta.lower().startswith("copie e cole no timbrado"):
+        minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
+    data["minuta_peca"] = minuta
+
+    if not validate_minuta(tipo_peca, minuta):
+        issues.append("minuta_invalida")
+
+    return issues
+
+
+def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     if not PROMPT_LOADED:
         raise HTTPException(status_code=500, detail="OS_6_1_PROMPT não carregado (Render env).")
 
     client = get_client()
-    sid = state.get("_session_id","")
+    payload = build_payload(state)
 
-    uploads_short = [{"name": f["filename"], "mime": f["mime"], "text_excerpt": (f.get("text_excerpt","") or "")[:1200]}
-                     for f in UPLOADS.get(sid, [])]
-    payload = {"intake": state, "uploads": uploads_short}
+    base_system = (OS_6_1_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT).strip()
 
     try:
-        # 1) intento principal: OS completo
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role":"system","content":SYSTEM_OS_JSON},
-                      {"role":"user","content":json.dumps(payload, ensure_ascii=False)}],
-            temperature=TEMPERATURE,
-            response_format={"type":"json_object"},
-        )
-        data = json.loads(resp.choices[0].message.content)
+        # Attempt 1: OS full
+        data = call_json(client, base_system, payload, temperature=TEMPERATURE)
+        issues = validate_report_json(state.get("tipo_peca", ""), data)
 
-        # mínimos
-        data.setdefault("forca_tese", "CONDICIONAL: insuficiência de dados para classificar com firmeza.")
-        data.setdefault("risco_improcedencia", "CONDICIONAL: depende de prova mínima e narrativa adversa.")
-        data.setdefault("confiabilidade_analise", "média")
-        data.setdefault("suficiencia_dados", "parcialmente_suficiente")
-        data.setdefault("status", "ANÁLISE PRELIMINAR")
-        data.setdefault("secoes", {})
+        if not issues:
+            return data
 
-        pts = force_18(normalize_points(data.get("estrategia_18_pontos")))
-        if looks_bad_18(pts):
-            pts = repair_18_points_with_model(client, state, pts)
-        data["estrategia_18_pontos"] = pts
+        # Attempt 2: repair
+        data2 = call_json(client, REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT, {**payload, "issues": issues, "previous": data}, temperature=0.2)
+        issues2 = validate_report_json(state.get("tipo_peca", ""), data2)
+        if not issues2:
+            return data2
 
-        minuta = str(data.get("minuta_peca","")).strip()
-        if not minuta.lower().startswith("copie e cole no timbrado"):
-            minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
+        # Attempt 3: repair again with stronger instruction
+        strong = REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT + "\n\n" + "Corrija MINUTA e SEÇÕES, não deixe placeholders nos campos técnicos."
+        data3 = call_json(client, strong, {**payload, "issues": issues2, "previous": data2}, temperature=0.15)
+        issues3 = validate_report_json(state.get("tipo_peca", ""), data3)
 
-        # Si notificação: valida y repara si necesario
-        if state.get("tipo_peca") == "Notificação Extrajudicial" and not validate_notificacao(minuta):
-            repaired = repair_report_with_model(client, state, uploads_short)
-            minuta2 = str(repaired.get("minuta_peca","")).strip()
-            if minuta2:
-                minuta = minuta2 if minuta2.lower().startswith("copie e cole no timbrado") else ("Copie e cole no timbrado do seu escritório antes de finalizar.\n\n"+minuta2)
-                data["minuta_peca"] = minuta
+        if not issues3:
+            return data3
 
-        data["minuta_peca"] = minuta
+        # Fallback assembly: build sections + metrics separately and minuta separately
+        secs_pack = call_json(client, SECOES_ONLY_PROMPT, {**payload, "previous": data3}, temperature=0.2)
+        minuta_pack = call_json(client, MINUTA_ONLY_PROMPT, payload, temperature=0.2)
 
-        # Si el reporte vino muy vacío → repair total
-        if (str(data.get("forca_tese","")).strip() in ("", "—")) or (not isinstance(data.get("secoes"), dict)) or (len(str(data.get("minuta_peca",""))) < 200):
-            data = repair_report_with_model(client, state, uploads_short)
+        # merge
+        merged = dict(data3)
+        merged["secoes"] = secs_pack.get("secoes") if isinstance(secs_pack.get("secoes"), dict) else merged.get("secoes", {})
+        for k in ["forca_tese","risco_improcedencia","confiabilidade_analise","suficiencia_dados","status"]:
+            v = secs_pack.get(k)
+            if v and not is_placeholder(str(v)):
+                merged[k] = v
 
-            pts = force_18(normalize_points(data.get("estrategia_18_pontos")))
-            if looks_bad_18(pts):
-                pts = repair_18_points_with_model(client, state, pts)
-            data["estrategia_18_pontos"] = pts
+        m = str(minuta_pack.get("minuta_peca","")).strip()
+        if not m.lower().startswith("copie e cole no timbrado"):
+            m = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + m
+        merged["minuta_peca"] = m
 
-            minuta = str(data.get("minuta_peca","")).strip()
-            if not minuta.lower().startswith("copie e cole no timbrado"):
-                minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
-            data["minuta_peca"] = minuta
-
-        return data
+        # validate one last time (no loop infinito)
+        validate_report_json(state.get("tipo_peca",""), merged)
+        return merged
 
     except HTTPException:
         raise
@@ -426,8 +499,54 @@ def generate_report_json(state: Dict[str, Any]) -> Dict[str, Any]:
         raise friendly_openai_error(e)
 
 
+def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
+    # IA calcula valor por caso (no fijo)
+    sys = f"""
+Retorne APENAS JSON com:
+total(int), entrada(int), saldo(int), parcelas(int), justificativa_curta(str).
+Sem promessa de êxito (obrigação de meio).
+Limites total: {FEE_MIN_TOTAL}–{FEE_MAX_TOTAL}.
+Critérios: fase, complexidade, urgência, valor em disputa, volume de prova, risco, esforço.
+Use os dados abaixo. Se algum dado faltar, assuma conservador e explique na justificativa.
+"""
+    payload = {
+        "fase": state.get("fase"),
+        "tipo_peca": state.get("tipo_peca"),
+        "area_subarea": state.get("area_subarea"),
+        "valor_envovido": state.get("valor_envovido"),
+        "urgencia_prazo": state.get("urgencia_prazo"),
+        "provas_existentes": state.get("provas_existentes"),
+        "forca_tese": report.get("forca_tese"),
+        "risco_improcedencia": report.get("risco_improcedencia"),
+        "confiabilidade_analise": report.get("confiabilidade_analise"),
+        "suficiencia_dados": report.get("suficiencia_dados"),
+    }
+    r = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+    d = json.loads(r.choices[0].message.content)
+
+    total = int(max(FEE_MIN_TOTAL, min(FEE_MAX_TOTAL, int(float(d.get("total", 6000))))))
+    entrada = int(float(d.get("entrada", int(total * 0.3))))
+    entrada = max(int(total * 0.2), min(int(total * 0.4), entrada))
+    saldo = total - entrada
+    parcelas = int(d.get("parcelas", 6))
+    parcelas = max(1, min(12, parcelas))
+
+    return {
+        "total": total,
+        "entrada": entrada,
+        "saldo": saldo,
+        "parcelas": parcelas,
+        "justificativa_curta": str(d.get("justificativa_curta", "")).strip()[:1200],
+    }
+
+
 # =========================================================
-# DOCX builders (3 documentos)
+# DOCX builders
 # =========================================================
 def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     doc = Document()
@@ -443,7 +562,7 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Contratante/Recebedor: {state.get('contratante_nome','—')}")
     add_p(doc, f"Tipo de peça: {state.get('tipo_peca','—')}")
 
-    sid = state.get("_session_id","")
+    sid = state.get("_session_id", "")
     files = [f["filename"] for f in UPLOADS.get(sid, [])]
     if files:
         add_p(doc, "Provas (arquivos anexados): " + ", ".join(files))
@@ -485,7 +604,7 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     ]
     for t, k in order:
         add_h(doc, t, 12)
-        add_p(doc, str(secoes.get(k, "CONDICIONAL: seção não preenchida — rever intake.")))
+        add_p(doc, str(secoes.get(k, "CONDICIONAL: seção não preenchida — rever intake e uploads.")))
 
     doc.add_paragraph("")
     foot = doc.add_paragraph(
@@ -494,6 +613,7 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     )
     foot.runs[0].italic = True
     return doc
+
 
 def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     doc = Document()
@@ -504,14 +624,17 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
 
     contratante = state.get("contratante_nome") or "(PREENCHER)"
 
-    total = int(fee["total"]); entrada = int(fee["entrada"]); saldo = int(fee["saldo"]); parcelas = int(fee["parcelas"])
+    total = int(fee["total"])
+    entrada = int(fee["entrada"])
+    saldo = int(fee["saldo"])
+    parcelas = int(fee["parcelas"])
     parcela_val = int(saldo / max(parcelas, 1))
 
     t1 = doc.add_table(rows=6, cols=2)
     t1.style = "Table Grid"
     t1.cell(0, 0).text = "Contratante / Recebedor"
     t1.cell(0, 1).text = str(contratante)
-    t1.cell(1, 0).text = "Mandatária"
+    t1.cell(1, 0).text = "Mandatário(a)"
     t1.cell(1, 1).text = f"{MANDATARIA_NOME} — {MANDATARIA_OAB}"
     t1.cell(2, 0).text = "Objeto"
     t1.cell(2, 1).text = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
@@ -537,8 +660,13 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
 
     doc.add_paragraph("")
     add_h(doc, "Justificativa (curta)", 13)
-    add_p(doc, fee.get("justificativa_curta","—") or "—")
+    add_p(doc, fee.get("justificativa_curta", "—") or "—")
+
+    doc.add_paragraph("")
+    add_h(doc, "Orientação", 13)
+    add_p(doc, "Copie e cole esta proposta no timbrado do seu escritório antes de enviar ao cliente.")
     return doc
+
 
 def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     doc = Document()
@@ -569,10 +697,12 @@ class SessionOut(BaseModel):
     message: str
     state: Dict[str, Any]
 
+
 class ChatIn(BaseModel):
     session_id: str
     message: str
     state: Dict[str, Any] = {}
+
 
 class ChatOut(BaseModel):
     message: str
@@ -584,11 +714,13 @@ class ChatOut(BaseModel):
     piece_docx_b64: Optional[str] = None
     piece_docx_filename: Optional[str] = None
 
+
 class UploadIn(BaseModel):
     session_id: str
     filename: str
     mime: str
     b64: str
+
 
 class UploadOut(BaseModel):
     file_id: str
@@ -605,16 +737,19 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "1.3.0",
+        "version": "1.5.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
         "prompt_loaded": PROMPT_LOADED,
+        "mandataria_default": f"{MANDATARIA_NOME} — {MANDATARIA_OAB}",
     }
+
 
 @app.get("/healt")
 def healt():
     return health()
+
 
 @app.post("/session/new", response_model=SessionOut)
 def session_new(x_demo_key: Optional[str] = Header(default=None)):
@@ -624,8 +759,9 @@ def session_new(x_demo_key: Optional[str] = Header(default=None)):
     return SessionOut(
         session_id=sid,
         message="Vamos iniciar o diagnóstico.\n\n" + next_missing({"_session_id": sid}),
-        state={"_session_id": sid}
+        state={"_session_id": sid},
     )
+
 
 @app.post("/upload", response_model=UploadOut)
 def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None)):
@@ -649,15 +785,18 @@ def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None))
     file_id = str(uuid.uuid4())
     text_excerpt = extract_text_from_upload(inp.filename, inp.mime, inp.b64)
 
-    files.append({
-        "file_id": file_id,
-        "filename": inp.filename,
-        "mime": inp.mime,
-        "size_bytes": size,
-        "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
-    })
+    files.append(
+        {
+            "file_id": file_id,
+            "filename": inp.filename,
+            "mime": inp.mime,
+            "size_bytes": size,
+            "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
+        }
+    )
 
     return UploadOut(file_id=file_id, filename=inp.filename, size_bytes=size, text_extracted=bool(text_excerpt.strip()))
+
 
 @app.post("/chat", response_model=ChatOut)
 def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
@@ -682,33 +821,40 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     if not is_sufficient(state):
         return ChatOut(message=next_missing(state), state=state)
 
-    report = generate_report_json(state)
-    client = get_client()
-    fee = generate_fee_json(client, state, report)
+    try:
+        report = generate_report_strict(state)
 
-    doc_report = build_report_strategy_docx(report, state)
-    doc_prop = build_proposal_docx(state, fee)
-    doc_piece = build_piece_docx(report, state)
+        client = get_client()
+        fee = generate_fee_json(client, state, report)
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M")
-    tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
+        doc_report = build_report_strategy_docx(report, state)
+        doc_prop = build_proposal_docx(state, fee)
+        doc_piece = build_piece_docx(report, state)
 
-    return ChatOut(
-        message="✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta (valor por caso) e Minuta da Peça.",
-        state=state,
-        report_docx_b64=docx_to_b64(doc_report),
-        report_docx_filename=f"Relatorio_SM_OS_6_1_{ts}.docx",
-        proposal_docx_b64=docx_to_b64(doc_prop),
-        proposal_docx_filename=f"Proposta_Honorarios_SM_{ts}.docx",
-        piece_docx_b64=docx_to_b64(doc_piece),
-        piece_docx_filename=f"Minuta_{tipo_safe}_{ts}.docx",
-    )
+        ts = datetime.now().strftime("%Y%m%d-%H%M")
+        tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
+
+        return ChatOut(
+            message="✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta (valor por caso) e Minuta da Peça.",
+            state=state,
+            report_docx_b64=docx_to_b64(doc_report),
+            report_docx_filename=f"Relatorio_SM_OS_6_1_{ts}.docx",
+            proposal_docx_b64=docx_to_b64(doc_prop),
+            proposal_docx_filename=f"Proposta_Honorarios_SM_{ts}.docx",
+            piece_docx_b64=docx_to_b64(doc_piece),
+            piece_docx_filename=f"Minuta_{tipo_safe}_{ts}.docx",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise friendly_openai_error(e)
 
 
 # =========================================================
-# Widget: loader + Enter envia + input fijo
+# Simple widget (opcional para testar fora do WP)
 # =========================================================
-WIDGET_HTML = f"""
+WIDGET_HTML = r"""
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -716,197 +862,94 @@ WIDGET_HTML = f"""
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>S&M OS 6.1 — Widget</title>
 <style>
-  :root {{
-    --panel: rgba(10, 12, 18, .55);
-    --panel2: rgba(10, 12, 18, .40);
-    --line: rgba(255,255,255,.14);
+  :root{
+    --panel: rgba(10,12,18,.55);
+    --line: rgba(255,255,255,.16);
     --text: rgba(245,248,255,.92);
     --muted: rgba(245,248,255,.70);
     --gold: #f5c451;
-  }}
-  *{{ box-sizing:border-box; }}
-  html, body {{ height:100%; margin:0; background:transparent; overflow:hidden; }}
-  body {{ color: var(--text);
-    font-family: system-ui, -apple-system, Segoe UI, Inter, Arial; }}
-
-  .overlay {{
-    position: fixed; inset: 0; display: none;
-    align-items: center; justify-content: center;
-    background: rgba(0,0,0,.45); z-index: 9999; padding: 20px;
-  }}
-  .overlayBox {{
-    width: min(520px, 92vw);
-    border-radius: 16px;
-    border: 1px solid rgba(255,255,255,.16);
-    background: rgba(10,12,18,.72);
-    backdrop-filter: blur(12px);
-    padding: 18px;
-  }}
-  .progress {{
-    width: 100%; height: 10px; border-radius: 999px; overflow: hidden;
-    background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.10);
-  }}
-  .bar {{
-    width: 35%; height: 100%;
-    background: rgba(245,196,81,.75);
-    animation: indet 1.2s infinite;
-  }}
-  @keyframes indet {{
-    0% {{ transform: translateX(-120%); }}
-    100% {{ transform: translateX(320%); }}
-  }}
-
-  .app {{
-    height: 100%;
-    display:flex;
-    flex-direction:column;
-    gap:10px;
-    padding: 12px;
-    overflow:hidden;
-  }}
-
-  .top {{
-    flex: 0 0 auto;
-    display:flex;
-    gap:10px;
-    align-items:center;
-    justify-content:space-between;
-    padding: 12px 14px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: var(--panel);
-    backdrop-filter: blur(10px);
-  }}
-
-  .brand {{ display:flex; align-items:center; gap:10px; min-width:0; }}
-  .logo {{
-    width:34px;height:34px;border-radius:12px; display:grid;place-items:center;
-    font-weight:900; color: rgba(245,196,81,.95);
-    border:1px solid rgba(245,196,81,.25);
-    background: rgba(245,196,81,.12);
-  }}
-  .t1 {{ font-weight:900; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-  .t2 {{ font-size:12px; color: var(--muted); }}
-
-  .actions {{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }}
-  input, button {{
-    border-radius: 12px;
-    border: 1px solid rgba(255,255,255,.18);
-    background: rgba(0,0,0,.25);
-    color: var(--text);
-    padding: 10px 12px;
-    outline:none;
-  }}
-  .key {{ width: 320px; max-width: 60vw; }}
-  .btn {{
-    border-color: rgba(245,196,81,.35);
-    background: rgba(245,196,81,.14);
-    font-weight:900;
-    cursor:pointer;
-  }}
-  .btn:hover {{ background: rgba(245,196,81,.20); }}
-  .btn2 {{ cursor:pointer; background: rgba(255,255,255,.06); }}
-
-  .mid {{
-    flex: 1 1 auto;
-    min-height: 0;
-    display:flex;
-    flex-direction:column;
-    gap:10px;
-    overflow:hidden;
-  }}
-
-  .uploadRow {{
-    flex: 0 0 auto;
-    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
-    padding: 10px 12px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: var(--panel2);
-    backdrop-filter: blur(10px);
-  }}
-  .hint {{ font-size:12px; color: var(--muted); }}
-
-  .log {{
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow:auto;
-    padding: 14px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: rgba(0,0,0,.20);
-    backdrop-filter: blur(8px);
-    white-space: pre-wrap;
-    line-height: 1.45;
-  }}
-
-  .bottom {{
-    flex: 0 0 auto;
-    display:flex; gap:10px; align-items:center;
-    padding: 10px 12px;
-    border-radius: 16px;
-    border: 1px solid var(--line);
-    background: var(--panel);
-    backdrop-filter: blur(10px);
-  }}
-  .msg {{ flex:1; min-width: 160px; }}
-
-  @media (max-width: 780px) {{
-    .key {{ width: 100%; max-width: 100%; }}
-    .actions {{ width: 100%; justify-content:flex-start; }}
-    .top {{ flex-direction:column; align-items:flex-start; }}
-  }}
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden}
+  body{color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Inter,Arial}
+  .overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:20px}
+  .overlayBox{width:min(520px,92vw);border-radius:16px;border:1px solid rgba(255,255,255,.16);background:rgba(10,12,18,.72);backdrop-filter:blur(12px);padding:18px}
+  .progress{width:100%;height:10px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.10)}
+  .bar{width:35%;height:100%;background:rgba(245,196,81,.75);animation:indet 1.2s infinite}
+  @keyframes indet{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+  .app{height:100%;display:flex;flex-direction:column;gap:10px;padding:12px;overflow:hidden}
+  .top{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(10px)}
+  .brand{display:flex;align-items:center;gap:10px;min-width:0}
+  .logo{width:34px;height:34px;border-radius:12px;display:grid;place-items:center;font-weight:900;color:rgba(245,196,81,.95);border:1px solid rgba(245,196,81,.25);background:rgba(245,196,81,.12)}
+  .t1{font-weight:900;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .t2{font-size:12px;color:var(--muted)}
+  .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+  input,button{border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:var(--text);padding:10px 12px;outline:none}
+  .key{width:320px;max-width:60vw}
+  .btn{border-color:rgba(245,196,81,.35);background:rgba(245,196,81,.14);font-weight:900;cursor:pointer}
+  .btn:hover{background:rgba(245,196,81,.20)}
+  .btn2{cursor:pointer;background:rgba(255,255,255,.06)}
+  .mid{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+  .uploadRow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-radius:16px;border:1px solid var(--line);background:rgba(10,12,18,.40);backdrop-filter:blur(10px)}
+  .hint{font-size:12px;color:var(--muted)}
+  .log{flex:1;min-height:0;overflow:auto;padding:14px;border-radius:16px;border:1px solid var(--line);background:rgba(0,0,0,.20);backdrop-filter:blur(8px);white-space:pre-wrap;line-height:1.45}
+  .bottom{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:16px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(10px)}
+  .msg{flex:1;min-width:160px}
+  @media(max-width:780px){
+    .key{width:100%;max-width:100%}
+    .actions{width:100%;justify-content:flex-start}
+    .top{flex-direction:column;align-items:flex-start}
+  }
 </style>
 </head>
 <body>
-  <div class="overlay" id="overlay">
-    <div class="overlayBox">
-      <div style="font-weight:900;margin-bottom:6px">Gerando seus arquivos…</div>
-      <div style="opacity:.85;margin-bottom:12px;font-size:13px">Aguarde. Montando Relatório + Proposta + Peça (DOCX).</div>
-      <div class="progress"><div class="bar"></div></div>
+<div class="overlay" id="overlay">
+  <div class="overlayBox">
+    <div style="font-weight:900;margin-bottom:6px">Gerando seus arquivos…</div>
+    <div style="opacity:.85;margin-bottom:12px;font-size:13px">Aguarde. Montando Relatório + Proposta + Peça (DOCX).</div>
+    <div class="progress"><div class="bar"></div></div>
+  </div>
+</div>
+
+<div class="app">
+  <div class="top">
+    <div class="brand">
+      <div class="logo">S&M</div>
+      <div>
+        <div class="t1">Diagnóstico Jurídico Inteligente</div>
+        <div class="t2">S&M OS 6.1 • Chat guiado • 3 DOCX</div>
+      </div>
+    </div>
+    <div class="actions">
+      <input id="key" class="key" placeholder="DEMO_KEY"/>
+      <button id="start" class="btn">Ativar</button>
+      <button id="reset" class="btn2">Reiniciar</button>
     </div>
   </div>
 
-  <div class="app">
-    <div class="top">
-      <div class="brand">
-        <div class="logo">S&M</div>
-        <div>
-          <div class="t1">Diagnóstico Jurídico Inteligente</div>
-          <div class="t2">S&M OS 6.1 • Chat guiado • 3 DOCX (Relatório + Proposta + Peça)</div>
-        </div>
-      </div>
-
-      <div class="actions">
-        <input id="key" class="key" placeholder="DEMO_KEY" />
-        <button id="start" class="btn">Ativar</button>
-        <button id="reset" class="btn2">Reiniciar</button>
-      </div>
+  <div class="mid">
+    <div class="uploadRow">
+      <input type="file" id="files" multiple accept=".pdf,.docx,.txt,application/pdf,text/*"/>
+      <button id="upload" class="btn2">Subir provas</button>
+      <div class="hint">PDF/DOCX/TXT: extração local.</div>
     </div>
 
-    <div class="mid">
-      <div class="uploadRow">
-        <input type="file" id="files" multiple accept=".pdf,.docx,.txt,application/pdf,text/*" />
-        <button id="upload" class="btn2">Subir provas</button>
-        <div class="hint">PDF/DOCX/TXT: extração local. (Imagens/vision opcional)</div>
-      </div>
+    <div id="log" class="log"></div>
 
-      <div id="log" class="log"></div>
-
-      <div class="bottom">
-        <input id="msg" class="msg" placeholder="Digite aqui… (Enter envia)" />
-        <button id="send" class="btn">Enviar</button>
-        <button id="dl1" class="btn2" disabled>Baixar Relatório</button>
-        <button id="dl2" class="btn2" disabled>Baixar Proposta</button>
-        <button id="dl3" class="btn2" disabled>Baixar Peça</button>
-      </div>
+    <div class="bottom">
+      <input id="msg" class="msg" placeholder="Digite aqui… (Enter envia)"/>
+      <button id="send" class="btn">Enviar</button>
+      <button id="dl1" class="btn2" disabled>Baixar Relatório</button>
+      <button id="dl2" class="btn2" disabled>Baixar Proposta</button>
+      <button id="dl3" class="btn2" disabled>Baixar Peça</button>
     </div>
   </div>
+</div>
 
 <script>
 let DEMO_KEY="";
 let sessionId=null;
-let state={{}};
+let state={};
 let b1=null,n1=null,b2=null,n2=null,b3=null,n3=null;
 
 const overlay=document.getElementById("overlay");
@@ -922,115 +965,107 @@ const dl1=document.getElementById("dl1");
 const dl2=document.getElementById("dl2");
 const dl3=document.getElementById("dl3");
 
-function add(t){{ log.textContent += t + "\\n"; log.scrollTop=log.scrollHeight; }}
-function setBusy(on) {{
+function add(t){ log.textContent += t + "\n"; log.scrollTop=log.scrollHeight; }
+function setBusy(on){
   overlay.style.display = on ? "flex" : "none";
   start.disabled = on; reset.disabled = on; send.disabled = on; upload.disabled = on;
   msg.disabled = on;
-}}
-async function fetchJson(url,opt) {{
+}
+async function fetchJson(url,opt){
   const r=await fetch(url,opt);
-  let d={{}}; try{{ d=await r.json(); }}catch(e){{}}
+  let d={}; try{ d=await r.json(); }catch(e){}
   if(!r.ok) throw new Error(d.detail||("HTTP "+r.status));
   return d;
-}}
-function enableDl(x){{ dl1.disabled=dl2.disabled=dl3.disabled=!x; }}
-function downloadDocx(b64,name){{
+}
+function enableDl(x){ dl1.disabled=dl2.disabled=dl3.disabled=!x; }
+function downloadDocx(b64,name){
   const bin=atob(b64);
   const bytes=new Uint8Array(bin.length);
   for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-  const blob=new Blob([bytes],{{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}});
+  const blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a"); a.href=url; a.download=name||"arquivo.docx";
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-}}
-async function fileToB64(f) {{
-  return new Promise((res,rej)=>{{
+}
+async function fileToB64(f){
+  return new Promise((res,rej)=>{
     const r=new FileReader();
     r.onload=()=>res(String(r.result).split(",")[1]);
     r.onerror=rej;
     r.readAsDataURL(f);
-  }});
-}}
-async function doStart() {{
+  });
+}
+
+async function doStart(){
   DEMO_KEY=key.value.trim();
-  if(!DEMO_KEY) {{ add("Cole o DEMO_KEY e clique em Ativar."); return; }}
-  try {{
+  if(!DEMO_KEY){ add("Cole o DEMO_KEY e clique em Ativar."); return; }
+  try{
     setBusy(true);
     add("Iniciando...");
-    const d=await fetchJson("/session/new",{{method:"POST",headers:{{"x-demo-key":DEMO_KEY}}}});
+    const d=await fetchJson("/session/new",{method:"POST",headers:{"x-demo-key":DEMO_KEY}});
     sessionId=d.session_id;
-    state=d.state||{{}};
+    state=d.state||{};
     enableDl(false); b1=b2=b3=null;
     add(d.message);
-  }} catch(e) {{
+  }catch(e){
     add("⚠️ Erro: " + e.message);
-  }} finally {{
+  }finally{
     setBusy(false);
-  }}
-}}
-start.onclick = doStart;
-reset.onclick = doStart;
+  }
+}
+start.onclick=doStart;
+reset.onclick=doStart;
 
-upload.onclick = async ()=>{{
-  if(!sessionId){{ add("Ative antes de subir."); return; }}
+upload.onclick=async ()=>{
+  if(!sessionId){ add("Ative antes de subir."); return; }
   const list=[...files.files];
   if(!list.length) return;
-  try {{
+  try{
     setBusy(true);
-    for(const f of list){{
+    for(const f of list){
       add("Subindo: "+f.name);
       const b64=await fileToB64(f);
-      const payload={{session_id:sessionId, filename:f.name, mime:f.type||"application/octet-stream", b64:b64}};
-      const out=await fetchJson("/upload",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
+      const payload={session_id:sessionId, filename:f.name, mime:f.type||"application/octet-stream", b64:b64};
+      const out=await fetchJson("/upload",{method:"POST",headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},body:JSON.stringify(payload)});
       add("OK: "+out.filename+" | text_extracted="+out.text_extracted);
-    }}
+    }
     add("Uploads finalizados.");
-  }} catch(e) {{
+  }catch(e){
     add("⚠️ Erro upload: " + e.message);
-  }} finally {{
+  }finally{
     setBusy(false);
-  }}
-}};
+  }
+};
 
-async function doSend() {{
-  if(!sessionId){{ add("Ative primeiro."); return; }}
+async function doSend(){
+  if(!sessionId){ add("Ative primeiro."); return; }
   const text=msg.value.trim();
   if(!text) return;
   msg.value="";
   add("Você: "+text);
-
-  try {{
+  try{
     setBusy(true);
-    const payload={{session_id:sessionId,message:text,state:state}};
-    const d=await fetchJson("/chat",{{method:"POST",headers:{{"Content-Type":"application/json","x-demo-key":DEMO_KEY}},body:JSON.stringify(payload)}});
+    const payload={session_id:sessionId,message:text,state:state};
+    const d=await fetchJson("/chat",{method:"POST",headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},body:JSON.stringify(payload)});
     state=d.state||state;
     add("IA: "+d.message);
 
-    if(d.report_docx_b64){{ b1=d.report_docx_b64; n1=d.report_docx_filename; }}
-    if(d.proposal_docx_b64){{ b2=d.proposal_docx_b64; n2=d.proposal_docx_filename; }}
-    if(d.piece_docx_b64){{ b3=d.piece_docx_b64; n3=d.piece_docx_filename; }}
+    if(d.report_docx_b64){ b1=d.report_docx_b64; n1=d.report_docx_filename; }
+    if(d.proposal_docx_b64){ b2=d.proposal_docx_b64; n2=d.proposal_docx_filename; }
+    if(d.piece_docx_b64){ b3=d.piece_docx_b64; n3=d.piece_docx_filename; }
     if(b1&&b2&&b3) enableDl(true);
-
-  }} catch(e) {{
+  }catch(e){
     add("⚠️ Erro: " + e.message);
-  }} finally {{
+  }finally{
     setBusy(false);
-  }}
-}}
-send.onclick = doSend;
+  }
+}
+send.onclick=doSend;
+msg.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ e.preventDefault(); doSend(); } });
 
-// ENTER envia
-msg.addEventListener("keydown",(e)=>{{
-  if(e.key==="Enter") {{
-    e.preventDefault();
-    doSend();
-  }}
-}});
-
-dl1.onclick=()=>{{ if(b1) downloadDocx(b1,n1); }};
-dl2.onclick=()=>{{ if(b2) downloadDocx(b2,n2); }};
-dl3.onclick=()=>{{ if(b3) downloadDocx(b3,n3); }};
+dl1.onclick=()=>{ if(b1) downloadDocx(b1,n1); };
+dl2.onclick=()=>{ if(b2) downloadDocx(b2,n2); };
+dl3.onclick=()=>{ if(b3) downloadDocx(b3,n3); };
 
 add("Cole o DEMO_KEY e clique em Ativar.");
 </script>
