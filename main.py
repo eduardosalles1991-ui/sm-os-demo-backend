@@ -1,461 +1,705 @@
-<div id="smos-app">
-  <!-- Video BG -->
-  <div class="smos-video-bg" aria-hidden="true">
-    <iframe
-      id="smos-yt"
-      src="https://www.youtube.com/embed/s9xk77X4m5c?autoplay=1&mute=1&controls=0&rel=0&playsinline=1&loop=1&playlist=s9xk77X4m5c&modestbranding=1&iv_load_policy=3"
-      frameborder="0"
-      allow="autoplay; encrypted-media"
-      allowfullscreen
-      tabindex="-1"
-    ></iframe>
-  </div>
-  <div class="smos-video-overlay" aria-hidden="true"></div>
+# -*- coding: utf-8 -*-
+import os
+import uuid
+import json
+import base64
+import re
+import unicodedata
+from io import BytesIO
+from datetime import datetime
+from typing import Dict, Any, Optional, List, Tuple
 
-  <!-- Shell -->
-  <div class="smos-shell">
-    <header class="smos-topbar">
-      <div class="smos-brand">
-        <div class="smos-logo">S&amp;M</div>
-        <div class="smos-title">
-          <div class="smos-h1">Diagnóstico Jurídico Inteligente</div>
-          <div class="smos-h2">S&amp;M OS 6.1 • Demo • PDF/DOCX/TXT + Upload de provas</div>
-        </div>
-      </div>
+import openai
+from openai import OpenAI
 
-      <div class="smos-actions">
-        <div class="smos-keywrap">
-          <span class="smos-badge">DEMO_KEY</span>
-          <input id="demoKey" class="smos-input" type="text" placeholder="Cole a DEMO_KEY" autocomplete="off"/>
-        </div>
-        <button id="btnActivate" class="smos-btn smos-btn-primary">Ativar</button>
-        <button id="btnReset" class="smos-btn">Reiniciar</button>
-      </div>
-    </header>
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
-    <section class="smos-toolbar">
-      <div class="smos-upload">
-        <input id="fileInput" type="file" multiple />
-        <button id="btnUpload" class="smos-btn">Subir provas</button>
-        <div class="smos-tip">Dica: PDF/DOCX/TXT extração local. (Imagens podem custar mais.)</div>
-      </div>
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-      <div class="smos-downloads">
-        <div class="smos-dl-title">Downloads</div>
-        <button id="dlReport" class="smos-btn smos-btn-dl" disabled>Baixar Relatório+Estratégia.docx</button>
-        <button id="dlProp" class="smos-btn smos-btn-dl" disabled>Baixar Proposta.docx</button>
-        <button id="dlPiece" class="smos-btn smos-btn-dl" disabled>Baixar Peça.docx</button>
-      </div>
-    </section>
+from pypdf import PdfReader
 
-    <main class="smos-main">
-      <div class="smos-chat" id="chatBox" aria-live="polite"></div>
+# =========================================================
+# CONFIG (ENV)
+# =========================================================
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
+DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
-      <div class="smos-compose">
-        <textarea id="msgInput" class="smos-textarea" rows="1" placeholder="Digite aqui… (Enter envia)"></textarea>
-        <button id="btnSend" class="smos-btn smos-btn-primary">Enviar</button>
-      </div>
-    </main>
-  </div>
+# ✅ EXACTO como pediste
+MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(Nome do Mandatario/a)")
+MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB: (Numero de OAB)")
 
-  <!-- Loader -->
-  <div id="loader" class="smos-loader" hidden>
-    <div class="smos-loader-card">
-      <div class="smos-loader-title">Gerando seus arquivos…</div>
-      <div class="smos-loader-sub">Relatório + Proposta + Minuta (DOCX)</div>
-      <div class="smos-loader-bar"><div class="smos-loader-barfill"></div></div>
-    </div>
-  </div>
-</div>
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
+MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
+MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "25"))
+MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "9000"))
 
-<style>
-  /* Hard reset inside container */
-  #smos-app { position: relative; width: 100%; }
-  #smos-app, #smos-app * { box-sizing: border-box; }
+FEE_MIN_TOTAL = int(os.getenv("FEE_MIN_TOTAL", "1500"))
+FEE_MAX_TOTAL = int(os.getenv("FEE_MAX_TOTAL", "250000"))
+FEE_VALIDITY_DAYS = int(os.getenv("FEE_VALIDITY_DAYS", "7"))
 
-  /* Fullscreen background on WP page area */
-  .smos-video-bg {
-    position: fixed; inset: 0;
-    z-index: 0;
-    overflow: hidden;
-    pointer-events: none;
-  }
-  .smos-video-bg iframe {
-    position: absolute;
-    top: 50%; left: 50%;
-    width: 177.78vh; height: 100vh; /* cover */
-    min-width: 100vw; min-height: 56.25vw;
-    transform: translate(-50%, -50%);
-    filter: saturate(1.05) contrast(1.05);
-  }
-  .smos-video-overlay{
-    position: fixed; inset: 0;
-    z-index: 1;
-    pointer-events: none;
-    background: radial-gradient(1200px 600px at 50% 0%, rgba(0,0,0,.35), rgba(0,0,0,.70));
-  }
+OS_6_1_PROMPT = (os.getenv("OS_6_1_PROMPT") or "").strip()
+PROMPT_LOADED = bool(OS_6_1_PROMPT) and (len(OS_6_1_PROMPT) > 1200)
 
-  /* Shell full height, no white space */
-  .smos-shell{
-    position: relative;
-    z-index: 2;
-    width: 100%;
-    min-height: 100svh;
-    padding: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    color: #eaf2ff;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  }
+TIPOS_PECA = [
+    "Notificação Extrajudicial",
+    "Petição Inicial",
+    "Contestação",
+    "Réplica",
+    "Recurso",
+    "Minuta de Acordo",
+    "Petição Intermediária (Manifestação)",
+]
 
-  .smos-topbar{
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    gap: 12px;
-    padding: 12px 14px;
-    border-radius: 16px;
-    background: rgba(8, 20, 38, .55);
-    border: 1px solid rgba(255,255,255,.12);
-    backdrop-filter: blur(10px);
-  }
+FIELDS_ORDER: List[Tuple[str, str]] = [
+    ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
+    ("fase", "Qual a fase? (consultivo / pré-contencioso / processo / recurso / execução)"),
+    ("objetivo_cliente", "Qual o objetivo do cliente? (o que ele quer obter)"),
+    ("partes", "Quem são as partes? (autor/réu e relação entre eles)"),
+    ("contratante_nome", "Qual o nome completo do Contratante/Recebedor para a Proposta de Honorários?"),
+    ("tipo_peca", "Qual peça você precisa gerar? (digite o número ou o nome)"),
+    ("fatos_cronologia", "Conte os fatos em ordem (inclua: demissão/afastamento/CAT/INSS se houver)."),
+    ("provas_existentes", "Quais provas/documentos você já tem? (liste) — Você também pode subir arquivos agora."),
+    ("urgencia_prazo", "Há urgência ou prazo crítico? (qual?)"),
+    ("valor_envovido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
+    ("notas_adicionais", "Alguma informação adicional relevante? (detalhes que não cabiam antes)"),
+]
+REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
-  .smos-brand{ display:flex; align-items:center; gap:12px; min-width: 240px;}
-  .smos-logo{
-    width: 44px; height:44px;
-    border-radius: 12px;
-    display:flex; align-items:center; justify-content:center;
-    font-weight: 800;
-    letter-spacing:.5px;
-    background: rgba(0,0,0,.35);
-    border: 1px solid rgba(255,204,64,.35);
-    color: #ffcc40;
-  }
-  .smos-title .smos-h1{ font-weight:800; font-size: 16px; line-height: 1.2; }
-  .smos-title .smos-h2{ opacity:.85; font-size: 12px; }
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="1.7.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[ALLOWED_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-  .smos-actions{ display:flex; align-items:center; gap:10px; flex-wrap: wrap; justify-content:flex-end; }
-  .smos-keywrap{ display:flex; align-items:center; gap:8px; padding: 6px 8px; border-radius: 12px; background: rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.12);}
-  .smos-badge{ font-size: 11px; font-weight: 700; color:#ffcc40; padding: 4px 8px; border-radius: 999px; border:1px solid rgba(255,204,64,.35); background: rgba(0,0,0,.25); }
-  .smos-input{
-    width: 260px; max-width: 60vw;
-    background: transparent;
-    border: none;
-    outline: none;
-    color: #eaf2ff;
-    font-size: 13px;
-  }
+UPLOADS: Dict[str, List[Dict[str, Any]]] = {}
 
-  .smos-btn{
-    border: 1px solid rgba(255,255,255,.18);
-    background: rgba(0,0,0,.25);
-    color: #eaf2ff;
-    padding: 10px 12px;
-    border-radius: 12px;
-    cursor: pointer;
-    transition: transform .06s ease, background .15s ease;
-    font-weight: 650;
-    font-size: 13px;
-    white-space: nowrap;
-  }
-  .smos-btn:hover{ background: rgba(0,0,0,.35); }
-  .smos-btn:active{ transform: translateY(1px); }
-  .smos-btn[disabled]{ opacity:.5; cursor:not-allowed; }
+# =========================================================
+# Helpers
+# =========================================================
+def auth_or_401(x_demo_key: Optional[str]):
+    if not DEMO_KEY:
+        raise HTTPException(status_code=500, detail="Server misconfigured: DEMO_KEY not set.")
+    if not x_demo_key or x_demo_key != DEMO_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-  .smos-btn-primary{
-    background: rgba(255, 204, 64, .18);
-    border-color: rgba(255, 204, 64, .40);
-    color: #ffe7a3;
-  }
-  .smos-btn-dl{
-    padding: 9px 10px;
-    border-radius: 10px;
-  }
+def get_client() -> OpenAI:
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured.")
+    return OpenAI(api_key=OPENAI_API_KEY)
 
-  .smos-toolbar{
-    display:flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    justify-content: space-between;
-  }
-  .smos-upload, .smos-downloads{
-    flex: 1 1 320px;
-    padding: 12px 14px;
-    border-radius: 16px;
-    background: rgba(8, 20, 38, .50);
-    border: 1px solid rgba(255,255,255,.12);
-    backdrop-filter: blur(10px);
-    display:flex;
-    align-items:center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .smos-tip{ font-size: 12px; opacity: .85; }
-  .smos-dl-title{ font-weight: 800; color:#ffcc40; margin-right: 6px; }
+def friendly_openai_error(e: Exception) -> HTTPException:
+    if isinstance(e, openai.RateLimitError):
+        return HTTPException(status_code=429, detail="Rate limit/quota. Verifique Billing/Créditos.")
+    if isinstance(e, openai.AuthenticationError):
+        return HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
+    return HTTPException(status_code=500, detail=f"OpenAI error: {type(e).__name__}: {str(e)}")
 
-  .smos-main{
-    flex: 1;
-    min-height: 0;
-    padding: 12px 14px;
-    border-radius: 18px;
-    background: rgba(8, 20, 38, .40);
-    border: 1px solid rgba(255,255,255,.12);
-    backdrop-filter: blur(10px);
-    display: flex;
-    flex-direction: column;
-  }
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    s = re.sub(r"\s+", " ", s)
+    return s
 
-  .smos-chat{
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    padding: 12px 10px;
-    border-radius: 14px;
-    background: rgba(0,0,0,.18);
-    border: 1px solid rgba(255,255,255,.10);
-  }
-  .smos-line{ margin: 6px 0; line-height: 1.45; font-size: 14px; }
-  .smos-ia{ color: #dce9ff; }
-  .smos-user{ color: #ffebb0; }
+def pecas_list_text() -> str:
+    return "Escolha uma opção:\n" + "\n".join([f"{i+1}) {p}" for i, p in enumerate(TIPOS_PECA)])
 
-  .smos-compose{
-    margin-top: 10px;
-    display:flex;
-    gap: 10px;
-    align-items:flex-end;
-    position: sticky;
-    bottom: 0;
-    padding-top: 10px;
-    background: linear-gradient(to top, rgba(8,20,38,.75), rgba(8,20,38,0));
-  }
-  .smos-textarea{
-    flex: 1;
-    resize: none;
-    min-height: 44px;
-    max-height: 140px;
-    padding: 10px 12px;
-    border-radius: 14px;
-    border: 1px solid rgba(255,255,255,.16);
-    background: rgba(0,0,0,.25);
-    color: #eaf2ff;
-    outline: none;
-    font-size: 14px;
-    line-height: 1.3;
-  }
-
-  /* Loader overlay */
-  .smos-loader{
-    position: fixed; inset: 0;
-    z-index: 9999;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    background: rgba(0,0,0,.55);
-    backdrop-filter: blur(6px);
-  }
-  .smos-loader-card{
-    width: min(520px, 92vw);
-    padding: 18px;
-    border-radius: 16px;
-    border: 1px solid rgba(255,255,255,.16);
-    background: rgba(10, 18, 30, .85);
-    color:#eaf2ff;
-  }
-  .smos-loader-title{ font-size: 16px; font-weight: 900; color:#ffcc40; margin-bottom: 6px;}
-  .smos-loader-sub{ font-size: 13px; opacity: .9; margin-bottom: 12px;}
-  .smos-loader-bar{ height: 10px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; }
-  .smos-loader-barfill{
-    height: 100%;
-    width: 35%;
-    background: rgba(255,204,64,.70);
-    border-radius: 999px;
-    animation: smosload 1.1s ease-in-out infinite alternate;
-  }
-  @keyframes smosload { from { width: 25%; } to { width: 85%; } }
-
-  /* Mobile */
-  @media (max-width: 860px){
-    .smos-input{ width: 180px; }
-    .smos-title .smos-h1{ font-size: 15px; }
-    .smos-shell{ padding: 10px; }
-  }
-</style>
-
-<script>
-(() => {
-  // ====== CONFIG ======
-  const API_BASE = "https://sm-os-demo-backend.onrender.com"; // <-- tu backend render
-  const DEMO_KEY_DEFAULT = "SMOS-DEMO-9f3a8c2b-2026"; // <-- tu demo key
-
-  // ====== DOM ======
-  const chatBox = document.getElementById("chatBox");
-  const msgInput = document.getElementById("msgInput");
-  const demoKeyInput = document.getElementById("demoKey");
-  const btnActivate = document.getElementById("btnActivate");
-  const btnReset = document.getElementById("btnReset");
-  const btnSend = document.getElementById("btnSend");
-
-  const fileInput = document.getElementById("fileInput");
-  const btnUpload = document.getElementById("btnUpload");
-
-  const dlReport = document.getElementById("dlReport");
-  const dlProp = document.getElementById("dlProp");
-  const dlPiece = document.getElementById("dlPiece");
-
-  const loader = document.getElementById("loader");
-
-  demoKeyInput.value = DEMO_KEY_DEFAULT;
-
-  // ====== STATE ======
-  let sessionId = null;
-  let state = {};
-  let downloads = { report:null, prop:null, piece:null };
-
-  const setLoading = (on) => { loader.hidden = !on; };
-
-  function addLine(text, who="ia"){
-    const div = document.createElement("div");
-    div.className = "smos-line " + (who === "user" ? "smos-user" : "smos-ia");
-    div.textContent = text;
-    chatBox.appendChild(div);
-    chatBox.scrollTop = chatBox.scrollHeight;
-  }
-
-  function setDownload(btn, payload){
-    if(!payload){ btn.disabled = true; btn.onclick = null; return; }
-    btn.disabled = false;
-    btn.onclick = () => {
-      const bytes = Uint8Array.from(atob(payload.b64), c => c.charCodeAt(0));
-      const blob = new Blob([bytes], {type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = payload.name || "arquivo.docx";
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 250);
-    };
-  }
-
-  async function api(path, body){
-    const key = demoKeyInput.value.trim();
-    const res = await fetch(API_BASE + path, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-demo-key": key
-      },
-      body: JSON.stringify(body || {})
-    });
-    const txt = await res.text();
-    let data = null;
-    try { data = JSON.parse(txt); } catch(e){ data = { raw: txt }; }
-    if(!res.ok){
-      throw new Error((data && data.detail) ? data.detail : ("HTTP " + res.status));
+def map_tipo_peca(user_text: str) -> Optional[str]:
+    t = _norm(user_text)
+    if t.isdigit():
+        idx = int(t) - 1
+        if 0 <= idx < len(TIPOS_PECA):
+            return TIPOS_PECA[idx]
+    aliases = {
+        "notificacao extrajudicial": "Notificação Extrajudicial",
+        "peticao inicial": "Petição Inicial",
+        "inicial": "Petição Inicial",
+        "contestacao": "Contestação",
+        "replica": "Réplica",
+        "recurso": "Recurso",
+        "acordo": "Minuta de Acordo",
+        "manifestacao": "Petição Intermediária (Manifestação)",
+        "peticao intermediaria": "Petição Intermediária (Manifestação)",
     }
-    return data;
-  }
+    return aliases.get(t)
 
-  async function startSession(){
-    setLoading(true);
-    try{
-      const key = demoKeyInput.value.trim();
-      const res = await fetch(API_BASE + "/session/new", { method: "POST", headers: {"x-demo-key": key} });
-      const data = await res.json();
-      sessionId = data.session_id;
-      state = data.state || {};
-      downloads = { report:null, prop:null, piece:null };
-      setDownload(dlReport, null);
-      setDownload(dlProp, null);
-      setDownload(dlPiece, null);
-      chatBox.innerHTML = "";
-      addLine(data.message, "ia");
-    } finally {
-      setLoading(false);
+def next_missing(state: Dict[str, Any]) -> str:
+    for key, question in FIELDS_ORDER:
+        if not state.get(key):
+            if key == "tipo_peca":
+                return question + "\n\n" + pecas_list_text() + "\n\nDica: digite o número (ex.: 2) ou o nome."
+            if key == "provas_existentes":
+                return question + "\n\nDica: você pode subir PDF/DOCX/TXT (e imagens, se quiser)."
+            return question
+    return ""
+
+def is_sufficient(state: Dict[str, Any]) -> bool:
+    return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
+
+def docx_to_b64(doc: Document) -> str:
+    buf = BytesIO()
+    doc.save(buf)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+def fmt_brl(value: int) -> str:
+    s = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
+
+def is_placeholder(s: str) -> bool:
+    t = (s or "").strip().lower()
+    if not t:
+        return True
+    if "[preencher]" in t:
+        return True
+    if "seção não preenchida" in t or "secao nao preenchida" in t:
+        return True
+    if t in ("—", "-", "n/a", "na"):
+        return True
+    return False
+
+def normalize_points(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        items = [str(x).strip() for x in raw if str(x).strip()]
+    elif isinstance(raw, str):
+        items = [x.strip() for x in raw.splitlines() if x.strip()]
+    else:
+        items = []
+    cleaned = []
+    for it in items:
+        it2 = re.sub(r"^\s*\d+\s*[\)\.\-:]\s*", "", it).strip()
+        it2 = re.sub(r"^\s*[\-\•]\s*", "", it2).strip()
+        if it2:
+            cleaned.append(it2)
+    return cleaned
+
+def count_condicional(items: List[str]) -> int:
+    return sum(1 for x in items if _norm(x).startswith("condicional"))
+
+def validate_18(items: List[str]) -> bool:
+    if len(items) != 18:
+        return False
+    if count_condicional(items) > 4:
+        return False
+    if sum(1 for x in items if len(x) < 25) > 3:
+        return False
+    return True
+
+def likely_attorney_as_author(minuta: str) -> bool:
+    t = _norm(minuta[:700])
+    # patrón que hoy te está saliendo (mal) :contentReference[oaicite:3]{index=3}
+    bad = ("[seu nome], advogado" in t and "vem" in t and "propor" in t)
+    # patrón correcto esperado
+    good = ("por seu advogado" in t or "por seu(sua) advogado(a)" in t)
+    return bad and not good
+
+def detect_trabalho_context(state: Dict[str, Any]) -> bool:
+    blob = _norm(" ".join([
+        state.get("area_subarea",""),
+        state.get("objetivo_cliente",""),
+        state.get("fatos_cronologia",""),
+        state.get("partes",""),
+    ]))
+    return any(x in blob for x in ["trabalho","empregador","empregado","acidente de trabalho","demitiu","demissao","vt","vara do trabalho"])
+
+def validate_minuta(state: Dict[str, Any], minuta: str) -> List[str]:
+    issues = []
+    m = (minuta or "").strip()
+    if len(m) < 900:
+        issues.append("minuta_curta")
+        return issues
+
+    if not _norm(m).startswith("copie e cole no timbrado"):
+        issues.append("minuta_sem_instrucao_timbrado")
+
+    if likely_attorney_as_author(m):
+        issues.append("minuta_advogado_como_autor")
+
+    if detect_trabalho_context(state):
+        t = _norm(m[:300])
+        if "juiz do trabalho" not in t and "vara do trabalho" not in t:
+            issues.append("minuta_forum_inadequado_trabalho")
+
+    return issues
+
+# =========================================================
+# Upload extract (PDF/DOCX/TXT)
+# =========================================================
+def extract_text_from_pdf(raw: bytes) -> str:
+    try:
+        reader = PdfReader(BytesIO(raw))
+        parts = []
+        for p in reader.pages[:10]:
+            t = p.extract_text() or ""
+            if t.strip():
+                parts.append(t.strip())
+        return "\n\n".join(parts)[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def extract_text_from_docx(raw: bytes) -> str:
+    try:
+        d = Document(BytesIO(raw))
+        txt = "\n".join([p.text for p in d.paragraphs if p.text.strip()])
+        return txt[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def extract_text_from_txt(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8", errors="ignore")[:MAX_EXCERPT_CHARS]
+    except Exception:
+        return ""
+
+def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
+    raw = base64.b64decode(b64)
+    low = (filename or "").lower()
+    mime = mime or ""
+    if low.endswith(".pdf") or mime == "application/pdf":
+        return extract_text_from_pdf(raw)
+    if low.endswith(".docx") or mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return extract_text_from_docx(raw)
+    if low.endswith(".txt") or mime.startswith("text/"):
+        return extract_text_from_txt(raw)
+    return ""
+
+# =========================================================
+# IA prompts (quality gates)
+# =========================================================
+OUTPUT_SCHEMA_PROMPT = r"""
+RETORNE APENAS JSON.
+
+REGRAS DURAS:
+- Não inventar fatos, datas, valores. Se não existir no intake/uploads, marque como [HIP] ou CONDICIONAL.
+- Estratégia: EXACTAMENTE 18 itens. No máximo 4 podem começar com "CONDICIONAL:".
+- Cada item deve conter: ação + por quê + como/prova (1–2 linhas).
+
+MINUTA:
+- Deve iniciar com: "Copie e cole no timbrado do seu escritório antes de finalizar."
+- AUTOR é o cliente. Estrutura obrigatória:
+  "[NOME DO AUTOR], ... por seu advogado [SEU NOME], ... vem propor ..."
+- Proibido: "[SEU NOME], advogado, vem propor..." (advogado como autor).
+- Se o contexto for TRABALHO, usar "Juiz do Trabalho" / "Vara do Trabalho" (ou placeholders equivalentes).
+
+SAÍDA:
+{
+  "forca_tese": "Muito forte|Forte|Moderada|Fraca|Muito fraca",
+  "risco_improcedencia":"Baixo|Médio|Alto",
+  "confiabilidade_analise":"Alta|Média|Baixa",
+  "suficiencia_dados":"suficiente|parcialmente_suficiente|insuficiente",
+  "status":"COMPLETA|ANÁLISE PRELIMINAR",
+  "estrategia_18_pontos":[...18...],
+  "secoes": { 18 chaves OS ... },
+  "minuta_peca":"..."
+}
+"""
+
+REPAIR_PROMPT = r"""
+Você vai REFAZER a saída.
+Corrigir:
+- estratégia 18 pontos: 18 itens úteis, max 4 CONDICIONAL, cada item com ação+porquê+prova.
+- minuta: autor é o cliente por seu advogado; usar Vara do Trabalho se contexto de trabalho.
+- sem inventar fatos/datas/valores.
+Retorne APENAS JSON.
+"""
+
+def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.2) -> Dict[str, Any]:
+    r = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=temperature,
+        response_format={"type": "json_object"},
+    )
+    return json.loads(r.choices[0].message.content)
+
+def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    sid = state.get("_session_id", "")
+    uploads_short = [
+        {
+            "filename": f["filename"],
+            "mime": f["mime"],
+            "text_excerpt": (f.get("text_excerpt") or "")[:1800],
+        }
+        for f in UPLOADS.get(sid, [])
+    ]
+    return {"intake": state, "uploads": uploads_short}
+
+def validate_report_json(state: Dict[str, Any], data: Dict[str, Any]) -> List[str]:
+    issues = []
+    # campos técnicos no pueden ser placeholder
+    for k in ["forca_tese", "risco_improcedencia", "confiabilidade_analise", "suficiencia_dados", "status"]:
+        if is_placeholder(str(data.get(k, ""))):
+            issues.append(f"{k}_placeholder")
+
+    pts = normalize_points(data.get("estrategia_18_pontos"))
+    if not validate_18(pts):
+        issues.append("estrategia_18_invalida")
+    data["estrategia_18_pontos"] = pts
+
+    # minuta rules
+    minuta = str(data.get("minuta_peca", "")).strip()
+    if not _norm(minuta).startswith("copie e cole no timbrado"):
+        minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
+    data["minuta_peca"] = minuta
+    issues.extend(validate_minuta(state, minuta))
+
+    return issues
+
+def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
+    if not PROMPT_LOADED:
+        raise HTTPException(status_code=500, detail="OS_6_1_PROMPT não carregado (Render env).")
+    client = get_client()
+    payload = build_payload(state)
+
+    system = (OS_6_1_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT).strip()
+
+    try:
+        data = call_json(client, system, payload, temperature=TEMPERATURE)
+        issues = validate_report_json(state, data)
+        if not issues:
+            return data
+
+        data2 = call_json(client, REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT, {**payload, "issues": issues, "previous": data}, temperature=0.2)
+        issues2 = validate_report_json(state, data2)
+        if not issues2:
+            return data2
+
+        data3 = call_json(client, REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT, {**payload, "issues": issues2, "previous": data2}, temperature=0.15)
+        _ = validate_report_json(state, data3)
+        return data3
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise friendly_openai_error(e)
+
+def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
+    # más “real”: obliga a usar valor_envovido y complejidad/urgencia
+    sys = f"""
+Retorne APENAS JSON com:
+total(int), entrada(int), parcelas(int), justificativa_curta(str).
+Regras:
+- total entre {FEE_MIN_TOTAL} e {FEE_MAX_TOTAL}.
+- Usar: valor_envovido, urgencia, fase, tipo_peca, quantidade de provas, suficiência de dados, risco.
+- Se valor_envovido for alto (>= 50k), total não pode ser igual a 10k sempre; ajuste proporcional.
+- Não prometer êxito.
+"""
+    payload = {
+        "fase": state.get("fase"),
+        "tipo_peca": state.get("tipo_peca"),
+        "area_subarea": state.get("area_subarea"),
+        "valor_envovido": state.get("valor_envovido"),
+        "urgencia_prazo": state.get("urgencia_prazo"),
+        "provas_existentes": state.get("provas_existentes"),
+        "n_uploads": len(UPLOADS.get(state.get("_session_id",""), [])),
+        "forca_tese": report.get("forca_tese"),
+        "risco_improcedencia": report.get("risco_improcedencia"),
+        "confiabilidade_analise": report.get("confiabilidade_analise"),
+        "suficiencia_dados": report.get("suficiencia_dados"),
     }
-  }
+    r = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "system", "content": sys}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+    d = json.loads(r.choices[0].message.content)
 
-  async function sendMessage(){
-    const msg = msgInput.value.trim();
-    if(!msg) return;
+    total = int(max(FEE_MIN_TOTAL, min(FEE_MAX_TOTAL, int(float(d.get("total", 6000))))))
+    entrada = int(float(d.get("entrada", int(total * 0.3))))
+    entrada = max(int(total * 0.2), min(int(total * 0.4), entrada))
+    parcelas = int(d.get("parcelas", 6))
+    parcelas = max(1, min(12, parcelas))
 
-    addLine("Você: " + msg, "user");
-    msgInput.value = "";
-    msgInput.style.height = "44px";
-
-    setLoading(true);
-    try{
-      const data = await api("/chat", { session_id: sessionId, message: msg, state });
-
-      state = data.state || state;
-      addLine("IA: " + (data.message || ""), "ia");
-
-      // downloads
-      if(data.report_docx_b64){
-        downloads.report = { b64: data.report_docx_b64, name: data.report_docx_filename || "Relatorio.docx" };
-        setDownload(dlReport, downloads.report);
-      }
-      if(data.proposal_docx_b64){
-        downloads.prop = { b64: data.proposal_docx_b64, name: data.proposal_docx_filename || "Proposta.docx" };
-        setDownload(dlProp, downloads.prop);
-      }
-      if(data.piece_docx_b64){
-        downloads.piece = { b64: data.piece_docx_b64, name: data.piece_docx_filename || "Peca.docx" };
-        setDownload(dlPiece, downloads.piece);
-      }
-    } catch(err){
-      addLine("⚠️ Falha: " + err.message, "ia");
-    } finally {
-      setLoading(false);
+    return {
+        "total": total,
+        "entrada": entrada,
+        "parcelas": parcelas,
+        "justificativa_curta": str(d.get("justificativa_curta", "")).strip()[:1200],
     }
-  }
 
-  // Auto-resize textarea
-  msgInput.addEventListener("input", () => {
-    msgInput.style.height = "44px";
-    msgInput.style.height = Math.min(msgInput.scrollHeight, 140) + "px";
-  });
+# =========================================================
+# DOCX builders
+# =========================================================
+def add_h(doc: Document, text: str, size=14):
+    p = doc.add_paragraph()
+    r = p.add_run(text)
+    r.bold = True
+    r.font.size = Pt(size)
+    p.space_after = Pt(6)
 
-  // Enter send (Shift+Enter newline)
-  msgInput.addEventListener("keydown", (e) => {
-    if(e.key === "Enter" && !e.shiftKey){
-      e.preventDefault();
-      sendMessage();
+def add_p(doc: Document, text: str):
+    doc.add_paragraph(text)
+
+def add_list_numbered(doc: Document, items: List[str]):
+    for it in items:
+        doc.add_paragraph(str(it), style="List Number")
+
+def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
+    doc = Document()
+    title = doc.add_paragraph("RELATÓRIO — DIAGNÓSTICO JURÍDICO INTELIGENTE (S&M OS 6.1)")
+    title.runs[0].bold = True
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph("")
+    add_p(doc, f"Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    add_p(doc, f"Área/Subárea: {state.get('area_subarea','—')}")
+    add_p(doc, f"Fase: {state.get('fase','—')}")
+    add_p(doc, f"Partes: {state.get('partes','—')}")
+    add_p(doc, f"Contratante/Recebedor: {state.get('contratante_nome','—')}")
+    add_p(doc, f"Tipo de peça: {state.get('tipo_peca','—')}")
+
+    doc.add_paragraph("")
+    add_h(doc, "Classificações técnicas", 13)
+    add_p(doc, f"Força da tese: {report.get('forca_tese','—')}")
+    add_p(doc, f"Confiabilidade da análise: {report.get('confiabilidade_analise','—')}")
+    add_p(doc, f"Risco de improcedência: {report.get('risco_improcedencia','—')}")
+    add_p(doc, f"Suficiência de dados: {report.get('suficiencia_dados','—')}")
+    add_p(doc, f"Status: {report.get('status','—')}")
+
+    doc.add_paragraph("")
+    add_h(doc, "Estratégia (18 pontos)", 13)
+    add_list_numbered(doc, report.get("estrategia_18_pontos", []))
+
+    doc.add_paragraph("")
+    add_h(doc, "Nota de compliance", 12)
+    add_p(doc, "Saída assistiva. Revisão humana obrigatória em decisões críticas. Sem promessa de êxito.")
+    return doc
+
+def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
+    doc = Document()
+    p = doc.add_paragraph("ORÇAMENTO / PROPOSTA DE HONORÁRIOS")
+    p.runs[0].bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph("")
+
+    contratante = state.get("contratante_nome") or "(PREENCHER)"
+    total = int(fee["total"])
+    entrada = int(fee["entrada"])
+    parcelas = int(fee["parcelas"])
+    saldo = max(0, total - entrada)
+    parcela_val = int(saldo / max(parcelas, 1))
+
+    t1 = doc.add_table(rows=6, cols=2)
+    t1.style = "Table Grid"
+    t1.cell(0, 0).text = "Contratante / Recebedor"
+    t1.cell(0, 1).text = str(contratante)
+    t1.cell(1, 0).text = "Mandatário(a)"
+    # ✅ EXACTO placeholder
+    t1.cell(1, 1).text = f"{MANDATARIA_NOME} — {MANDATARIA_OAB}"
+    t1.cell(2, 0).text = "Objeto"
+    t1.cell(2, 1).text = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
+    t1.cell(3, 0).text = "Data"
+    t1.cell(3, 1).text = datetime.now().strftime("%d/%m/%Y")
+    t1.cell(4, 0).text = "Validade da proposta"
+    t1.cell(4, 1).text = f"{FEE_VALIDITY_DAYS} dias"
+    t1.cell(5, 0).text = "Observação"
+    t1.cell(5, 1).text = "Obrigação de meio. Sem promessa de êxito."
+
+    doc.add_paragraph("")
+    add_h(doc, "Honorários (sugestão por caso)", 13)
+    t2 = doc.add_table(rows=4, cols=2)
+    t2.style = "Table Grid"
+    t2.cell(0, 0).text = "Entrada (no ato)"
+    t2.cell(0, 1).text = fmt_brl(entrada)
+    t2.cell(1, 0).text = "Saldo"
+    t2.cell(1, 1).text = fmt_brl(saldo)
+    t2.cell(2, 0).text = f"Parcelamento ({parcelas}x)"
+    t2.cell(2, 1).text = f"{parcelas} parcelas de {fmt_brl(parcela_val)}"
+    t2.cell(3, 0).text = "Total"
+    t2.cell(3, 1).text = fmt_brl(total)
+
+    doc.add_paragraph("")
+    add_h(doc, "Justificativa (curta)", 13)
+    add_p(doc, fee.get("justificativa_curta", "—") or "—")
+
+    doc.add_paragraph("")
+    add_h(doc, "Orientação", 13)
+    add_p(doc, "Copie e cole esta proposta no timbrado do seu escritório antes de enviar ao cliente.")
+    return doc
+
+def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
+    doc = Document()
+    tipo = state.get("tipo_peca", "Peça")
+    p = doc.add_paragraph(f"MINUTA — {tipo.upper()} (S&M OS 6.1)")
+    p.runs[0].bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph("")
+    warn = doc.add_paragraph("IMPORTANTE: Copie e cole no timbrado do seu escritório antes de finalizar. Revise dados e anexos.")
+    warn.runs[0].bold = True
+
+    doc.add_paragraph("")
+    add_h(doc, "Minuta", 13)
+    doc.add_paragraph(str(report.get("minuta_peca", "—")))
+
+    doc.add_paragraph("")
+    foot = doc.add_paragraph("Nota: minuta assistiva. Ajuste [PREENCHER] antes de assinar/protocolar.")
+    foot.runs[0].italic = True
+    return doc
+
+# =========================================================
+# API Models
+# =========================================================
+class SessionOut(BaseModel):
+    session_id: str
+    message: str
+    state: Dict[str, Any]
+
+class ChatIn(BaseModel):
+    session_id: str
+    message: str
+    state: Dict[str, Any] = {}
+
+class ChatOut(BaseModel):
+    message: str
+    state: Dict[str, Any]
+    report_docx_b64: Optional[str] = None
+    report_docx_filename: Optional[str] = None
+    proposal_docx_b64: Optional[str] = None
+    proposal_docx_filename: Optional[str] = None
+    piece_docx_b64: Optional[str] = None
+    piece_docx_filename: Optional[str] = None
+
+class UploadIn(BaseModel):
+    session_id: str
+    filename: str
+    mime: str
+    b64: str
+
+class UploadOut(BaseModel):
+    file_id: str
+    filename: str
+    size_bytes: int
+    text_extracted: bool
+
+# =========================================================
+# Routes
+# =========================================================
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "service": "sm-os-demo",
+        "version": "1.7.0",
+        "has_openai_key": bool(OPENAI_API_KEY),
+        "allowed_origin": ALLOWED_ORIGIN,
+        "model": MODEL,
+        "prompt_loaded": PROMPT_LOADED,
+        "mandataria_default": f"{MANDATARIA_NOME} — {MANDATARIA_OAB}",
     }
-  });
 
-  btnSend.addEventListener("click", sendMessage);
-  btnActivate.addEventListener("click", startSession);
-  btnReset.addEventListener("click", startSession);
+@app.get("/healt")
+def healt():
+    return health()
 
-  // Upload
-  btnUpload.addEventListener("click", async () => {
-    if(!sessionId){ addLine("IA: Ative a sessão antes de subir provas.", "ia"); return; }
-    const files = [...fileInput.files];
-    if(!files.length){ addLine("IA: Selecione ao menos 1 arquivo.", "ia"); return; }
+@app.post("/session/new", response_model=SessionOut)
+def session_new(x_demo_key: Optional[str] = Header(default=None)):
+    auth_or_401(x_demo_key)
+    sid = str(uuid.uuid4())
+    UPLOADS[sid] = []
+    return SessionOut(
+        session_id=sid,
+        message="Vamos iniciar o diagnóstico.\n\n" + next_missing({"_session_id": sid}),
+        state={"_session_id": sid},
+    )
 
-    setLoading(true);
-    try{
-      for(const f of files){
-        const b64 = await new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(String(r.result).split(",")[1]);
-          r.onerror = reject;
-          r.readAsDataURL(f);
-        });
+@app.post("/upload", response_model=UploadOut)
+def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None)):
+    auth_or_401(x_demo_key)
+    sid = inp.session_id
+    UPLOADS.setdefault(sid, [])
+    files = UPLOADS[sid]
 
-        const out = await api("/upload", { session_id: sessionId, filename: f.name, mime: f.type || "application/octet-stream", b64 });
-        addLine(`IA: ✅ Prova recebida: ${out.filename} (extração: ${out.text_extracted ? "sim" : "não"})`, "ia");
-      }
-      fileInput.value = "";
-    } catch(err){
-      addLine("⚠️ Upload falhou: " + err.message, "ia");
-    } finally {
-      setLoading(false);
-    }
-  });
+    if len(files) >= MAX_FILES_PER_SESSION:
+        raise HTTPException(status_code=400, detail="Limite de arquivos por sessão atingido.")
 
-  // Boot (no auto start)
-  addLine("Cole a DEMO_KEY e clique em Ativar.", "ia");
-})();
-</script>
+    raw = base64.b64decode(inp.b64)
+    size = len(raw)
+    if size > MAX_FILE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Arquivo muito grande. Máximo {MAX_FILE_MB}MB.")
+
+    total = sum(f.get("size_bytes", 0) for f in files) + size
+    if total > MAX_TOTAL_MB_PER_SESSION * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Limite total por sessão: {MAX_TOTAL_MB_PER_SESSION}MB.")
+
+    file_id = str(uuid.uuid4())
+    text_excerpt = extract_text_from_upload(inp.filename, inp.mime, inp.b64)
+
+    files.append(
+        {
+            "file_id": file_id,
+            "filename": inp.filename,
+            "mime": inp.mime,
+            "size_bytes": size,
+            "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
+        }
+    )
+
+    return UploadOut(file_id=file_id, filename=inp.filename, size_bytes=size, text_extracted=bool(text_excerpt.strip()))
+
+@app.post("/chat", response_model=ChatOut)
+def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
+    auth_or_401(x_demo_key)
+    state = inp.state or {}
+    sid = state.get("_session_id") or inp.session_id
+    state["_session_id"] = sid
+
+    for key, _question in FIELDS_ORDER:
+        if not state.get(key):
+            val = (inp.message or "").strip()
+            if key == "tipo_peca":
+                mapped = map_tipo_peca(val)
+                if not mapped:
+                    return ChatOut(message="❗Tipo de peça inválido.\n\n" + pecas_list_text(), state=state)
+                state[key] = mapped
+            else:
+                state[key] = val
+            break
+
+    if not is_sufficient(state):
+        return ChatOut(message=next_missing(state), state=state)
+
+    try:
+        report = generate_report_strict(state)
+        client = get_client()
+        fee = generate_fee_json(client, state, report)
+
+        doc_report = build_report_strategy_docx(report, state)
+        doc_prop = build_proposal_docx(state, fee)
+        doc_piece = build_piece_docx(report, state)
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M")
+        tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
+
+        return ChatOut(
+            message="✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta (valor por caso) e Minuta da Peça.",
+            state=state,
+            report_docx_b64=docx_to_b64(doc_report),
+            report_docx_filename=f"Relatorio_SM_OS_{ts}.docx",
+            proposal_docx_b64=docx_to_b64(doc_prop),
+            proposal_docx_filename=f"Proposta_Honorarios_SM_{ts}.docx",
+            piece_docx_b64=docx_to_b64(doc_piece),
+            piece_docx_filename=f"Minuta_{tipo_safe}_{ts}.docx",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise friendly_openai_error(e)
+
+@app.get("/widget", response_class=HTMLResponse)
+def widget():
+    return HTMLResponse("<h3>OK</h3><p>Use o frontend no WordPress/Elementor.</p>")
