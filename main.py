@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import openai
 from openai import OpenAI
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -32,7 +32,7 @@ DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 
-# ✅ EXACTO como pediste
+# Placeholders (como pediste)
 MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(Nome do Mandatario/a)")
 MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB: (Numero de OAB)")
 
@@ -58,6 +58,7 @@ TIPOS_PECA = [
     "Petição Intermediária (Manifestação)",
 ]
 
+# Canonical keys (corrigido: valor_envolvido)
 FIELDS_ORDER: List[Tuple[str, str]] = [
     ("area_subarea", "Qual a área/subárea? (ex.: cível/consumidor/indenizatória)"),
     ("fase", "Qual a fase? (consultivo / pré-contencioso / processo / recurso / execução)"),
@@ -68,12 +69,17 @@ FIELDS_ORDER: List[Tuple[str, str]] = [
     ("fatos_cronologia", "Conte os fatos em ordem (inclua: demissão/afastamento/CAT/INSS se houver)."),
     ("provas_existentes", "Quais provas/documentos você já tem? (liste) — Você também pode subir arquivos agora."),
     ("urgencia_prazo", "Há urgência ou prazo crítico? (qual?)"),
-    ("valor_envovido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
+    ("valor_envolvido", "Qual o valor envolvido/impacto? (se não souber, estimativa)"),
     ("notas_adicionais", "Alguma informação adicional relevante? (detalhes que não cabiam antes)"),
 ]
 REQUIRED_FIELDS = [k for k, _ in FIELDS_ORDER]
 
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="1.7.0")
+# Compat (si tu frontend antiguo usa el typo)
+ALIASES = {
+    "valor_envolvido": ["valor_envovido", "valor_envolvido"],
+}
+
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN],
@@ -82,7 +88,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOADS: Dict[str, List[Dict[str, Any]]] = {}
+# =========================================================
+# SESSION STORAGE (FIX DEL LOOP)
+# =========================================================
+SESSIONS: Dict[str, Dict[str, Any]] = {}          # session_id -> state dict
+UPLOADS: Dict[str, List[Dict[str, Any]]] = {}     # session_id -> list files
 
 # =========================================================
 # Helpers
@@ -133,18 +143,58 @@ def map_tipo_peca(user_text: str) -> Optional[str]:
     }
     return aliases.get(t)
 
-def next_missing(state: Dict[str, Any]) -> str:
+def get_state(sid: str) -> Dict[str, Any]:
+    if sid not in SESSIONS:
+        SESSIONS[sid] = {"_session_id": sid, "_created_at": datetime.now().isoformat(), "_expected_key": None}
+    # migrate typo key if present
+    st = SESSIONS[sid]
+    if "valor_envovido" in st and "valor_envolvido" not in st:
+        st["valor_envolvido"] = st.get("valor_envovido")
+    return st
+
+def set_expected_key(st: Dict[str, Any], key: Optional[str]):
+    st["_expected_key"] = key
+
+def next_missing_key(st: Dict[str, Any]) -> Optional[str]:
+    for key, _q in FIELDS_ORDER:
+        # alias check
+        if key in ALIASES:
+            present = any(bool(st.get(k2)) for k2 in ALIASES[key])
+            if not present:
+                return key
+        else:
+            if not st.get(key):
+                return key
+    return None
+
+def next_missing_question(st: Dict[str, Any]) -> str:
     for key, question in FIELDS_ORDER:
-        if not state.get(key):
+        missing = False
+        if key in ALIASES:
+            missing = not any(bool(st.get(k2)) for k2 in ALIASES[key])
+        else:
+            missing = not bool(st.get(key))
+
+        if missing:
+            set_expected_key(st, key)
             if key == "tipo_peca":
                 return question + "\n\n" + pecas_list_text() + "\n\nDica: digite o número (ex.: 2) ou o nome."
             if key == "provas_existentes":
                 return question + "\n\nDica: você pode subir PDF/DOCX/TXT (e imagens, se quiser)."
             return question
+
+    set_expected_key(st, None)
     return ""
 
-def is_sufficient(state: Dict[str, Any]) -> bool:
-    return all(bool(state.get(k)) for k in REQUIRED_FIELDS)
+def is_sufficient(st: Dict[str, Any]) -> bool:
+    for k in REQUIRED_FIELDS:
+        if k in ALIASES:
+            if not any(bool(st.get(k2)) for k2 in ALIASES[k]):
+                return False
+        else:
+            if not bool(st.get(k)):
+                return False
+    return True
 
 def docx_to_b64(doc: Document) -> str:
     buf = BytesIO()
@@ -182,36 +232,33 @@ def normalize_points(raw: Any) -> List[str]:
             cleaned.append(it2)
     return cleaned
 
-def count_condicional(items: List[str]) -> int:
-    return sum(1 for x in items if _norm(x).startswith("condicional"))
-
 def validate_18(items: List[str]) -> bool:
     if len(items) != 18:
         return False
-    if count_condicional(items) > 4:
+    # max 4 CONDICIONAL:
+    if sum(1 for x in items if _norm(x).startswith("condicional")) > 4:
         return False
+    # no demasiados items cortos
     if sum(1 for x in items if len(x) < 25) > 3:
         return False
     return True
 
 def likely_attorney_as_author(minuta: str) -> bool:
-    t = _norm(minuta[:700])
-    # patrón que hoy te está saliendo (mal) :contentReference[oaicite:3]{index=3}
+    t = _norm(minuta[:900])
     bad = ("[seu nome], advogado" in t and "vem" in t and "propor" in t)
-    # patrón correcto esperado
     good = ("por seu advogado" in t or "por seu(sua) advogado(a)" in t)
     return bad and not good
 
-def detect_trabalho_context(state: Dict[str, Any]) -> bool:
+def detect_trabalho_context(st: Dict[str, Any]) -> bool:
     blob = _norm(" ".join([
-        state.get("area_subarea",""),
-        state.get("objetivo_cliente",""),
-        state.get("fatos_cronologia",""),
-        state.get("partes",""),
+        st.get("area_subarea",""),
+        st.get("objetivo_cliente",""),
+        st.get("fatos_cronologia",""),
+        st.get("partes",""),
     ]))
-    return any(x in blob for x in ["trabalho","empregador","empregado","acidente de trabalho","demitiu","demissao","vt","vara do trabalho"])
+    return any(x in blob for x in ["trabalho","empregador","empregado","acidente de trabalho","demitiu","demissao","vara do trabalho","justica do trabalho"])
 
-def validate_minuta(state: Dict[str, Any], minuta: str) -> List[str]:
+def validate_minuta(st: Dict[str, Any], minuta: str) -> List[str]:
     issues = []
     m = (minuta or "").strip()
     if len(m) < 900:
@@ -224,8 +271,8 @@ def validate_minuta(state: Dict[str, Any], minuta: str) -> List[str]:
     if likely_attorney_as_author(m):
         issues.append("minuta_advogado_como_autor")
 
-    if detect_trabalho_context(state):
-        t = _norm(m[:300])
+    if detect_trabalho_context(st):
+        t = _norm(m[:400])
         if "juiz do trabalho" not in t and "vara do trabalho" not in t:
             issues.append("minuta_forum_inadequado_trabalho")
 
@@ -260,8 +307,7 @@ def extract_text_from_txt(raw: bytes) -> str:
     except Exception:
         return ""
 
-def extract_text_from_upload(filename: str, mime: str, b64: str) -> str:
-    raw = base64.b64decode(b64)
+def extract_text_from_upload(filename: str, mime: str, raw: bytes) -> str:
     low = (filename or "").lower()
     mime = mime or ""
     if low.endswith(".pdf") or mime == "application/pdf":
@@ -298,7 +344,7 @@ SAÍDA:
   "suficiencia_dados":"suficiente|parcialmente_suficiente|insuficiente",
   "status":"COMPLETA|ANÁLISE PRELIMINAR",
   "estrategia_18_pontos":[...18...],
-  "secoes": { 18 chaves OS ... },
+  "secoes": { "1_CLASSIFICACAO_DO_CASO":"...", "2_SINTESE":"...", "3_QUESTAO_JURIDICA":"...", "4_ANALISE_TECNICA":"...", "5_FORCA_DA_TESE":"...", "6_CONFIABILIDADE":"...", "7_PROVAS":"...", "8_RISCOS":"...", "9_CENARIOS":"...", "10_ANALISE_ECONOMICA":"...", "11_RENTABILIDADE":"...", "12_SCORES":"...", "13_RED_TEAM":"...", "14_ESTRATEGIA":"...", "15_ACOES_PRIORITARIAS":"...", "16_PENDENCIAS":"...", "17_ALERTAS":"...", "18_REFLEXAO_FINAL":"..." },
   "minuta_peca":"..."
 }
 """
@@ -324,8 +370,8 @@ def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature:
     )
     return json.loads(r.choices[0].message.content)
 
-def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
-    sid = state.get("_session_id", "")
+def build_payload(st: Dict[str, Any]) -> Dict[str, Any]:
+    sid = st.get("_session_id", "")
     uploads_short = [
         {
             "filename": f["filename"],
@@ -334,11 +380,11 @@ def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         for f in UPLOADS.get(sid, [])
     ]
-    return {"intake": state, "uploads": uploads_short}
+    return {"intake": st, "uploads": uploads_short}
 
-def validate_report_json(state: Dict[str, Any], data: Dict[str, Any]) -> List[str]:
+def validate_report_json(st: Dict[str, Any], data: Dict[str, Any]) -> List[str]:
     issues = []
-    # campos técnicos no pueden ser placeholder
+
     for k in ["forca_tese", "risco_improcedencia", "confiabilidade_analise", "suficiencia_dados", "status"]:
         if is_placeholder(str(data.get(k, ""))):
             issues.append(f"{k}_placeholder")
@@ -348,62 +394,58 @@ def validate_report_json(state: Dict[str, Any], data: Dict[str, Any]) -> List[st
         issues.append("estrategia_18_invalida")
     data["estrategia_18_pontos"] = pts
 
-    # minuta rules
     minuta = str(data.get("minuta_peca", "")).strip()
     if not _norm(minuta).startswith("copie e cole no timbrado"):
         minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
     data["minuta_peca"] = minuta
-    issues.extend(validate_minuta(state, minuta))
+    issues.extend(validate_minuta(st, minuta))
 
     return issues
 
-def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
+def generate_report_strict(st: Dict[str, Any]) -> Dict[str, Any]:
     if not PROMPT_LOADED:
         raise HTTPException(status_code=500, detail="OS_6_1_PROMPT não carregado (Render env).")
-    client = get_client()
-    payload = build_payload(state)
 
+    client = get_client()
+    payload = build_payload(st)
     system = (OS_6_1_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT).strip()
 
     try:
         data = call_json(client, system, payload, temperature=TEMPERATURE)
-        issues = validate_report_json(state, data)
+        issues = validate_report_json(st, data)
         if not issues:
+            data["_warnings"] = []
             return data
 
+        # 2ª tentativa (máximo 2 para evitar timeout)
         data2 = call_json(client, REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT, {**payload, "issues": issues, "previous": data}, temperature=0.2)
-        issues2 = validate_report_json(state, data2)
-        if not issues2:
-            return data2
-
-        data3 = call_json(client, REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT, {**payload, "issues": issues2, "previous": data2}, temperature=0.15)
-        _ = validate_report_json(state, data3)
-        return data3
+        issues2 = validate_report_json(st, data2)
+        data2["_warnings"] = issues2
+        return data2
 
     except HTTPException:
         raise
     except Exception as e:
         raise friendly_openai_error(e)
 
-def generate_fee_json(client: OpenAI, state: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
-    # más “real”: obliga a usar valor_envovido y complejidad/urgencia
+def generate_fee_json(client: OpenAI, st: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     sys = f"""
 Retorne APENAS JSON com:
 total(int), entrada(int), parcelas(int), justificativa_curta(str).
 Regras:
 - total entre {FEE_MIN_TOTAL} e {FEE_MAX_TOTAL}.
-- Usar: valor_envovido, urgencia, fase, tipo_peca, quantidade de provas, suficiência de dados, risco.
-- Se valor_envovido for alto (>= 50k), total não pode ser igual a 10k sempre; ajuste proporcional.
+- Usar: valor_envolvido, urgencia, fase, tipo_peca, quantidade de provas, suficiência de dados, risco.
+- Se valor_envolvido for alto (>= 50000), total deve ajustar proporcionalmente (evitar sempre o mesmo número).
 - Não prometer êxito.
 """
     payload = {
-        "fase": state.get("fase"),
-        "tipo_peca": state.get("tipo_peca"),
-        "area_subarea": state.get("area_subarea"),
-        "valor_envovido": state.get("valor_envovido"),
-        "urgencia_prazo": state.get("urgencia_prazo"),
-        "provas_existentes": state.get("provas_existentes"),
-        "n_uploads": len(UPLOADS.get(state.get("_session_id",""), [])),
+        "fase": st.get("fase"),
+        "tipo_peca": st.get("tipo_peca"),
+        "area_subarea": st.get("area_subarea"),
+        "valor_envolvido": st.get("valor_envolvido") or st.get("valor_envovido"),
+        "urgencia_prazo": st.get("urgencia_prazo"),
+        "provas_existentes": st.get("provas_existentes"),
+        "n_uploads": len(UPLOADS.get(st.get("_session_id",""), [])),
         "forca_tese": report.get("forca_tese"),
         "risco_improcedencia": report.get("risco_improcedencia"),
         "confiabilidade_analise": report.get("confiabilidade_analise"),
@@ -447,7 +489,7 @@ def add_list_numbered(doc: Document, items: List[str]):
     for it in items:
         doc.add_paragraph(str(it), style="List Number")
 
-def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
+def build_report_strategy_docx(report: Dict[str, Any], st: Dict[str, Any]) -> Document:
     doc = Document()
     title = doc.add_paragraph("RELATÓRIO — DIAGNÓSTICO JURÍDICO INTELIGENTE (S&M OS 6.1)")
     title.runs[0].bold = True
@@ -455,11 +497,12 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
 
     doc.add_paragraph("")
     add_p(doc, f"Data/Hora: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    add_p(doc, f"Área/Subárea: {state.get('area_subarea','—')}")
-    add_p(doc, f"Fase: {state.get('fase','—')}")
-    add_p(doc, f"Partes: {state.get('partes','—')}")
-    add_p(doc, f"Contratante/Recebedor: {state.get('contratante_nome','—')}")
-    add_p(doc, f"Tipo de peça: {state.get('tipo_peca','—')}")
+    add_p(doc, f"Área/Subárea: {st.get('area_subarea','—')}")
+    add_p(doc, f"Fase: {st.get('fase','—')}")
+    add_p(doc, f"Partes: {st.get('partes','—')}")
+    add_p(doc, f"Contratante/Recebedor: {st.get('contratante_nome','—')}")
+    add_p(doc, f"Tipo de peça: {st.get('tipo_peca','—')}")
+    add_p(doc, f"Valor/Impacto: {st.get('valor_envolvido') or st.get('valor_envovido') or '—'}")
 
     doc.add_paragraph("")
     add_h(doc, "Classificações técnicas", 13)
@@ -473,19 +516,36 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_h(doc, "Estratégia (18 pontos)", 13)
     add_list_numbered(doc, report.get("estrategia_18_pontos", []))
 
+    # Seções (si vienen)
+    secoes = report.get("secoes") or {}
+    if isinstance(secoes, dict) and secoes:
+        doc.add_paragraph("")
+        add_h(doc, "Seções OS 6.1 (resumo)", 13)
+        for k, v in secoes.items():
+            add_h(doc, str(k).replace("_", " "), 12)
+            add_p(doc, str(v or "—"))
+
+    warnings = report.get("_warnings") or []
+    if warnings:
+        doc.add_paragraph("")
+        add_h(doc, "Avisos de validação (backend)", 12)
+        add_p(doc, "A IA retornou inconsistências. Recomenda-se revisão humana reforçada.")
+        for w in warnings[:20]:
+            add_p(doc, f"- {w}")
+
     doc.add_paragraph("")
     add_h(doc, "Nota de compliance", 12)
     add_p(doc, "Saída assistiva. Revisão humana obrigatória em decisões críticas. Sem promessa de êxito.")
     return doc
 
-def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
+def build_proposal_docx(st: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     doc = Document()
     p = doc.add_paragraph("ORÇAMENTO / PROPOSTA DE HONORÁRIOS")
     p.runs[0].bold = True
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph("")
 
-    contratante = state.get("contratante_nome") or "(PREENCHER)"
+    contratante = st.get("contratante_nome") or "(PREENCHER)"
     total = int(fee["total"])
     entrada = int(fee["entrada"])
     parcelas = int(fee["parcelas"])
@@ -497,10 +557,9 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     t1.cell(0, 0).text = "Contratante / Recebedor"
     t1.cell(0, 1).text = str(contratante)
     t1.cell(1, 0).text = "Mandatário(a)"
-    # ✅ EXACTO placeholder
     t1.cell(1, 1).text = f"{MANDATARIA_NOME} — {MANDATARIA_OAB}"
     t1.cell(2, 0).text = "Objeto"
-    t1.cell(2, 1).text = f"Atuação no caso informado (Área: {state.get('area_subarea','—')})."
+    t1.cell(2, 1).text = f"Atuação no caso informado (Área: {st.get('area_subarea','—')})."
     t1.cell(3, 0).text = "Data"
     t1.cell(3, 1).text = datetime.now().strftime("%d/%m/%Y")
     t1.cell(4, 0).text = "Validade da proposta"
@@ -530,9 +589,9 @@ def build_proposal_docx(state: Dict[str, Any], fee: Dict[str, Any]) -> Document:
     add_p(doc, "Copie e cole esta proposta no timbrado do seu escritório antes de enviar ao cliente.")
     return doc
 
-def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
+def build_piece_docx(report: Dict[str, Any], st: Dict[str, Any]) -> Document:
     doc = Document()
-    tipo = state.get("tipo_peca", "Peça")
+    tipo = st.get("tipo_peca", "Peça")
     p = doc.add_paragraph(f"MINUTA — {tipo.upper()} (S&M OS 6.1)")
     p.runs[0].bold = True
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -551,12 +610,75 @@ def build_piece_docx(report: Dict[str, Any], state: Dict[str, Any]) -> Document:
     return doc
 
 # =========================================================
+# Parsing “etiquetado” (para no romper el flujo)
+# =========================================================
+LABEL_TO_KEY = {
+    "area": "area_subarea",
+    "área": "area_subarea",
+    "area/subarea": "area_subarea",
+    "fase": "fase",
+    "objetivo": "objetivo_cliente",
+    "objetivo_cliente": "objetivo_cliente",
+    "partes": "partes",
+    "contratante": "contratante_nome",
+    "contratante/recebedor": "contratante_nome",
+    "peca": "tipo_peca",
+    "peça": "tipo_peca",
+    "tipo_peca": "tipo_peca",
+    "fatos": "fatos_cronologia",
+    "provas": "provas_existentes",
+    "urgencia": "urgencia_prazo",
+    "urgência": "urgencia_prazo",
+    "valor": "valor_envolvido",
+    "valor/impacto": "valor_envolvido",
+    "info": "notas_adicionais",
+}
+
+LABEL_RE = re.compile(r"^\s*([A-Za-zÀ-ÿ\/ _]+)\s*[:\-]\s*(.+?)\s*$")
+
+def parse_labeled_answer(msg: str) -> Optional[Tuple[str, str]]:
+    m = LABEL_RE.match(msg or "")
+    if not m:
+        return None
+    label = _norm(m.group(1)).replace(" ", "")
+    val = (m.group(2) or "").strip()
+    # normalize label variants
+    if label in ("areasubarea", "area/subarea"):
+        key = "area_subarea"
+    elif label in ("tipodepeca", "tipodepeça", "tipodepeca"):
+        key = "tipo_peca"
+    else:
+        # try direct map
+        key = LABEL_TO_KEY.get(label) or LABEL_TO_KEY.get(label.replace("_", "")) or LABEL_TO_KEY.get(label.replace("/", ""))
+    if not key:
+        return None
+    return key, val
+
+def captured_view(st: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "Área/Subárea": st.get("area_subarea") or "—",
+        "Fase": st.get("fase") or "—",
+        "Objetivo": st.get("objetivo_cliente") or "—",
+        "Partes": st.get("partes") or "—",
+        "Contratante/Recebedor": st.get("contratante_nome") or "—",
+        "Tipo de peça": st.get("tipo_peca") or "—",
+        "Fatos (cronologia)": st.get("fatos_cronologia") or "—",
+        "Provas existentes": st.get("provas_existentes") or "—",
+        "Urgência/Prazo": st.get("urgencia_prazo") or "—",
+        "Valor/Impacto": st.get("valor_envolvido") or st.get("valor_envovido") or "—",
+        "Notas adicionais": st.get("notas_adicionais") or "—",
+        "Uploads": [f.get("filename") for f in UPLOADS.get(st.get("_session_id",""), [])],
+    }
+
+# =========================================================
 # API Models
 # =========================================================
 class SessionOut(BaseModel):
     session_id: str
     message: str
     state: Dict[str, Any]
+    expected_field: Optional[str] = None
+    captured: Optional[Dict[str, Any]] = None
 
 class ChatIn(BaseModel):
     session_id: str
@@ -565,19 +687,17 @@ class ChatIn(BaseModel):
 
 class ChatOut(BaseModel):
     message: str
+    reply: str
     state: Dict[str, Any]
+    expected_field: Optional[str] = None
+    captured: Optional[Dict[str, Any]] = None
+
     report_docx_b64: Optional[str] = None
     report_docx_filename: Optional[str] = None
     proposal_docx_b64: Optional[str] = None
     proposal_docx_filename: Optional[str] = None
     piece_docx_b64: Optional[str] = None
     piece_docx_filename: Optional[str] = None
-
-class UploadIn(BaseModel):
-    session_id: str
-    filename: str
-    mime: str
-    b64: str
 
 class UploadOut(BaseModel):
     file_id: str
@@ -593,12 +713,13 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "1.7.0",
+        "version": "2.0.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
         "prompt_loaded": PROMPT_LOADED,
         "mandataria_default": f"{MANDATARIA_NOME} — {MANDATARIA_OAB}",
+        "sessions": len(SESSIONS),
     }
 
 @app.get("/healt")
@@ -609,24 +730,87 @@ def healt():
 def session_new(x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
     sid = str(uuid.uuid4())
+    SESSIONS[sid] = {"_session_id": sid, "_created_at": datetime.now().isoformat(), "_expected_key": None}
     UPLOADS[sid] = []
+    st = get_state(sid)
+    q = next_missing_question(st)
+    msg = "Vamos iniciar o diagnóstico.\n\n" + q
     return SessionOut(
         session_id=sid,
-        message="Vamos iniciar o diagnóstico.\n\n" + next_missing({"_session_id": sid}),
-        state={"_session_id": sid},
+        message=msg,
+        state=st,
+        expected_field=st.get("_expected_key"),
+        captured=captured_view(st),
     )
 
+# /upload: soporta JSON base64 Y multipart/form-data
 @app.post("/upload", response_model=UploadOut)
-def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None)):
+async def upload_file(request: Request, x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
-    sid = inp.session_id
+    ct = (request.headers.get("content-type") or "").lower()
+
+    if ct.startswith("multipart/form-data"):
+        form = await request.form()
+        sid = (form.get("session_id") or "").strip()
+        if not sid:
+            raise HTTPException(status_code=400, detail="session_id is required (form).")
+        st = get_state(sid)
+        UPLOADS.setdefault(sid, [])
+        files_list = UPLOADS[sid]
+
+        incoming_files = form.getlist("files") or []
+        if not incoming_files:
+            raise HTTPException(status_code=400, detail="No files provided.")
+
+        # procesa 1 por 1 (devuelve el último)
+        last_out = None
+        for uf in incoming_files:
+            if len(files_list) >= MAX_FILES_PER_SESSION:
+                raise HTTPException(status_code=400, detail="Limite de arquivos por sessão atingido.")
+
+            raw = await uf.read()
+            size = len(raw)
+            if size > MAX_FILE_MB * 1024 * 1024:
+                raise HTTPException(status_code=400, detail=f"Arquivo muito grande. Máximo {MAX_FILE_MB}MB.")
+
+            total = sum(f.get("size_bytes", 0) for f in files_list) + size
+            if total > MAX_TOTAL_MB_PER_SESSION * 1024 * 1024:
+                raise HTTPException(status_code=400, detail=f"Limite total por sessão: {MAX_TOTAL_MB_PER_SESSION}MB.")
+
+            file_id = str(uuid.uuid4())
+            text_excerpt = extract_text_from_upload(uf.filename, uf.content_type or "", raw)
+
+            files_list.append(
+                {
+                    "file_id": file_id,
+                    "filename": uf.filename,
+                    "mime": uf.content_type or "",
+                    "size_bytes": size,
+                    "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
+                }
+            )
+
+            last_out = UploadOut(file_id=file_id, filename=uf.filename, size_bytes=size, text_extracted=bool(text_excerpt.strip()))
+
+        return last_out  # type: ignore
+
+    # JSON base64 (compat)
+    body = await request.json()
+    sid = (body.get("session_id") or "").strip()
+    filename = (body.get("filename") or "").strip()
+    mime = (body.get("mime") or "").strip()
+    b64 = (body.get("b64") or "").strip()
+
+    if not sid or not filename or not b64:
+        raise HTTPException(status_code=400, detail="session_id, filename, b64 are required (json).")
+
+    st = get_state(sid)
     UPLOADS.setdefault(sid, [])
     files = UPLOADS[sid]
-
     if len(files) >= MAX_FILES_PER_SESSION:
         raise HTTPException(status_code=400, detail="Limite de arquivos por sessão atingido.")
 
-    raw = base64.b64decode(inp.b64)
+    raw = base64.b64decode(b64)
     size = len(raw)
     if size > MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Arquivo muito grande. Máximo {MAX_FILE_MB}MB.")
@@ -636,57 +820,109 @@ def upload_file(inp: UploadIn, x_demo_key: Optional[str] = Header(default=None))
         raise HTTPException(status_code=400, detail=f"Limite total por sessão: {MAX_TOTAL_MB_PER_SESSION}MB.")
 
     file_id = str(uuid.uuid4())
-    text_excerpt = extract_text_from_upload(inp.filename, inp.mime, inp.b64)
+    text_excerpt = extract_text_from_upload(filename, mime, raw)
 
     files.append(
         {
             "file_id": file_id,
-            "filename": inp.filename,
-            "mime": inp.mime,
+            "filename": filename,
+            "mime": mime,
             "size_bytes": size,
             "text_excerpt": text_excerpt[:MAX_EXCERPT_CHARS],
         }
     )
 
-    return UploadOut(file_id=file_id, filename=inp.filename, size_bytes=size, text_extracted=bool(text_excerpt.strip()))
+    return UploadOut(file_id=file_id, filename=filename, size_bytes=size, text_extracted=bool(text_excerpt.strip()))
 
 @app.post("/chat", response_model=ChatOut)
 def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
-    state = inp.state or {}
-    sid = state.get("_session_id") or inp.session_id
-    state["_session_id"] = sid
 
-    for key, _question in FIELDS_ORDER:
-        if not state.get(key):
-            val = (inp.message or "").strip()
-            if key == "tipo_peca":
-                mapped = map_tipo_peca(val)
-                if not mapped:
-                    return ChatOut(message="❗Tipo de peça inválido.\n\n" + pecas_list_text(), state=state)
-                state[key] = mapped
-            else:
-                state[key] = val
-            break
+    sid = (inp.session_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required.")
 
-    if not is_sufficient(state):
-        return ChatOut(message=next_missing(state), state=state)
+    st = get_state(sid)
 
+    msg = (inp.message or "").strip()
+    if not msg:
+        q = next_missing_question(st)
+        return ChatOut(message=q, reply=q, state=st, expected_field=st.get("_expected_key"), captured=captured_view(st))
+
+    # start signal (frontend puede mandar __start__)
+    if msg in ("__start__", "start", "/start"):
+        q = next_missing_question(st)
+        out = "Vamos iniciar o diagnóstico.\n\n" + q
+        return ChatOut(message=out, reply=out, state=st, expected_field=st.get("_expected_key"), captured=captured_view(st))
+
+    # 1) si viene etiquetado, respeta la etiqueta
+    parsed = parse_labeled_answer(msg)
+    target_key = None
+    val = None
+    if parsed:
+        target_key, val = parsed
+    else:
+        # 2) usa el expected_key de la sesión (FIX loop)
+        target_key = st.get("_expected_key") or next_missing_key(st)
+        val = msg
+
+    if not target_key:
+        target_key = next_missing_key(st)
+        val = msg
+
+    # Normaliza valores vacíos
+    val = (val or "").strip()
+    if not val:
+        q = next_missing_question(st)
+        return ChatOut(message=q, reply=q, state=st, expected_field=st.get("_expected_key"), captured=captured_view(st))
+
+    # Guarda la respuesta en el campo correcto
+    if target_key == "tipo_peca":
+        mapped = map_tipo_peca(val)
+        if not mapped:
+            out = "❗Tipo de peça inválido.\n\n" + pecas_list_text() + "\n\nDica: digite o número (ex.: 2) ou o nome."
+            # no avance el expected_key
+            set_expected_key(st, "tipo_peca")
+            return ChatOut(message=out, reply=out, state=st, expected_field=st.get("_expected_key"), captured=captured_view(st))
+        st["tipo_peca"] = mapped
+
+    elif target_key == "valor_envolvido":
+        st["valor_envolvido"] = val
+        # compat key antiguo
+        st["valor_envovido"] = val
+
+    else:
+        st[target_key] = val
+
+    # Pregunta siguiente o genera docs
+    if not is_sufficient(st):
+        q = next_missing_question(st)
+        return ChatOut(message=q, reply=q, state=st, expected_field=st.get("_expected_key"), captured=captured_view(st))
+
+    # =====================================================
+    # Generación final (3 DOCX)
+    # =====================================================
     try:
-        report = generate_report_strict(state)
+        report = generate_report_strict(st)
         client = get_client()
-        fee = generate_fee_json(client, state, report)
+        fee = generate_fee_json(client, st, report)
 
-        doc_report = build_report_strategy_docx(report, state)
-        doc_prop = build_proposal_docx(state, fee)
-        doc_piece = build_piece_docx(report, state)
+        doc_report = build_report_strategy_docx(report, st)
+        doc_prop = build_proposal_docx(st, fee)
+        doc_piece = build_piece_docx(report, st)
 
         ts = datetime.now().strftime("%Y%m%d-%H%M")
-        tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
+        tipo_safe = (st.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
+
+        out = "✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta (valor por caso) e Minuta da Peça."
+        set_expected_key(st, None)
 
         return ChatOut(
-            message="✅ Pronto. Baixe os 3 DOCX: Relatório+Estratégia(18), Proposta (valor por caso) e Minuta da Peça.",
-            state=state,
+            message=out,
+            reply=out,
+            state=st,
+            expected_field=None,
+            captured=captured_view(st),
             report_docx_b64=docx_to_b64(doc_report),
             report_docx_filename=f"Relatorio_SM_OS_{ts}.docx",
             proposal_docx_b64=docx_to_b64(doc_prop),
