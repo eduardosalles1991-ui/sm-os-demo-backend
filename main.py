@@ -205,6 +205,176 @@ def merge_incoming_state(state: Dict[str, Any], incoming: Dict[str, Any]):
             state[k] = v
 
 
+LEGAL_BASIS_TOP_K = int(os.getenv("LEGAL_BASIS_TOP_K", "5"))
+VADEMECUM_PATH = (os.getenv("VADEMECUM_PATH") or "").strip()
+
+
+class InlineVadeMecum:
+    def __init__(self):
+        self.items: List[Dict[str, Any]] = []
+        self.loaded = False
+        self.path_used: Optional[str] = None
+        self.error: Optional[str] = None
+
+    def candidate_paths(self) -> List[str]:
+        paths = []
+        if VADEMECUM_PATH:
+            paths.append(VADEMECUM_PATH)
+        paths.extend([
+            "./data/vademecum.jsonl",
+            "./vademecum.jsonl",
+            "/mnt/data/vademecum_priority.jsonl",
+            "/mnt/data/vademecum.jsonl",
+        ])
+        out = []
+        for p in paths:
+            if p and p not in out:
+                out.append(p)
+        return out
+
+    def load(self):
+        if self.loaded:
+            return
+        self.loaded = True
+        for path in self.candidate_paths():
+            try:
+                if not os.path.exists(path):
+                    continue
+                items = []
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            items.append(json.loads(line))
+                        except Exception:
+                            continue
+                self.items = items
+                self.path_used = path
+                self.error = None
+                return
+            except Exception as e:
+                self.error = f"{type(e).__name__}: {e}"
+        if not self.path_used and not self.error:
+            self.error = "vademecum.jsonl não encontrado"
+
+    def status(self) -> Dict[str, Any]:
+        self.load()
+        return {
+            "available": bool(self.items),
+            "items": len(self.items),
+            "path": self.path_used,
+            "error": self.error,
+        }
+
+    def search(self, query: str, area: Optional[str] = None, top_k: int = 5) -> List[Dict[str, Any]]:
+        self.load()
+        if not self.items:
+            return []
+        q = _norm(query)
+        q_tokens = set(re.findall(r"[a-z0-9]{3,}", q))
+        area_n = _norm(area) if area else ""
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for item in self.items:
+            if item.get("revogado"):
+                continue
+            item_area = _norm(str(item.get("area") or ""))
+            if area_n and item_area and area_n != item_area:
+                if not (area_n in item_area or item_area in area_n):
+                    continue
+            haystack = " ".join([
+                _norm(str(item.get("texto_limpo") or "")),
+                _norm(str(item.get("texto") or "")),
+                " ".join(_norm(str(x)) for x in (item.get("temas") or [])),
+                " ".join(_norm(str(x)) for x in (item.get("palavras_chave") or [])),
+                _norm(str(item.get("fonte") or "")),
+                _norm(str(item.get("diploma") or "")),
+            ]).strip()
+            if not haystack:
+                continue
+            h_tokens = set(re.findall(r"[a-z0-9]{3,}", haystack))
+            overlap = len(q_tokens & h_tokens)
+            if overlap <= 0:
+                continue
+            score = float(overlap)
+            fonte = _norm(str(item.get("fonte") or ""))
+            if "trabalhista" in q_tokens and fonte == "clt":
+                score += 2.0
+            if "consumidor" in q_tokens and fonte == "cdc":
+                score += 2.0
+            if "civil" in q_tokens and fonte in {"cc", "cpc"}:
+                score += 1.5
+            if item.get("vigencia_status") == "vigente":
+                score += 0.35
+            scored.append((score, item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out = []
+        for score, item in scored[:top_k]:
+            out.append({
+                "score": round(score, 4),
+                "fonte": item.get("fonte"),
+                "diploma": item.get("diploma"),
+                "artigo": item.get("artigo"),
+                "texto": item.get("texto"),
+                "area": item.get("area"),
+                "temas": item.get("temas", []),
+                "palavras_chave": item.get("palavras_chave", []),
+                "pagina_inicial_pdf": item.get("pagina_inicial_pdf"),
+            })
+        return out
+
+
+VADEMECUM = InlineVadeMecum()
+
+
+def infer_normative_area(state: Dict[str, Any]) -> Optional[str]:
+    area = _norm(str(state.get("area_subarea") or ""))
+    if not area:
+        return None
+    if any(x in area for x in ["trabalh", "emprego", "clt"]):
+        return "trabalhista"
+    if any(x in area for x in ["consum", "cdc"]):
+        return "consumidor"
+    if any(x in area for x in ["penal", "crime"]):
+        return "penal"
+    if any(x in area for x in ["processual civil", "cpc"]):
+        return "processual_civil"
+    if any(x in area for x in ["civil", "contrato", "indenizacao", "indenização", "locacao", "locação", "familia", "família"]):
+        return "civil"
+    return None
+
+
+def build_legal_basis(state: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
+    facts = " ".join([
+        str(state.get("fatos_cronologia") or ""),
+        str(state.get("objetivo_cliente") or ""),
+        str(state.get("provas_existentes") or ""),
+        str(state.get("tipo_peca") or ""),
+        str(state.get("notas_adicionais") or ""),
+        str(state.get("area_subarea") or ""),
+    ]).strip()
+    if not facts:
+        return []
+    area = infer_normative_area(state)
+    return VADEMECUM.search(facts, area=area, top_k=top_k)
+
+
+def legal_basis_text(norms: List[Dict[str, Any]]) -> str:
+    if not norms:
+        return "Base normativa ainda não localizada no Vade Mecum."
+    chunks = []
+    for n in norms:
+        fonte = n.get("fonte") or n.get("diploma") or "Norma"
+        art = n.get("artigo")
+        head = f"{fonte}, art. {art}" if art else str(fonte)
+        texto = clean_text(str(n.get("texto") or ""))
+        if len(texto) > 320:
+            texto = texto[:317].rstrip() + "..."
+        chunks.append(f"- {head}: {texto}")
+    return "\n".join(chunks)
+
+
 TIPO_PECA_ALIASES = {
     "notificacao extrajudicial": "Notificação Extrajudicial",
     "peticao inicial": "Petição Inicial",
@@ -579,7 +749,7 @@ def apply_expected_field_answer(state: Dict[str, Any], message: str) -> bool:
         return False
 
     explicit_piece = detect_tipo_peca_in_text(raw)
-    if explicit_piece and field != "tipo_peca":
+    if explicit_piece and field not in {"tipo_peca", "objetivo_cliente"}:
         return False
 
     def done():
@@ -642,6 +812,9 @@ def apply_expected_field_answer(state: Dict[str, Any], message: str) -> bool:
     if field in {"contratante_nome", "parte_contraria_nome", "cidade_uf", "objetivo_cliente", "partes", "provas_existentes", "fatos_cronologia", "notas_adicionais", "area_subarea"}:
         if is_negative_reply(raw) and field in {"cidade_uf", "contratante_nome", "parte_contraria_nome", "notas_adicionais"}:
             state[field] = "não informado"
+            return done()
+        if field == "objetivo_cliente" and explicit_piece and len(raw) <= 40:
+            state[field] = raw
             return done()
         if len(raw) >= 2:
             state[field] = raw
@@ -789,9 +962,12 @@ JSON:
             continue
 
         if k == "tipo_peca":
-            mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
-            if mapped in TIPOS_PECA:
-                cleaned[k] = mapped
+            if state_expected_field(state) == "objetivo_cliente" and not data.get("objetivo_cliente"):
+                cleaned["objetivo_cliente"] = txt
+            else:
+                mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
+                if mapped in TIPOS_PECA:
+                    cleaned[k] = mapped
         elif k == "fase":
             cleaned[k] = normalize_fase(txt)
         elif k in ("valor_envovido", "valor_envolvido"):
@@ -854,6 +1030,10 @@ def wants_all_documents(message: str) -> bool:
 def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     m = _norm(message)
     outputs: List[str] = []
+    expected = state_expected_field(state)
+
+    if expected and expected != "tipo_peca" and not wants_generation(message) and len(clean_text(message).split()) <= 6:
+        return []
 
     if wants_all_documents(message):
         return ["report", "proposal", "piece"]
