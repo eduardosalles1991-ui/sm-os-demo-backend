@@ -205,176 +205,6 @@ def merge_incoming_state(state: Dict[str, Any], incoming: Dict[str, Any]):
             state[k] = v
 
 
-LEGAL_BASIS_TOP_K = int(os.getenv("LEGAL_BASIS_TOP_K", "5"))
-VADEMECUM_PATH = (os.getenv("VADEMECUM_PATH") or "").strip()
-
-
-class InlineVadeMecum:
-    def __init__(self):
-        self.items: List[Dict[str, Any]] = []
-        self.loaded = False
-        self.path_used: Optional[str] = None
-        self.error: Optional[str] = None
-
-    def candidate_paths(self) -> List[str]:
-        paths = []
-        if VADEMECUM_PATH:
-            paths.append(VADEMECUM_PATH)
-        paths.extend([
-            "./data/vademecum.jsonl",
-            "./vademecum.jsonl",
-            "/mnt/data/vademecum_priority.jsonl",
-            "/mnt/data/vademecum.jsonl",
-        ])
-        out = []
-        for p in paths:
-            if p and p not in out:
-                out.append(p)
-        return out
-
-    def load(self):
-        if self.loaded:
-            return
-        self.loaded = True
-        for path in self.candidate_paths():
-            try:
-                if not os.path.exists(path):
-                    continue
-                items = []
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            items.append(json.loads(line))
-                        except Exception:
-                            continue
-                self.items = items
-                self.path_used = path
-                self.error = None
-                return
-            except Exception as e:
-                self.error = f"{type(e).__name__}: {e}"
-        if not self.path_used and not self.error:
-            self.error = "vademecum.jsonl não encontrado"
-
-    def status(self) -> Dict[str, Any]:
-        self.load()
-        return {
-            "available": bool(self.items),
-            "items": len(self.items),
-            "path": self.path_used,
-            "error": self.error,
-        }
-
-    def search(self, query: str, area: Optional[str] = None, top_k: int = 5) -> List[Dict[str, Any]]:
-        self.load()
-        if not self.items:
-            return []
-        q = _norm(query)
-        q_tokens = set(re.findall(r"[a-z0-9]{3,}", q))
-        area_n = _norm(area) if area else ""
-        scored: List[Tuple[float, Dict[str, Any]]] = []
-        for item in self.items:
-            if item.get("revogado"):
-                continue
-            item_area = _norm(str(item.get("area") or ""))
-            if area_n and item_area and area_n != item_area:
-                if not (area_n in item_area or item_area in area_n):
-                    continue
-            haystack = " ".join([
-                _norm(str(item.get("texto_limpo") or "")),
-                _norm(str(item.get("texto") or "")),
-                " ".join(_norm(str(x)) for x in (item.get("temas") or [])),
-                " ".join(_norm(str(x)) for x in (item.get("palavras_chave") or [])),
-                _norm(str(item.get("fonte") or "")),
-                _norm(str(item.get("diploma") or "")),
-            ]).strip()
-            if not haystack:
-                continue
-            h_tokens = set(re.findall(r"[a-z0-9]{3,}", haystack))
-            overlap = len(q_tokens & h_tokens)
-            if overlap <= 0:
-                continue
-            score = float(overlap)
-            fonte = _norm(str(item.get("fonte") or ""))
-            if "trabalhista" in q_tokens and fonte == "clt":
-                score += 2.0
-            if "consumidor" in q_tokens and fonte == "cdc":
-                score += 2.0
-            if "civil" in q_tokens and fonte in {"cc", "cpc"}:
-                score += 1.5
-            if item.get("vigencia_status") == "vigente":
-                score += 0.35
-            scored.append((score, item))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        out = []
-        for score, item in scored[:top_k]:
-            out.append({
-                "score": round(score, 4),
-                "fonte": item.get("fonte"),
-                "diploma": item.get("diploma"),
-                "artigo": item.get("artigo"),
-                "texto": item.get("texto"),
-                "area": item.get("area"),
-                "temas": item.get("temas", []),
-                "palavras_chave": item.get("palavras_chave", []),
-                "pagina_inicial_pdf": item.get("pagina_inicial_pdf"),
-            })
-        return out
-
-
-VADEMECUM = InlineVadeMecum()
-
-
-def infer_normative_area(state: Dict[str, Any]) -> Optional[str]:
-    area = _norm(str(state.get("area_subarea") or ""))
-    if not area:
-        return None
-    if any(x in area for x in ["trabalh", "emprego", "clt"]):
-        return "trabalhista"
-    if any(x in area for x in ["consum", "cdc"]):
-        return "consumidor"
-    if any(x in area for x in ["penal", "crime"]):
-        return "penal"
-    if any(x in area for x in ["processual civil", "cpc"]):
-        return "processual_civil"
-    if any(x in area for x in ["civil", "contrato", "indenizacao", "indenização", "locacao", "locação", "familia", "família"]):
-        return "civil"
-    return None
-
-
-def build_legal_basis(state: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
-    facts = " ".join([
-        str(state.get("fatos_cronologia") or ""),
-        str(state.get("objetivo_cliente") or ""),
-        str(state.get("provas_existentes") or ""),
-        str(state.get("tipo_peca") or ""),
-        str(state.get("notas_adicionais") or ""),
-        str(state.get("area_subarea") or ""),
-    ]).strip()
-    if not facts:
-        return []
-    area = infer_normative_area(state)
-    return VADEMECUM.search(facts, area=area, top_k=top_k)
-
-
-def legal_basis_text(norms: List[Dict[str, Any]]) -> str:
-    if not norms:
-        return "Base normativa ainda não localizada no Vade Mecum."
-    chunks = []
-    for n in norms:
-        fonte = n.get("fonte") or n.get("diploma") or "Norma"
-        art = n.get("artigo")
-        head = f"{fonte}, art. {art}" if art else str(fonte)
-        texto = clean_text(str(n.get("texto") or ""))
-        if len(texto) > 320:
-            texto = texto[:317].rstrip() + "..."
-        chunks.append(f"- {head}: {texto}")
-    return "\n".join(chunks)
-
-
 TIPO_PECA_ALIASES = {
     "notificacao extrajudicial": "Notificação Extrajudicial",
     "peticao inicial": "Petição Inicial",
@@ -476,6 +306,68 @@ def set_value(state: Dict[str, Any], key: str, value: str):
         state["valor_envolvido"] = value
         return
     state[key] = value
+
+
+DOC_REQUEST_VERBS = [
+    "quero", "preciso", "gere", "gera", "gerar", "crie", "criar", "faça", "faca",
+    "elabore", "elaborar", "redija", "redigir", "monte", "montar", "prepare", "prepara"
+]
+
+DOC_REQUEST_PATTERNS = [
+    r"\b(?:quero|preciso|gere|gera|gerar|crie|criar|fa[çc]a|elabore|elaborar|redija|redigir|monte|montar|prepare|prepara)\b.{0,80}\b(?:peti(?:ç|c)ao|inicial|contesta(?:ç|c)ao|r[eé]plica|recurso|notifica(?:ç|c)ao|manifesta(?:ç|c)ao|minuta|acordo|proposta|honor[aá]rios|relat[oó]rio|diagn[oó]stico|parecer|pe[cç]a|documento)\b",
+    r"^\s*(?:peti(?:ç|c)ao inicial|notifica(?:ç|c)ao extrajudicial|contesta(?:ç|c)ao|r[eé]plica|recurso|minuta de acordo|proposta de honor[aá]rios|relat[oó]rio estrat[eé]gico|parecer)\b",
+]
+
+PROCESS_NUMBER_RE = re.compile(r"\b\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}\b")
+
+
+def message_looks_like_doc_request(message: str) -> bool:
+    raw = clean_text(message)
+    t = _norm(raw)
+    if not raw:
+        return False
+    if any(re.search(p, t, flags=re.I) for p in DOC_REQUEST_PATTERNS):
+        return True
+    direct_terms = [
+        "petição inicial", "peticao inicial", "notificação extrajudicial", "notificacao extrajudicial",
+        "contestação", "contestacao", "réplica", "replica", "recurso", "minuta de acordo",
+        "proposta de honorários", "proposta de honorarios", "relatório estratégico", "relatorio estrategico",
+        "parecer", "manifestação", "manifestacao"
+    ]
+    if any(t.startswith(_norm(term)) for term in direct_terms) and len(raw) <= 180:
+        return True
+    has_doc_term = any(term in t for term in [
+        "peticao", "petição", "contestacao", "contestação", "replica", "réplica", "recurso",
+        "notificacao", "notificação", "manifestacao", "manifestação", "minuta", "proposta",
+        "honorarios", "honorários", "relatorio", "relatório", "diagnostico", "diagnóstico",
+        "parecer", "peça", "peca", "documento", "docx"
+    ])
+    has_request_verb = any(re.search(rf"\b{re.escape(v)}\b", t) for v in [_norm(v) for v in DOC_REQUEST_VERBS])
+    return has_doc_term and has_request_verb and len(raw) <= 220
+
+
+def detect_tipo_peca_request_in_text(user_text: str) -> Optional[str]:
+    if not message_looks_like_doc_request(user_text):
+        return None
+    return detect_tipo_peca_in_text(user_text)
+
+
+def looks_like_process_lookup_query(message: str) -> bool:
+    t = _norm(message)
+    return bool(PROCESS_NUMBER_RE.search(message or "")) or any(x in t for x in [
+        "andamento processual", "andamento do processo", "numero do processo", "número do processo",
+        "consulta processual", "consultar processo", "cnj", "datajud", "tjsp", "tjmg", "trt", "stj", "stf",
+        "movimentacao processual", "movimentação processual", "autos do processo"
+    ])
+
+
+def looks_like_jurimetria_query(message: str) -> bool:
+    t = _norm(message)
+    return any(x in t for x in [
+        "jurimetria", "taxa de procedencia", "taxa de procedência", "probabilidade de exito",
+        "probabilidade de êxito", "tempo medio", "tempo médio", "precedentes por tribunal",
+        "percentual de acordo", "indice de acordo", "índice de acordo", "estatistica processual", "estatística processual"
+    ])
 
 
 def captured_view(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -749,7 +641,7 @@ def apply_expected_field_answer(state: Dict[str, Any], message: str) -> bool:
         return False
 
     explicit_piece = detect_tipo_peca_in_text(raw)
-    if explicit_piece and field not in {"tipo_peca", "objetivo_cliente"}:
+    if explicit_piece and field != "tipo_peca":
         return False
 
     def done():
@@ -812,9 +704,6 @@ def apply_expected_field_answer(state: Dict[str, Any], message: str) -> bool:
     if field in {"contratante_nome", "parte_contraria_nome", "cidade_uf", "objetivo_cliente", "partes", "provas_existentes", "fatos_cronologia", "notas_adicionais", "area_subarea"}:
         if is_negative_reply(raw) and field in {"cidade_uf", "contratante_nome", "parte_contraria_nome", "notas_adicionais"}:
             state[field] = "não informado"
-            return done()
-        if field == "objetivo_cliente" and explicit_piece and len(raw) <= 40:
-            state[field] = raw
             return done()
         if len(raw) >= 2:
             state[field] = raw
@@ -962,12 +851,9 @@ JSON:
             continue
 
         if k == "tipo_peca":
-            if state_expected_field(state) == "objetivo_cliente" and not data.get("objetivo_cliente"):
-                cleaned["objetivo_cliente"] = txt
-            else:
-                mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
-                if mapped in TIPOS_PECA:
-                    cleaned[k] = mapped
+            mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
+            if mapped in TIPOS_PECA:
+                cleaned[k] = mapped
         elif k == "fase":
             cleaned[k] = normalize_fase(txt)
         elif k in ("valor_envovido", "valor_envolvido"):
@@ -1030,10 +916,6 @@ def wants_all_documents(message: str) -> bool:
 def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     m = _norm(message)
     outputs: List[str] = []
-    expected = state_expected_field(state)
-
-    if expected and expected != "tipo_peca" and not wants_generation(message) and len(clean_text(message).split()) <= 6:
-        return []
 
     if wants_all_documents(message):
         return ["report", "proposal", "piece"]
@@ -1299,6 +1181,90 @@ def extract_text_from_upload(filename: str, mime: str, raw: bytes) -> str:
 # =========================================================
 # AI PROMPTS
 # =========================================================
+
+def _uploads_context_block(state: Dict[str, Any], max_chars: int = 2200) -> str:
+    sid = state.get("_session_id", "")
+    chunks = []
+    for f in UPLOADS.get(sid, [])[:4]:
+        excerpt = clean_text(str(f.get("text_excerpt") or ""))
+        if excerpt:
+            chunks.append(f"Arquivo {f.get('filename')}: {excerpt[:700]}")
+    joined = "\n".join(chunks)
+    return joined[:max_chars]
+
+
+def build_free_mode_answer(state: Dict[str, Any], message: str) -> str:
+    if looks_like_process_lookup_query(message):
+        num = PROCESS_NUMBER_RE.search(message or "")
+        processo = num.group(0) if num else "o número do processo"
+        return (
+            "Hoje este build ainda não está consultando CNJ/DataJud em tempo real. "
+            f"Então eu não consigo te dar andamento certo de {processo} sem integrar esse conector.\n\n"
+            "O que eu consigo fazer agora é: analisar o caso, organizar estratégia, preparar a peça e dizer exatamente qual integração falta para consulta processual/jurimetria real."
+        )
+
+    if looks_like_jurimetria_query(message):
+        return (
+            "Jurimetria certa depende de base externa ativa, como DataJud/CNJ ou banco próprio normalizado. "
+            "Neste build eu ainda não tenho essa consulta viva ligada, então não vou inventar estatística.\n\n"
+            "Se você integrar DataJud, eu consigo responder com taxa de procedência, recorte por tribunal, tempo médio e padrões decisórios."
+        )
+
+    legal_basis = retrieve_legal_basis(state, top_k=4)
+    legal_text = legal_basis_text_block(legal_basis)
+    uploads_text = _uploads_context_block(state)
+    summary = build_short_case_summary(state)
+
+    system = (
+        "Você é um consultor jurídico brasileiro de alto nível. "
+        "Responda em modo de chat livre, natural, direto e útil. "
+        "NÃO transforme a conversa em formulário. "
+        "NÃO repita perguntas estruturadas. "
+        "Só peça um dado faltante se ele realmente fizer diferença, e no máximo UMA pergunta curta no final. "
+        "Se o usuário não pediu documento, responda consultivamente. "
+        "Se houver base normativa recuperada, use-a como apoio preliminar sem inventar artigos. "
+        "Se faltar dado para conclusão forte, diga isso com transparência. "
+        "Evite linguagem robótica. Evite bullets demais. Seja objetivo."
+    )
+
+    payload = {
+        "mensagem_usuario": message,
+        "resumo_estado": summary,
+        "estado_capturado": captured_view(state),
+        "base_normativa_preliminar": legal_text or None,
+        "contexto_uploads": uploads_text or None,
+    }
+
+    try:
+        text = openai_chat_completion_text(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.15,
+            timeout_s=OPENAI_TIMEOUT_EXTRACT_S,
+            max_completion_tokens=1100,
+        )
+        text = clean_text(text).replace("\n ", "\n")
+        if legal_basis and "art." not in _norm(text):
+            refs = []
+            for item in legal_basis[:3]:
+                if item.get("fonte") and item.get("artigo"):
+                    refs.append(f"{item.get('fonte')}, art. {item.get('artigo')}")
+            if refs:
+                text += "\n\nBase normativa preliminar: " + "; ".join(refs) + "."
+        return text
+    except Exception:
+        if legal_basis:
+            refs = "; ".join(
+                f"{item.get('fonte')}, art. {item.get('artigo')}"
+                for item in legal_basis[:3]
+                if item.get('fonte') and item.get('artigo')
+            )
+            return summary + "\n\nTenho base suficiente para te orientar sem fechar formulário. " + (f"Base normativa preliminar: {refs}. " if refs else "") + "Se você quiser, eu sigo na análise livre ou transformo isso em documento."
+        return summary + "\n\nPode seguir livremente. Eu consigo analisar estratégia, risco, provas e próximo passo sem te prender em perguntas engessadas."
+
+
 OUTPUT_SCHEMA_PROMPT = r"""
 RETORNE APENAS JSON.
 
@@ -1381,27 +1347,6 @@ Corrigir:
 Retorne APENAS JSON.
 """
 
-PIECE_ONLY_PROMPT = r"""
-RETORNE APENAS JSON.
-
-Você vai redigir APENAS a minuta jurídica pedida, sem relatório estratégico completo.
-
-REGRAS DURAS:
-- Não inventar fatos, datas, valores, nomes, tribunal, processo ou documentos.
-- Se faltar dado, usar [PREENCHER] ou [HIP] quando estritamente necessário.
-- A minuta deve ser completa, utilizável e estruturada.
-- Deve iniciar exatamente com: "Copie e cole no timbrado do seu escritório antes de finalizar."
-- O advogado nunca é o autor dos fatos; atua como representante.
-- Se o caso for trabalhista, usar linguagem compatível com Justiça do Trabalho / Vara do Trabalho.
-- Use a base normativa recebida quando pertinente, sem citar norma inexistente.
-- Não use markdown.
-
-SAÍDA:
-{
-  "minuta_peca": "..."
-}
-"""
-
 def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15) -> Dict[str, Any]:
     r = client.chat.completions.create(
         model=MODEL,
@@ -1415,7 +1360,6 @@ def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature:
     return json.loads(r.choices[0].message.content)
 
 
-
 def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
     sid = state.get("_session_id", "")
     uploads_short = [
@@ -1426,14 +1370,10 @@ def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         for f in UPLOADS.get(sid, [])
     ]
-    norms = build_legal_basis(state, top_k=LEGAL_BASIS_TOP_K)
     return {
         "intake": state,
         "captured_view": captured_view(state),
         "uploads": uploads_short,
-        "legal_basis": norms,
-        "legal_basis_text": legal_basis_text(norms),
-        "vademecum_status": VADEMECUM.status(),
     }
 
 
@@ -1578,36 +1518,6 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
         raise
     except Exception as e:
         raise friendly_openai_error(e)
-
-def generate_piece_only_strict(state: Dict[str, Any]) -> str:
-    if not PROMPT_LOADED:
-        raise HTTPException(status_code=500, detail="OS_6_1_PROMPT não carregado (Render env).")
-
-    client = get_client()
-    payload = build_payload(state)
-    payload["requested_output"] = "piece_only"
-    payload["instructions"] = "Gerar somente a minuta da peça pedida, sem relatório completo."
-    system = (OS_6_1_PROMPT + "\n\n" + PIECE_ONLY_PROMPT).strip()
-
-    try:
-        data = call_json(client, system, payload, temperature=min(TEMPERATURE, 0.12))
-        minuta = clean_text(str(data.get("minuta_peca") or ""))
-        if not minuta:
-            raise HTTPException(status_code=502, detail="Falha ao gerar a minuta da peça.")
-        if not _norm(minuta).startswith("copie e cole no timbrado"):
-            minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
-        issues = validate_minuta(state, minuta)
-        if issues:
-            return build_fallback_minuta(state, {"minuta_peca": minuta})
-        return minuta
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise friendly_openai_error(e)
-
-
-def build_piece_preview_from_text(minuta: str) -> str:
-    return preview_text(minuta)
 
 # =========================================================
 # PRICING
@@ -2166,21 +2076,8 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
         pending = pending_outputs(state)
 
         if pending and len(required_missing_for_outputs(state, pending)) == 0:
-            need_report = "report" in pending
-            need_piece = "piece" in pending
-            need_proposal = "proposal" in pending
-
-            report = None
-            fee = None
-            piece_text = None
-
-            if need_report:
-                report = generate_report_strict(state)
-            elif need_piece:
-                piece_text = generate_piece_only_strict(state)
-
-            if need_proposal:
-                fee = pricing_engine(state, report or {})
+            report = generate_report_strict(state)
+            fee = pricing_engine(state, report)
 
             ts = datetime.now().strftime("%Y%m%d-%H%M")
             tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
@@ -2192,28 +2089,23 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
                 "captured": captured_view(state),
             }
 
-            if need_report and report is not None:
+            if "report" in pending:
                 doc_report = build_report_strategy_docx(report, state)
                 out_kwargs["report_docx_b64"] = docx_to_b64(doc_report)
                 out_kwargs["report_docx_filename"] = f"Relatorio_SM_OS_{ts}.docx"
                 out_kwargs["report_preview"] = build_report_preview(report)
 
-            if need_proposal and fee is not None:
+            if "proposal" in pending:
                 doc_prop = build_proposal_docx(state, fee)
                 out_kwargs["proposal_docx_b64"] = docx_to_b64(doc_prop)
                 out_kwargs["proposal_docx_filename"] = f"Proposta_Honorarios_SM_{ts}.docx"
                 out_kwargs["proposal_preview"] = build_proposal_preview(state, fee)
 
-            if need_piece:
-                if report is not None:
-                    doc_piece = build_piece_docx(report, state)
-                    out_kwargs["piece_preview"] = build_piece_preview(report)
-                else:
-                    piece_payload = {"minuta_peca": piece_text or build_fallback_minuta(state, {})}
-                    doc_piece = build_piece_docx(piece_payload, state)
-                    out_kwargs["piece_preview"] = build_piece_preview_from_text(piece_payload["minuta_peca"])
+            if "piece" in pending:
+                doc_piece = build_piece_docx(report, state)
                 out_kwargs["piece_docx_b64"] = docx_to_b64(doc_piece)
                 out_kwargs["piece_docx_filename"] = f"Minuta_{tipo_safe}_{ts}.docx"
+                out_kwargs["piece_preview"] = build_piece_preview(report)
 
             clear_pending_outputs(state)
             set_expected_field(state, None)
