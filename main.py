@@ -913,22 +913,43 @@ def wants_all_documents(message: str) -> bool:
     return any(term in m for term in ALL_DOC_TERMS)
 
 
+def is_explicit_document_request(message: str) -> bool:
+    m = _norm(message)
+    strong_verbs = [
+        "quero", "gere", "gerar", "gera", "crie", "criar", "faça", "faca", "fazer",
+        "redija", "redigir", "elabore", "elaborar", "prepare", "preparar", "monte",
+        "montar", "preciso de", "me de", "me dê", "produza"
+    ]
+    document_terms = [
+        "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
+        "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
+        "minuta", "peca", "peça", "proposta de honorarios", "proposta de honorários",
+        "relatorio", "relatório", "diagnostico", "diagnóstico", "parecer"
+    ]
+    if wants_all_documents(message):
+        return True
+    has_doc_term = any(term in m for term in document_terms)
+    has_verb = any(term in m for term in strong_verbs)
+    starts_like_request = m.startswith(("quero ", "gere ", "gera ", "crie ", "faça ", "faca ", "redija ", "elabore ", "prepare "))
+    return has_doc_term and (has_verb or starts_like_request)
+
+
 def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     m = _norm(message)
     outputs: List[str] = []
 
-    if wants_all_documents(message):
+    if wants_all_documents(message) and wants_generation(message):
         return ["report", "proposal", "piece"]
 
-    if any(term in m for term in [
-        "proposta de honorarios", "proposta honorarios", "proposta de honorários",
-        "honorarios", "honorários", "fee proposal", "propuesta de honorarios"
+    explicit_request = is_explicit_document_request(message)
+
+    if explicit_request and any(term in m for term in [
+        "proposta de honorarios", "proposta honorarios", "proposta de honorários", "fee proposal", "propuesta de honorarios"
     ]):
         outputs.append("proposal")
 
-    if any(term in m for term in [
-        "relatorio", "relatório", "diagnostico", "diagnóstico",
-        "analise estrategica", "análise estratégica", "parecer", "informe"
+    if explicit_request and any(term in m for term in [
+        "relatorio", "relatório", "diagnostico", "diagnóstico", "parecer"
     ]):
         outputs.append("report")
 
@@ -936,17 +957,15 @@ def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     explicit_piece_language = any(term in m for term in [
         "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
         "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
-        "acordo", "minuta", "peca", "peça"
+        "minuta", "peca", "peça"
     ])
 
-    if explicit_piece_type or explicit_piece_language:
+    if explicit_request and (explicit_piece_type or explicit_piece_language):
         outputs.append("piece")
 
     if not outputs and wants_generation(message):
-        if state.get("tipo_peca"):
+        if state.get("tipo_peca") and any(term in m for term in ["gere", "gera", "gerar", "crie", "faça", "faca", "elabore", "prepare"]):
             outputs.append("piece")
-        else:
-            outputs.append("report")
 
     deduped: List[str] = []
     for item in outputs:
@@ -2053,7 +2072,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
                 merge_conversational_update(state, heur)
 
             explicit_piece = detect_tipo_peca_in_text(msg)
-            if explicit_piece:
+            if explicit_piece and is_explicit_document_request(msg):
                 state["tipo_peca"] = explicit_piece
 
             should_call_extractor = True
@@ -2120,11 +2139,12 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
                 captured=captured_view(state),
             )
 
-        followup = build_conversational_followup(state)
+        free_answer = build_free_mode_answer(state, msg)
+        set_expected_field(state, None)
         return ChatOut(
-            message=followup,
+            message=free_answer,
             state=state,
-            expected_field=state_expected_field(state),
+            expected_field=None,
             captured=captured_view(state),
         )
 
