@@ -5,10 +5,9 @@ import json
 import base64
 import re
 import unicodedata
-import urllib.request
-import urllib.error
 from io import BytesIO
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 import openai
@@ -33,8 +32,6 @@ ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.
 DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.15"))
-OPENAI_TIMEOUT_EXTRACT_S = int(os.getenv("OPENAI_TIMEOUT_EXTRACT_S", "45"))
-OPENAI_TIMEOUT_GENERATE_S = int(os.getenv("OPENAI_TIMEOUT_GENERATE_S", "180"))
 
 MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(Nome do Mandatario/a)")
 MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB: (Numero de OAB)")
@@ -43,6 +40,9 @@ MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "7"))
 MAX_FILES_PER_SESSION = int(os.getenv("MAX_FILES_PER_SESSION", "10"))
 MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "25"))
 MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "9000"))
+
+VADEMECUM_PATH = (os.getenv("VADEMECUM_PATH") or "./data/vademecum.jsonl").strip()
+LEGAL_BASIS_TOP_K = int(os.getenv("LEGAL_BASIS_TOP_K", "6"))
 
 FEE_MIN_TOTAL = int(os.getenv("FEE_MIN_TOTAL", "1500"))
 FEE_MAX_TOTAL = int(os.getenv("FEE_MAX_TOTAL", "250000"))
@@ -75,6 +75,159 @@ UPLOADS: Dict[str, List[Dict[str, Any]]] = {}
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 # =========================================================
+# VADE MECUM (BASE NORMATIVA)
+# =========================================================
+class VadeMecumService:
+    def __init__(self, preferred_path: str):
+        self.preferred_path = preferred_path
+        self._items: List[Dict[str, Any]] = []
+        self._loaded = False
+        self._load_error: Optional[str] = None
+
+    def candidate_paths(self) -> List[Path]:
+        paths: List[Path] = []
+        raw = [
+            self.preferred_path,
+            './data/vademecum.jsonl',
+            './vademecum.jsonl',
+            '/mnt/data/vademecum_priority.jsonl',
+            '/mnt/data/vademecum.jsonl',
+        ]
+        seen = set()
+        for item in raw:
+            if not item:
+                continue
+            key = str(item).strip()
+            if key and key not in seen:
+                seen.add(key)
+                paths.append(Path(key))
+        return paths
+
+    def load(self) -> None:
+        if self._loaded:
+            return
+
+        last_error = None
+        for path in self.candidate_paths():
+            try:
+                if not path.exists():
+                    continue
+                items: List[Dict[str, Any]] = []
+                with path.open('r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        raw = json.loads(line)
+                        if isinstance(raw, dict):
+                            items.append(raw)
+                self._items = items
+                self._loaded = True
+                self._load_error = None
+                return
+            except Exception as e:
+                last_error = f"{path}: {type(e).__name__}: {str(e)}"
+
+        self._items = []
+        self._loaded = True
+        self._load_error = last_error or 'arquivo não encontrado'
+
+    def available(self) -> bool:
+        self.load()
+        return bool(self._items)
+
+    def status(self) -> Dict[str, Any]:
+        self.load()
+        return {
+            'available': bool(self._items),
+            'items': len(self._items),
+            'path': self.preferred_path,
+            'error': self._load_error,
+        }
+
+    def search(self, query: str, area: Optional[str] = None, top_k: int = 6) -> List[Dict[str, Any]]:
+        self.load()
+        if not self._items:
+            return []
+
+        q = _norm(query)
+        q_tokens = set(re.findall(r"[a-z0-9]{3,}", q))
+        area_n = _norm(area) if area else None
+        if not q_tokens:
+            return []
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for item in self._items:
+            if item.get('revogado'):
+                continue
+            item_area = _norm(str(item.get('area', '') or ''))
+            if area_n and item_area and area_n != item_area:
+                continue
+
+            haystack = ' '.join([
+                str(item.get('texto_limpo', '') or ''),
+                _norm(str(item.get('texto', '') or '')),
+                ' '.join(_norm(str(x)) for x in (item.get('temas') or [])),
+                ' '.join(_norm(str(x)) for x in (item.get('palavras_chave') or [])),
+                _norm(str(item.get('fonte', '') or '')),
+                _norm(str(item.get('diploma', '') or '')),
+            ]).strip()
+            if not haystack:
+                continue
+
+            h_tokens = set(re.findall(r"[a-z0-9]{3,}", haystack))
+            overlap = len(q_tokens & h_tokens)
+            if overlap == 0:
+                continue
+
+            score = float(overlap)
+            fonte = _norm(str(item.get('fonte', '') or ''))
+            if area_n == 'trabalhista' and fonte == 'clt':
+                score += 2.0
+            elif area_n == 'consumidor' and fonte == 'cdc':
+                score += 2.0
+            elif area_n == 'civil' and fonte == 'cc':
+                score += 1.5
+            elif area_n == 'processual_civil' and fonte == 'cpc':
+                score += 1.8
+            elif area_n == 'penal' and fonte == 'cp':
+                score += 1.5
+            elif area_n == 'processual_penal' and fonte == 'cpp':
+                score += 1.8
+            elif area_n == 'constitucional' and fonte == 'cf':
+                score += 1.5
+
+            score += min(len(item.get('temas') or []), 4) * 0.20
+            score += 0.30 if not item.get('revogado') else -4.0
+
+            scored.append((score, item))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results: List[Dict[str, Any]] = []
+        seen_keys = set()
+        for score, item in scored:
+            key = (str(item.get('fonte') or ''), str(item.get('artigo') or ''), str(item.get('texto') or '')[:120])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            results.append({
+                'score': round(score, 4),
+                'fonte': item.get('fonte'),
+                'diploma': item.get('diploma'),
+                'artigo': item.get('artigo'),
+                'texto': item.get('texto'),
+                'area': item.get('area'),
+                'temas': item.get('temas', []),
+                'palavras_chave': item.get('palavras_chave', []),
+                'pagina_inicial_pdf': item.get('pagina_inicial_pdf'),
+            })
+            if len(results) >= max(1, top_k):
+                break
+        return results
+
+VADEMECUM = VadeMecumService(VADEMECUM_PATH)
+
+# =========================================================
 # HELPERS BÁSICOS
 # =========================================================
 def auth_or_401(x_demo_key: Optional[str]):
@@ -88,99 +241,6 @@ def get_client() -> OpenAI:
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured.")
     return OpenAI(api_key=OPENAI_API_KEY)
-
-
-def openai_chat_completion_raw(
-    *,
-    messages: List[Dict[str, Any]],
-    temperature: float = 0.0,
-    response_format: Optional[Dict[str, Any]] = None,
-    timeout_s: Optional[int] = None,
-    max_completion_tokens: Optional[int] = None,
-) -> Dict[str, Any]:
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured.")
-
-    body: Dict[str, Any] = {
-        "model": MODEL,
-        "messages": messages,
-    }
-    if temperature is not None:
-        body["temperature"] = temperature
-    if response_format is not None:
-        body["response_format"] = response_format
-    if max_completion_tokens is not None:
-        body["max_completion_tokens"] = max_completion_tokens
-
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s or OPENAI_TIMEOUT_GENERATE_S) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        try:
-            raw_err = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            raw_err = str(e)
-        try:
-            err_payload = json.loads(raw_err)
-            msg = err_payload.get("error", {}).get("message") or raw_err
-        except Exception:
-            msg = raw_err or str(e)
-
-        if e.code == 400:
-            raise HTTPException(status_code=400, detail=f"OpenAI bad request: {msg}")
-        if e.code == 401:
-            raise HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
-        if e.code == 429:
-            raise HTTPException(status_code=429, detail="OpenAI rate limit/quota. Verifique Billing/Créditos.")
-        if e.code == 408:
-            raise HTTPException(status_code=504, detail="OpenAI timeout. Tente novamente.")
-        raise HTTPException(status_code=502, detail=f"OpenAI API HTTP {e.code}: {msg}")
-    except urllib.error.URLError as e:
-        raise HTTPException(status_code=503, detail=f"Falha de conexão com OpenAI: {e.reason}")
-    except TimeoutError:
-        raise HTTPException(status_code=504, detail="OpenAI timeout. Tente novamente.")
-
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        raise HTTPException(status_code=502, detail="Resposta inválida da OpenAI (JSON).")
-
-    if payload.get("error"):
-        msg = payload.get("error", {}).get("message") or str(payload["error"])
-        raise HTTPException(status_code=502, detail=f"OpenAI API error: {msg}")
-
-    return payload
-
-
-def openai_chat_completion_text(
-    *,
-    messages: List[Dict[str, Any]],
-    temperature: float = 0.0,
-    response_format: Optional[Dict[str, Any]] = None,
-    timeout_s: Optional[int] = None,
-    max_completion_tokens: Optional[int] = None,
-) -> str:
-    payload = openai_chat_completion_raw(
-        messages=messages,
-        temperature=temperature,
-        response_format=response_format,
-        timeout_s=timeout_s,
-        max_completion_tokens=max_completion_tokens,
-    )
-    try:
-        return payload["choices"][0]["message"]["content"]
-    except Exception:
-        raise HTTPException(status_code=502, detail="Resposta da OpenAI sem conteúdo utilizável.")
 
 
 def friendly_backend_error(e: Exception) -> HTTPException:
@@ -214,6 +274,67 @@ def _norm(s: str) -> str:
 
 def clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
+
+
+def infer_normative_area(area_subarea: str, facts: str = "", objective: str = "", tipo_peca: str = "") -> Optional[str]:
+    blob = _norm(" ".join([area_subarea or "", facts or "", objective or "", tipo_peca or ""]))
+    if not blob:
+        return None
+    if any(x in blob for x in ["trabalh", "empreg", "rescis", "clt", "hora extra", "insalubr", "justica do trabalho", "justiça do trabalho"]):
+        return 'trabalhista'
+    if any(x in blob for x in ["consum", "fornecedor", "produto", "servico", "serviço", "cdc", "negativacao", "negativação"]):
+        return 'consumidor'
+    if any(x in blob for x in ["famil", "sucess", "obrigac", "obrigaç", "contrato", "indeniz", "loca", "civil"]) and 'processo' not in blob:
+        return 'civil'
+    if any(x in blob for x in ["cpc", "tutela", "agravo", "cumprimento de sentenca", "cumprimento de sentença", "contestacao", "contestação", "réplica", "replica", "peticao inicial", "petição inicial"]):
+        return 'processual_civil'
+    if any(x in blob for x in ["crime", "penal", "furto", "roubo", "lesao", "lesão", "homicidio", "homicídio", "cp "]):
+        return 'penal'
+    if any(x in blob for x in ["cpp", "prisao", "prisão", "inquerito", "inquérito", "audiencia de custodia", "audiência de custódia"]):
+        return 'processual_penal'
+    if any(x in blob for x in ["constitu", "constituição", "direito fundamental", "mandado de seguranca", "mandado de segurança", "cf/"]):
+        return 'constitucional'
+    return None
+
+
+def retrieve_legal_basis(state: Dict[str, Any], top_k: int = LEGAL_BASIS_TOP_K) -> List[Dict[str, Any]]:
+    area = infer_normative_area(
+        state.get('area_subarea', ''),
+        str(state.get('fatos_cronologia', '') or ''),
+        str(state.get('objetivo_cliente', '') or ''),
+        str(state.get('tipo_peca', '') or ''),
+    )
+    query_parts = [
+        state.get('area_subarea', '') or '',
+        state.get('objetivo_cliente', '') or '',
+        state.get('tipo_peca', '') or '',
+        state.get('fatos_cronologia', '') or '',
+        state.get('notas_adicionais', '') or '',
+    ]
+    query = ' '.join(str(x) for x in query_parts if str(x).strip())[:4000]
+    if not query.strip():
+        return []
+    return VADEMECUM.search(query=query, area=area, top_k=top_k)
+
+
+def legal_basis_text_block(items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return ''
+    lines = []
+    for i, item in enumerate(items[:LEGAL_BASIS_TOP_K], start=1):
+        fonte = item.get('fonte') or 'Norma'
+        artigo = item.get('artigo') or '?'
+        diploma = item.get('diploma') or ''
+        texto = clean_text(str(item.get('texto') or ''))
+        if len(texto) > 600:
+            texto = texto[:597].rstrip() + '...'
+        temas = ', '.join(item.get('temas') or [])
+        line = f"{i}. {fonte}, art. {artigo} — {diploma}. Texto: {texto}"
+        if temas:
+            line += f" Temas: {temas}."
+        lines.append(line)
+    return "\n".join(lines)
+
 
 
 def is_answered(v: Any) -> bool:
@@ -346,71 +467,9 @@ def detect_tipo_peca_in_text(user_text: str) -> Optional[str]:
         return "Réplica"
     if "recurso" in t:
         return "Recurso"
-    if "minuta de acordo" in t or "acordo extrajudicial" in t or "termo de acordo" in t:
+    if "acordo" in t:
         return "Minuta de Acordo"
     return None
-
-
-DOC_REQUEST_VERBS = [
-    "quero", "preciso", "gere", "gera", "gerar", "crie", "criar", "faça", "faca",
-    "elabore", "elaborar", "redija", "redigir", "monte", "montar", "prepare", "prepara"
-]
-
-DOC_REFERENCE_TERMS = [
-    "peticao", "petição", "inicial", "contestacao", "contestação", "replica", "réplica",
-    "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
-    "minuta", "acordo", "proposta", "honorarios", "honorários", "relatorio", "relatório",
-    "diagnostico", "diagnóstico", "parecer", "peça", "peca", "documento", "docx"
-]
-
-DOC_REQUEST_PATTERNS = [
-    r"\b(?:quero|preciso|gere|gera|gerar|crie|criar|fa[çc]a|elabore|elaborar|redija|redigir|monte|montar|prepare|prepara)\b.{0,60}\b(?:peti(?:ç|c)ao|inicial|contesta(?:ç|c)ao|r[eé]plica|recurso|notifica(?:ç|c)ao|manifesta(?:ç|c)ao|minuta|acordo|proposta|honor[aá]rios|relat[oó]rio|diagn[oó]stico|parecer|pe[cç]a|documento)\b",
-    r"^\s*(?:peti(?:ç|c)ao inicial|notifica(?:ç|c)ao extrajudicial|contesta(?:ç|c)ao|r[eé]plica|recurso|minuta de acordo|proposta de honor[aá]rios|relat[oó]rio estrat[eé]gico|parecer)\b",
-]
-
-
-def message_looks_like_doc_request(message: str) -> bool:
-    raw = clean_text(message)
-    t = _norm(raw)
-    if not raw:
-        return False
-
-    short = len(raw) <= 180
-    very_short = len(raw) <= 90
-
-    if any(re.search(p, t, flags=re.I) for p in DOC_REQUEST_PATTERNS):
-        return True
-
-    starts_like_direct_doc = any(t.startswith(_norm(term)) for term in [
-        "petição inicial", "peticao inicial", "notificação extrajudicial", "notificacao extrajudicial",
-        "contestação", "contestacao", "réplica", "replica", "recurso", "minuta de acordo",
-        "proposta de honorários", "proposta de honorarios", "relatório estratégico", "relatorio estrategico",
-        "parecer", "manifestação", "manifestacao"
-    ])
-    if starts_like_direct_doc and short:
-        return True
-
-    has_doc_term = any(term in t for term in [
-        "peticao", "petição", "contestacao", "contestação", "replica", "réplica", "recurso",
-        "notificacao", "notificação", "manifestacao", "manifestação", "minuta", "proposta",
-        "honorarios", "honorários", "relatorio", "relatório", "diagnostico", "diagnóstico",
-        "parecer", "peça", "peca", "documento", "docx"
-    ])
-    has_request_verb = any(re.search(rf"\b{re.escape(v)}\b", t) for v in [_norm(v) for v in DOC_REQUEST_VERBS])
-
-    if short and has_doc_term and (has_request_verb or t in {"inicial", "contestacao", "contestação", "replica", "réplica", "recurso", "acordo", "minuta", "parecer", "relatorio", "relatório", "proposta", "proposta de honorarios", "proposta de honorários"}):
-        return True
-
-    if very_short and any(term == t for term in ["peticao inicial", "petição inicial", "contestacao", "contestação", "replica", "réplica", "recurso", "acordo", "minuta de acordo"]):
-        return True
-
-    return False
-
-
-def detect_tipo_peca_request_in_text(user_text: str) -> Optional[str]:
-    if not message_looks_like_doc_request(user_text):
-        return None
-    return detect_tipo_peca_in_text(user_text)
 
 
 LABEL_RE = re.compile(r"^\s*([A-Za-zÀ-ÿ\/ _]+)\s*[:\-]\s*(.+?)\s*$")
@@ -926,17 +985,17 @@ JSON:
         "mensagem_usuario": message,
     }
 
-    content = openai_chat_completion_text(
+    r = client.chat.completions.create(
+        model=MODEL,
         messages=[
             {"role": "system", "content": extraction_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         temperature=0.0,
         response_format={"type": "json_object"},
-        timeout_s=OPENAI_TIMEOUT_EXTRACT_S,
     )
 
-    data = json.loads(content)
+    data = json.loads(r.choices[0].message.content)
     cleaned: Dict[str, Any] = {}
 
     for k in CONVERSATIONAL_FIELDS:
@@ -988,7 +1047,7 @@ def merge_conversational_update(state: Dict[str, Any], new_data: Dict[str, Any])
 
 GENERATION_TRIGGER_TERMS = [
     "gera", "gerar", "gere", "criar", "crie", "elaborar", "elabore", "redigir",
-    "redija", "faça", "faca", "montar", "monte", "minuta", "peticao", "petição",
+    "redija", "fazer", "faça", "montar", "monte", "minuta", "peticao", "petição",
     "contestacao", "contestação", "replica", "réplica", "recurso", "notificacao",
     "notificação", "proposta", "honorarios", "honorários", "relatorio", "relatório",
     "diagnostico", "diagnóstico", "documento", "documentos"
@@ -1001,48 +1060,46 @@ ALL_DOC_TERMS = [
 
 
 def wants_generation(message: str) -> bool:
-    return message_looks_like_doc_request(message)
+    m = _norm(message)
+    return any(term in m for term in GENERATION_TRIGGER_TERMS)
 
 
 def wants_all_documents(message: str) -> bool:
     m = _norm(message)
-    if not message_looks_like_doc_request(message):
-        return False
     return any(term in m for term in ALL_DOC_TERMS)
 
 
 def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     m = _norm(message)
     outputs: List[str] = []
-    is_doc_request = message_looks_like_doc_request(message)
 
     if wants_all_documents(message):
         return ["report", "proposal", "piece"]
 
-    if is_doc_request and any(term in m for term in [
+    if any(term in m for term in [
         "proposta de honorarios", "proposta honorarios", "proposta de honorários",
         "honorarios", "honorários", "fee proposal", "propuesta de honorarios"
     ]):
         outputs.append("proposal")
 
-    if is_doc_request and any(term in m for term in [
+    if any(term in m for term in [
         "relatorio", "relatório", "diagnostico", "diagnóstico",
         "analise estrategica", "análise estratégica", "parecer", "informe"
     ]):
         outputs.append("report")
 
-    explicit_piece_type = detect_tipo_peca_request_in_text(message)
-    explicit_piece_language = is_doc_request and any(term in m for term in [
+    explicit_piece_type = detect_tipo_peca_in_text(message)
+    explicit_piece_language = any(term in m for term in [
         "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
         "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
-        "minuta", "peça", "peca"
+        "acordo", "minuta", "peca", "peça"
     ])
 
     if explicit_piece_type or explicit_piece_language:
         outputs.append("piece")
 
-    if not outputs and is_doc_request and wants_generation(message):
-        if state.get("tipo_peca") and any(term in m for term in ["gere", "gera", "gerar", "faça", "faca", "elabore", "redija", "monte", "prepare", "documento", "peça", "peca"]):
+    if not outputs and wants_generation(message):
+        if state.get("tipo_peca"):
             outputs.append("piece")
         else:
             outputs.append("report")
@@ -1052,6 +1109,14 @@ def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
         if item not in deduped:
             deduped.append(item)
     return deduped
+
+
+def should_generate_now(state: Dict[str, Any], message: str) -> bool:
+    outputs = detect_requested_outputs(message, state) or pending_outputs(state)
+    if not outputs:
+        return False
+    return len(required_missing_for_outputs(state, outputs)) == 0
+
 
 def preview_text(text: str, limit: int = 2200) -> str:
     txt = (text or "").strip()
@@ -1278,6 +1343,9 @@ RETORNE APENAS JSON.
 REGRAS DURAS:
 - Não inventar fatos, datas, valores ou nomes.
 - Se faltar dado, use [HIP] ou [PREENCHER].
+- Quando houver base normativa em "legal_basis" ou "legal_basis_text", aproveite-a com prioridade.
+- Não cite artigo, diploma ou fundamento legal que não esteja no caso ou na base normativa recuperada, salvo conhecimento jurídico elementar estritamente necessário e coerente.
+- Se a base normativa vier insuficiente, deixe isso claro em riscos, pendências ou alertas.
 - "forca_tese" é avaliação técnica comparativa, nunca promessa de resultado.
 - Estratégia: EXATAMENTE 18 itens.
 - Cada item da estratégia deve ser uma STRING (não objeto), no formato:
@@ -1354,18 +1422,17 @@ Corrigir:
 Retorne APENAS JSON.
 """
 
-def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15, timeout_s: Optional[int] = None, max_tokens: int = 6000) -> Dict[str, Any]:
-    content = openai_chat_completion_text(
+def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15) -> Dict[str, Any]:
+    r = client.chat.completions.create(
+        model=MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         temperature=temperature,
         response_format={"type": "json_object"},
-        timeout_s=timeout_s,
-        max_completion_tokens=max_tokens,
     )
-    return json.loads(content)
+    return json.loads(r.choices[0].message.content)
 
 
 def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1378,10 +1445,17 @@ def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         for f in UPLOADS.get(sid, [])
     ]
+    legal_basis = retrieve_legal_basis(state)
     return {
         "intake": state,
         "captured_view": captured_view(state),
         "uploads": uploads_short,
+        "legal_basis": legal_basis,
+        "legal_basis_text": legal_basis_text_block(legal_basis),
+        "instructions_about_sources": (
+            "Use as normas recuperadas como base prioritária quando forem pertinentes. "
+            "Não invente artigos. Se a base normativa for insuficiente, sinalize isso com clareza."
+        ),
     }
 
 
@@ -1501,7 +1575,7 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     system = (OS_6_1_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT).strip()
 
     try:
-        data = call_json(client, system, payload, temperature=TEMPERATURE, timeout_s=OPENAI_TIMEOUT_GENERATE_S, max_tokens=7000)
+        data = call_json(client, system, payload, temperature=TEMPERATURE)
         issues = validate_report_json(state, data)
         if not issues:
             data["_warnings"] = []
@@ -1512,8 +1586,6 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
             REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT,
             {**payload, "issues": issues, "previous": data},
             temperature=0.10,
-            timeout_s=OPENAI_TIMEOUT_GENERATE_S,
-            max_tokens=7000,
         )
         issues2 = validate_report_json(state, data2)
 
@@ -1751,6 +1823,19 @@ def build_report_strategy_docx(report: Dict[str, Any], state: Dict[str, Any]) ->
     add_p(doc, f"Suficiência de dados: {report.get('suficiencia_dados','—')}")
     add_p(doc, f"Status: {report.get('status','—')}")
 
+    legal_basis = retrieve_legal_basis(state)
+    if legal_basis:
+        doc.add_paragraph("")
+        add_h(doc, "Base normativa recuperada", 13)
+        for item in legal_basis:
+            fonte = item.get('fonte') or 'Norma'
+            artigo = item.get('artigo') or '?'
+            diploma = item.get('diploma') or ''
+            texto = clean_text(str(item.get('texto') or ''))
+            if len(texto) > 500:
+                texto = texto[:497].rstrip() + '...'
+            add_p(doc, f"{fonte}, art. {artigo} — {diploma}. {texto}")
+
     secoes = report.get("secoes") or {}
 
     doc.add_paragraph("")
@@ -1942,10 +2027,9 @@ def health():
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
         "prompt_loaded": PROMPT_LOADED,
-        "openai_timeout_extract_s": OPENAI_TIMEOUT_EXTRACT_S,
-        "openai_timeout_generate_s": OPENAI_TIMEOUT_GENERATE_S,
         "mandataria_default": f"{MANDATARIA_NOME} — {MANDATARIA_OAB}",
         "sessions": len(SESSIONS),
+        "vademecum": VADEMECUM.status(),
     }
 
 
@@ -2063,7 +2147,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             if heur:
                 merge_conversational_update(state, heur)
 
-            explicit_piece = detect_tipo_peca_request_in_text(msg)
+            explicit_piece = detect_tipo_peca_in_text(msg)
             if explicit_piece:
                 state["tipo_peca"] = explicit_piece
 
