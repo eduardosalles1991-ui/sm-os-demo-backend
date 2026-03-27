@@ -57,7 +57,7 @@ TIPOS_PECA = [
     "Petição Intermediária (Manifestação)",
 ]
 
-app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="3.0.0")
+app = FastAPI(title="S&M OS 6.1 — Demo Backend", version="4.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN],
@@ -86,12 +86,26 @@ def get_client() -> OpenAI:
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
+def friendly_backend_error(e: Exception) -> HTTPException:
+    return HTTPException(status_code=500, detail=f"Backend error: {type(e).__name__}: {str(e)}")
+
+
 def friendly_openai_error(e: Exception) -> HTTPException:
     if isinstance(e, openai.RateLimitError):
-        return HTTPException(status_code=429, detail="Rate limit/quota. Verifique Billing/Créditos.")
+        return HTTPException(status_code=429, detail="OpenAI rate limit/quota. Verifique Billing/Créditos.")
     if isinstance(e, openai.AuthenticationError):
         return HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
-    return HTTPException(status_code=500, detail=f"OpenAI error: {type(e).__name__}: {str(e)}")
+    if isinstance(e, openai.BadRequestError):
+        return HTTPException(status_code=400, detail=f"OpenAI bad request: {str(e)}")
+    if isinstance(e, openai.APITimeoutError):
+        return HTTPException(status_code=504, detail="OpenAI timeout. Tente novamente.")
+    if isinstance(e, openai.APIConnectionError):
+        return HTTPException(status_code=503, detail="Falha de conexão com OpenAI.")
+    if isinstance(e, openai.APIStatusError):
+        return HTTPException(status_code=502, detail=f"OpenAI API status error: {str(e)}")
+    if isinstance(e, Exception) and e.__class__.__module__.startswith("openai"):
+        return HTTPException(status_code=500, detail=f"OpenAI error: {type(e).__name__}: {str(e)}")
+    return friendly_backend_error(e)
 
 
 def _norm(s: str) -> str:
@@ -107,6 +121,16 @@ def clean_text(s: str) -> str:
 
 def is_answered(v: Any) -> bool:
     return bool(str(v or "").strip())
+
+
+def is_negative_reply(s: str) -> bool:
+    t = _norm(s)
+    return t in {"nao", "não", "n", "negativo", "sem", "nenhum", "nenhuma", "nao quero", "não quero"}
+
+
+def is_positive_reply(s: str) -> bool:
+    t = _norm(s)
+    return t in {"sim", "s", "positivo", "ok", "quero", "pode", "pode sim", "claro"}
 
 
 def fmt_brl(value: int) -> str:
@@ -358,77 +382,340 @@ def conversational_missing(state: Dict[str, Any], fields: List[str]) -> List[str
     return out
 
 
+FASE_ALIASES = {
+    "consultivo": "consultivo",
+    "consultiva": "consultivo",
+    "consultoria": "consultivo",
+    "pre contencioso": "pré-contencioso",
+    "pré contencioso": "pré-contencioso",
+    "pre-contencioso": "pré-contencioso",
+    "pré-contencioso": "pré-contencioso",
+    "extrajudicial": "pré-contencioso",
+    "processo": "processo",
+    "processual": "processo",
+    "judicial": "processo",
+    "recurso": "recurso",
+    "recursal": "recurso",
+    "execucao": "execução",
+    "execução": "execução",
+    "cumprimento": "execução",
+}
+
+FOLLOWUP_PRIORITY = [
+    "objetivo_cliente",
+    "partes",
+    "provas_existentes",
+    "area_subarea",
+    "fase",
+    "urgencia_prazo",
+    "tipo_peca",
+    "advogado_assinatura",
+    "contratante_nome",
+    "parte_contraria_nome",
+    "cidade_uf",
+    "valor_envovido",
+    "ano_fato",
+    "notas_adicionais",
+]
+
+def normalize_fase(value: str) -> str:
+    t = _norm(value)
+    return FASE_ALIASES.get(t, clean_text(value))
+
+
+def maybe_extract_lawyer_name(message: str) -> Optional[str]:
+    raw = clean_text(message)
+    t = _norm(raw)
+
+    if "oab" in t:
+        return raw
+
+    if any(k in t for k in ["advog", "nome do adv", "nome/oab", "nome do dvgdo", "assinatura"]):
+        part = raw
+        m = re.search(r"(?:advogad[oa]?|adv|oab|assinatura|nome do advogado|nome/oab)[^A-Za-zÀ-ÿ0-9]*[:\-]?\s*(.+)$", raw, flags=re.I)
+        if m:
+            part = m.group(1).strip()
+        elif " e " in raw.lower():
+            part = raw.split(" e ")[-1].strip()
+
+        part = re.sub(r"^(do|da|de|del)\s+", "", part, flags=re.I).strip(" ,.-")
+        if len(part.split()) >= 2 and len(part) <= 120:
+            return part
+
+    if len(raw.split()) in (2, 3) and all(x.isalpha() or x.replace(".", "").isalpha() for x in raw.replace("-", " ").split()):
+        return raw
+
+    return None
+
+
+def quick_extract_from_short_reply(message: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    raw = clean_text(message)
+    t = _norm(raw)
+    out: Dict[str, Any] = {}
+
+    if len(raw) <= 40:
+        if t in FASE_ALIASES:
+            out["fase"] = normalize_fase(raw)
+
+    if not out.get("fase"):
+        for alias, mapped in FASE_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", t):
+                out["fase"] = mapped
+                break
+
+    if any(k in t for k in ["urg", "prazo", "48h", "24h", "amanha", "amanhã", "hoje", "imediat", "critico", "crítico"]):
+        if len(raw) <= 160:
+            out["urgencia_prazo"] = raw
+
+    lawyer = maybe_extract_lawyer_name(raw)
+    if lawyer and not is_answered(state.get("advogado_assinatura")):
+        out["advogado_assinatura"] = lawyer
+
+    if any(k in t for k in ["sem urg", "sem prazo", "sem urgencia", "sem urgência"]):
+        out["urgencia_prazo"] = raw
+
+    return out
+
+
 def build_short_case_summary(state: Dict[str, Any]) -> str:
     parts = []
     if is_answered(state.get("area_subarea")):
-        parts.append(f"na área {state.get('area_subarea')}")
+        parts.append(f"área: {state.get('area_subarea')}")
     if is_answered(state.get("objetivo_cliente")):
-        parts.append(f"com objetivo de {state.get('objetivo_cliente')}")
+        parts.append(f"objetivo: {state.get('objetivo_cliente')}")
     if is_answered(state.get("tipo_peca")):
-        parts.append(f"e foco inicial em {state.get('tipo_peca')}")
-    if is_answered(state.get("fatos_cronologia")):
-        facts = clean_text(str(state.get("fatos_cronologia")))
-        if len(facts) > 160:
-            facts = facts[:157] + "..."
-        parts.append(f"fatos centrais: {facts}")
+        parts.append(f"documento-base: {state.get('tipo_peca')}")
     if not parts:
-        return "Até aqui eu entendi o núcleo do caso, mas ainda preciso estruturar melhor os dados."
-    return "Até aqui eu entendi: " + "; ".join(parts) + "."
+        return "Já captei o núcleo do caso."
+    return "Resumo até aqui: " + " | ".join(parts) + "."
+
+
+OUTPUT_REQUIRED_FIELDS = {
+    "piece": ["area_subarea", "objetivo_cliente", "partes", "tipo_peca", "fatos_cronologia", "provas_existentes"],
+    "report": ["area_subarea", "objetivo_cliente", "partes", "fatos_cronologia", "provas_existentes"],
+    "proposal": ["area_subarea", "objetivo_cliente", "partes", "tipo_peca"],
+}
+
+OUTPUT_MISSING_PRIORITY = [
+    "tipo_peca",
+    "objetivo_cliente",
+    "partes",
+    "fatos_cronologia",
+    "provas_existentes",
+    "area_subarea",
+    "fase",
+    "urgencia_prazo",
+    "contratante_nome",
+    "advogado_assinatura",
+    "parte_contraria_nome",
+    "cidade_uf",
+    "valor_envovido",
+    "ano_fato",
+    "notas_adicionais",
+]
+
+
+def required_missing_for_outputs(state: Dict[str, Any], outputs: List[str]) -> List[str]:
+    req = []
+    for out in outputs or []:
+        req.extend(OUTPUT_REQUIRED_FIELDS.get(out, []))
+    missing = conversational_missing(state, list(dict.fromkeys(req)))
+    ordered = [f for f in OUTPUT_MISSING_PRIORITY if f in missing]
+    return ordered + [f for f in missing if f not in ordered]
+
+
+def state_expected_field(state: Dict[str, Any]) -> Optional[str]:
+    val = state.get("_expected_field")
+    return val if isinstance(val, str) and val else None
+
+
+def set_expected_field(state: Dict[str, Any], field: Optional[str]):
+    if field:
+        state["_expected_field"] = field
+    else:
+        state.pop("_expected_field", None)
+
+
+def pending_outputs(state: Dict[str, Any]) -> List[str]:
+    raw = state.get("_pending_outputs") or []
+    if isinstance(raw, list):
+        return [x for x in raw if x in {"piece", "proposal", "report"}]
+    return []
+
+
+def set_pending_outputs(state: Dict[str, Any], outputs: List[str]):
+    cleaned = []
+    for item in outputs or []:
+        if item in {"piece", "proposal", "report"} and item not in cleaned:
+            cleaned.append(item)
+    if cleaned:
+        state["_pending_outputs"] = cleaned
+    else:
+        state.pop("_pending_outputs", None)
+
+
+def clear_pending_outputs(state: Dict[str, Any]):
+    state.pop("_pending_outputs", None)
+
+
+def should_cancel_pending(message: str) -> bool:
+    t = _norm(message)
+    phrases = [
+        "nao gerar", "não gerar", "sem gerar", "nao quero gerar", "não quero gerar",
+        "gera depois", "gerar depois", "deixa para depois", "deixe para depois",
+        "aguarde para gerar", "espera para gerar", "espere para gerar"
+    ]
+    return any(x in t for x in phrases)
+
+
+def apply_expected_field_answer(state: Dict[str, Any], message: str) -> bool:
+    field = state_expected_field(state)
+    if not field:
+        return False
+
+    raw = clean_text(message)
+    t = _norm(raw)
+    if not raw:
+        return False
+
+    explicit_piece = detect_tipo_peca_in_text(raw)
+    if explicit_piece and field != "tipo_peca":
+        return False
+
+    def done():
+        set_expected_field(state, None)
+        return True
+
+    if field == "tipo_peca":
+        mapped = detect_tipo_peca_in_text(raw) or map_tipo_peca(raw)
+        if mapped:
+            state["tipo_peca"] = mapped
+            return done()
+        return False
+
+    if field == "fase":
+        norm = normalize_fase(raw)
+        phase_markers = ["consultiv", "pré", "pre", "contenc", "process", "recurs", "execu", "judicial", "extrajudicial"]
+        if t in FASE_ALIASES or any(marker in t for marker in phase_markers):
+            state["fase"] = norm
+            return done()
+        return False
+
+    if field == "urgencia_prazo":
+        if is_negative_reply(raw):
+            state["urgencia_prazo"] = "sem urgência informada"
+            return done()
+        state["urgencia_prazo"] = raw
+        return done()
+
+    if field == "advogado_assinatura":
+        if is_negative_reply(raw):
+            state["advogado_assinatura"] = "não informado"
+            return done()
+        lawyer = maybe_extract_lawyer_name(raw) or raw
+        if len(clean_text(lawyer)) >= 3:
+            state["advogado_assinatura"] = clean_text(lawyer)
+            return done()
+        return False
+
+    if field == "ano_fato":
+        years = re.findall(r"(19\d{2}|20\d{2})", raw)
+        if years:
+            state["ano_fato"] = ", ".join(dict.fromkeys(years))
+            return done()
+        if len(raw) <= 20:
+            state["ano_fato"] = raw
+            return done()
+        return False
+
+    if field in {"valor_envovido", "valor_envolvido"}:
+        if is_negative_reply(raw):
+            state["valor_envovido"] = "não informado"
+            state["valor_envolvido"] = "não informado"
+            return done()
+        if parse_money_br(raw) > 0 or len(raw) <= 120:
+            state["valor_envovido"] = raw
+            state["valor_envolvido"] = raw
+            return done()
+        return False
+
+    if field in {"contratante_nome", "parte_contraria_nome", "cidade_uf", "objetivo_cliente", "partes", "provas_existentes", "fatos_cronologia", "notas_adicionais", "area_subarea"}:
+        if is_negative_reply(raw) and field in {"cidade_uf", "contratante_nome", "parte_contraria_nome", "notas_adicionais"}:
+            state[field] = "não informado"
+            return done()
+        if len(raw) >= 2:
+            state[field] = raw
+            return done()
+        return False
+
+    return False
+
+
+def next_missing_field(state: Dict[str, Any]) -> Optional[str]:
+    crit_missing = conversational_missing(state, CRITICAL_FIELDS)
+    sec_missing = conversational_missing(state, SECONDARY_FIELDS)
+    missing = crit_missing + [x for x in sec_missing if x not in crit_missing]
+    for field in FOLLOWUP_PRIORITY:
+        if field in missing:
+            return field
+    return missing[0] if missing else None
+
+
+def question_for_field(field: str, state: Dict[str, Any]) -> str:
+    if field == "tipo_peca":
+        return "Qual documento você quer primeiro? Ex.: petição inicial, notificação extrajudicial, contestação, réplica, recurso, manifestação ou proposta de honorários."
+    if field == "objetivo_cliente":
+        return "Qual é o objetivo do cliente, em termos práticos? Ex.: cobrar verbas, rescindir, indenização, defesa, acordo, reverter penalidade."
+    if field == "partes":
+        return "Quem são as partes e qual é a relação entre elas?"
+    if field == "provas_existentes":
+        return "Quais provas já existem? Ex.: mensagens, contrato, holerites, áudios, testemunhas, fotos, laudos."
+    if field == "fase":
+        return "Em que fase isso está? Ex.: consultivo, pré-contencioso, processo, recurso ou execução."
+    if field == "urgencia_prazo":
+        return "Há urgência ou prazo crítico? Se sim, qual prazo?"
+    if field == "advogado_assinatura":
+        return "Quer preencher agora o nome/OAB do advogado(a) que vai assinar?"
+    if field == "contratante_nome":
+        return "Qual é o nome completo do contratante/recebedor?"
+    if field == "parte_contraria_nome":
+        return "Qual é o nome da empresa ou parte contrária?"
+    if field == "cidade_uf":
+        return "Qual é a cidade/UF do caso?"
+    if field == "valor_envovido":
+        return "Há valor envolvido ou estimativa econômica do caso?"
+    if field == "ano_fato":
+        return "Qual é o ano principal dos fatos?"
+    return "Me confirme o próximo dado que falta para eu fechar a base do caso."
 
 
 def build_conversational_followup(state: Dict[str, Any]) -> str:
     summary = build_short_case_summary(state)
-    critical_missing = conversational_missing(state, CRITICAL_FIELDS)
-    secondary_missing = conversational_missing(state, SECONDARY_FIELDS)
+    pending = pending_outputs(state)
 
-    if critical_missing:
-        if "tipo_peca" in critical_missing:
-            return (
-                summary
-                + "\n\nMe diga qual documento você quer primeiro: notificação extrajudicial, petição inicial, contestação, réplica, recurso, acordo ou manifestação."
-            )
+    if pending:
+        missing = required_missing_for_outputs(state, pending)
+        next_field = missing[0] if missing else None
+        if next_field:
+            set_expected_field(state, next_field)
+            labels = {
+                "piece": state.get("tipo_peca") or "a peça",
+                "proposal": "a proposta de honorários",
+                "report": "o relatório estratégico",
+            }
+            requested_label = ", ".join(labels[o] for o in pending if o in labels)
+            return summary + f"\n\nPara eu liberar {requested_label} com segurança, falta confirmar este ponto:\n" + question_for_field(next_field, state)
+        set_expected_field(state, None)
+        return summary + "\n\nBase pronta. Vou seguir com a geração solicitada."
 
-        ask_map = {
-            "area_subarea": "qual é a área/subárea jurídica mais adequada",
-            "objetivo_cliente": "o que exatamente o cliente quer obter",
-            "partes": "quem são as partes e a relação entre elas",
-            "fatos_cronologia": "os fatos em ordem cronológica",
-            "provas_existentes": "quais provas ou documentos já existem",
-        }
-        asks = [ask_map[k] for k in critical_missing[:3] if k in ask_map]
-        if len(asks) == 1:
-            return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]}."
-        if len(asks) == 2:
-            return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]} e {asks[1]}."
-        return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]}, {asks[1]} e {asks[2]}."
+    next_field = next_missing_field(state)
+    if next_field:
+        set_expected_field(state, next_field)
+        return summary + "\n\n" + question_for_field(next_field, state)
 
-    if secondary_missing:
-        pretty = {
-            "fase": "em que fase isso está",
-            "contratante_nome": "o nome completo do contratante/recebedor",
-            "urgencia_prazo": "se há urgência ou prazo crítico",
-            "valor_envovido": "o valor envolvido ou estimado",
-            "notas_adicionais": "qualquer detalhe adicional relevante",
-            "parte_contraria_nome": "o nome da empresa ou parte contrária",
-            "cidade_uf": "a cidade/UF do caso",
-            "ano_fato": "o ano do fato",
-            "advogado_assinatura": "o nome/OAB do advogado(a), se quiser preencher agora",
-        }
-        items = [pretty[k] for k in secondary_missing[:3] if k in pretty]
-        if len(items) == 1:
-            return summary + f"\n\nJá tenho a base. Antes de gerar, só preciso confirmar {items[0]}."
-        if len(items) == 2:
-            return summary + f"\n\nJá tenho a base. Antes de gerar, me confirme {items[0]} e {items[1]}."
-        return summary + f"\n\nJá tenho a base. Antes de gerar, me confirme {items[0]}, {items[1]} e {items[2]}."
-
+    set_expected_field(state, None)
     tipo = state.get("tipo_peca") or "documento"
-    return (
-        summary
-        + f"\n\nBase suficiente capturada. Quando quiser, eu já posso gerar a {tipo}, a proposta de honorários ou o relatório estratégico."
-    )
-
-
-
+    return summary + f"\n\nBase suficiente. Quando quiser, eu já posso gerar a {tipo}, a proposta de honorários ou o relatório estratégico."
 
 def extract_fields_from_free_text(client: OpenAI, state: Dict[str, Any], message: str) -> Dict[str, Any]:
     extraction_prompt = """
@@ -437,10 +724,13 @@ Retorne APENAS JSON.
 
 Regras:
 - Extraia somente o que estiver explícito ou fortemente implícito.
-- Não invente nomes, datas, cidades ou valores.
+- Não invente nomes, datas, cidades, valores, parte contrária ou tipo de peça.
 - Se o usuário não falou algo, deixe null.
-- Priorize utilidade prática: se a mensagem trouxer uma narrativa longa, consolide os fatos em 'fatos_cronologia'.
+- Se houver um campo esperado no payload, priorize extrair esse campo da mensagem curta.
+- 'fatos_cronologia' deve ser sempre UMA STRING curta e organizada, nunca lista, nunca JSON, nunca array.
+- Se a mensagem trouxer uma narrativa longa, resuma os fatos em 1 parágrafo objetivo, preferencialmente até ~900 caracteres.
 - Se houver menção clara do objetivo do cliente (ex.: cobrar verbas, rescindir contrato, indenização, defesa, recurso), preencha 'objetivo_cliente'.
+- Só preencha 'tipo_peca' quando o usuário pedir expressamente um documento ou quando isso estiver muito claro. Não deduza "Minuta de Acordo" apenas porque há interesse financeiro ou tentativa de solução.
 - Se o usuário mencionar uma peça, normalize para um destes valores exatos:
   "Notificação Extrajudicial",
   "Petição Inicial",
@@ -449,6 +739,7 @@ Regras:
   "Recurso",
   "Minuta de Acordo",
   "Petição Intermediária (Manifestação)"
+- Não devolva arrays em nenhum campo textual.
 
 JSON:
 {
@@ -471,6 +762,8 @@ JSON:
 """
     payload = {
         "state_atual": captured_view(state),
+        "campo_esperado": state_expected_field(state),
+        "pedidos_pendentes": pending_outputs(state),
         "mensagem_usuario": message,
     }
 
@@ -499,6 +792,8 @@ JSON:
             mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
             if mapped in TIPOS_PECA:
                 cleaned[k] = mapped
+        elif k == "fase":
+            cleaned[k] = normalize_fase(txt)
         elif k in ("valor_envovido", "valor_envolvido"):
             cleaned["valor_envovido"] = txt
             cleaned["valor_envolvido"] = txt
@@ -518,8 +813,11 @@ def merge_conversational_update(state: Dict[str, Any], new_data: Dict[str, Any])
             state["valor_envolvido"] = v
             continue
 
+        if k == "fase":
+            v = normalize_fase(str(v))
+
         current = state.get(k)
-        if not is_answered(current):
+        if not is_answered(current) or _norm(str(current)) in {"nao informado", "não informado", "nao definida", "não definida", "sem urgencia informada", "sem urgência informada"}:
             state[k] = v
         else:
             if k in {"fatos_cronologia", "provas_existentes", "notas_adicionais"}:
@@ -572,19 +870,18 @@ def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     ]):
         outputs.append("report")
 
-    piece_type = detect_tipo_peca_in_text(message) or state.get("tipo_peca")
-    if piece_type and (
-        piece_type != state.get("tipo_peca")
-        or any(term in m for term in [
-            "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
-            "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
-            "acordo", "minuta", "peca", "peça", "documento"
-        ])
-    ):
+    explicit_piece_type = detect_tipo_peca_in_text(message)
+    explicit_piece_language = any(term in m for term in [
+        "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
+        "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
+        "acordo", "minuta", "peca", "peça"
+    ])
+
+    if explicit_piece_type or explicit_piece_language:
         outputs.append("piece")
 
     if not outputs and wants_generation(message):
-        if state.get("tipo_peca") or detect_tipo_peca_in_text(message):
+        if state.get("tipo_peca"):
             outputs.append("piece")
         else:
             outputs.append("report")
@@ -597,10 +894,10 @@ def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
 
 
 def should_generate_now(state: Dict[str, Any], message: str) -> bool:
-    crit_missing = conversational_missing(state, CRITICAL_FIELDS)
-    if crit_missing:
+    outputs = detect_requested_outputs(message, state) or pending_outputs(state)
+    if not outputs:
         return False
-    return bool(detect_requested_outputs(message, state))
+    return len(required_missing_for_outputs(state, outputs)) == 0
 
 
 def preview_text(text: str, limit: int = 2200) -> str:
@@ -679,9 +976,6 @@ def build_generation_success_message(state: Dict[str, Any], outputs: List[str]) 
 
 def build_generation_blocked_message(state: Dict[str, Any], requested_outputs: List[str]) -> str:
     summary = build_short_case_summary(state)
-    critical_missing = conversational_missing(state, CRITICAL_FIELDS)
-    secondary_missing = conversational_missing(state, ["fase", "contratante_nome", "urgencia_prazo", "valor_envovido"])
-
     labels = {
         "piece": state.get("tipo_peca") or "a peça",
         "proposal": "a proposta de honorários",
@@ -700,22 +994,17 @@ def build_generation_blocked_message(state: Dict[str, Any], requested_outputs: L
         "contratante_nome": "nome do contratante/recebedor",
         "urgencia_prazo": "urgência ou prazo",
         "valor_envovido": "valor envolvido",
+        "advogado_assinatura": "nome/OAB do advogado(a)",
     }
 
-    missing = critical_missing if critical_missing else secondary_missing
-    if not missing:
+    missing = required_missing_for_outputs(state, requested_outputs)
+    next_field = missing[0] if missing else None
+    if not next_field:
         return summary + f"\n\nAinda não consegui liberar {requested_label}. Me envie mais detalhes do caso para eu fechar a base."
 
-    listed = [pretty.get(k, k) for k in missing[:3]]
-    if len(listed) == 1:
-        ask = listed[0]
-    elif len(listed) == 2:
-        ask = f"{listed[0]} e {listed[1]}"
-    else:
-        ask = f"{listed[0]}, {listed[1]} e {listed[2]}"
-
-    return summary + f"\n\nPara eu gerar {requested_label} com segurança, ainda preciso confirmar {ask}."
-
+    set_expected_field(state, next_field)
+    ask = question_for_field(next_field, state)
+    return summary + f"\n\nPara eu gerar {requested_label} com segurança, ainda falta este ponto: {pretty.get(next_field, next_field)}.\n{ask}"
 
 def normalize_points(raw: Any) -> List[str]:
     if isinstance(raw, list):
@@ -1492,7 +1781,7 @@ def health():
     return {
         "ok": True,
         "service": "sm-os-demo",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "has_openai_key": bool(OPENAI_API_KEY),
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
@@ -1585,41 +1874,61 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
 
     msg = clean_text(inp.message or "")
     if not msg:
+        followup = build_conversational_followup(state)
         return ChatOut(
-            message="Pode me contar o caso com liberdade. Eu organizo o contexto jurídico e só peço o que faltar para gerar documentos com segurança.",
+            message=followup,
             state=state,
-            expected_field=None,
+            expected_field=state_expected_field(state),
             captured=captured_view(state),
         )
 
     try:
+        if should_cancel_pending(msg):
+            clear_pending_outputs(state)
+            set_expected_field(state, None)
+            return ChatOut(
+                message="Perfeito. Não vou gerar nada agora. Pode continuar me passando o contexto ou, quando quiser, pedir o documento específico.",
+                state=state,
+                expected_field=None,
+                captured=captured_view(state),
+            )
+
+        consumed_expected = apply_expected_field_answer(state, msg)
+
         parsed = parse_labeled_answer(msg)
         if parsed:
             key, val = parsed
             set_value(state, key, val)
-        else:
-            detected_piece = detect_tipo_peca_in_text(msg)
-            if detected_piece and not is_answered(state.get("tipo_peca")):
-                state["tipo_peca"] = detected_piece
+            set_expected_field(state, None)
+        elif not consumed_expected:
+            heur = quick_extract_from_short_reply(msg, state)
+            if heur:
+                merge_conversational_update(state, heur)
 
-            client = get_client()
-            extracted = extract_fields_from_free_text(client, state, msg)
-            merge_conversational_update(state, extracted)
+            explicit_piece = detect_tipo_peca_in_text(msg)
+            if explicit_piece:
+                state["tipo_peca"] = explicit_piece
 
-            if not is_answered(state.get("tipo_peca")) and detected_piece:
-                state["tipo_peca"] = detected_piece
+            should_call_extractor = True
+            norm_msg = _norm(msg)
+            if len(msg) <= 4 and norm_msg in {"ok", "sim", "não", "nao"}:
+                should_call_extractor = False
+
+            if should_call_extractor:
+                client = get_client()
+                extracted = extract_fields_from_free_text(client, state, msg)
+                merge_conversational_update(state, extracted)
+
+                if explicit_piece and not is_answered(state.get("tipo_peca")):
+                    state["tipo_peca"] = explicit_piece
 
         requested_outputs = detect_requested_outputs(msg, state)
-
         if requested_outputs:
-            if not should_generate_now(state, msg):
-                return ChatOut(
-                    message=build_generation_blocked_message(state, requested_outputs),
-                    state=state,
-                    expected_field=None,
-                    captured=captured_view(state),
-                )
+            set_pending_outputs(state, requested_outputs)
 
+        pending = pending_outputs(state)
+
+        if pending and len(required_missing_for_outputs(state, pending)) == 0:
             report = generate_report_strict(state)
             fee = pricing_engine(state, report)
 
@@ -1627,44 +1936,56 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
 
             out_kwargs: Dict[str, Any] = {
-                "message": build_generation_success_message(state, requested_outputs),
+                "message": build_generation_success_message(state, pending),
                 "state": state,
                 "expected_field": None,
                 "captured": captured_view(state),
             }
 
-            if "report" in requested_outputs:
+            if "report" in pending:
                 doc_report = build_report_strategy_docx(report, state)
                 out_kwargs["report_docx_b64"] = docx_to_b64(doc_report)
                 out_kwargs["report_docx_filename"] = f"Relatorio_SM_OS_{ts}.docx"
                 out_kwargs["report_preview"] = build_report_preview(report)
 
-            if "proposal" in requested_outputs:
+            if "proposal" in pending:
                 doc_prop = build_proposal_docx(state, fee)
                 out_kwargs["proposal_docx_b64"] = docx_to_b64(doc_prop)
                 out_kwargs["proposal_docx_filename"] = f"Proposta_Honorarios_SM_{ts}.docx"
                 out_kwargs["proposal_preview"] = build_proposal_preview(state, fee)
 
-            if "piece" in requested_outputs:
+            if "piece" in pending:
                 doc_piece = build_piece_docx(report, state)
                 out_kwargs["piece_docx_b64"] = docx_to_b64(doc_piece)
                 out_kwargs["piece_docx_filename"] = f"Minuta_{tipo_safe}_{ts}.docx"
                 out_kwargs["piece_preview"] = build_piece_preview(report)
 
+            clear_pending_outputs(state)
+            set_expected_field(state, None)
             return ChatOut(**out_kwargs)
+
+        if pending:
+            message = build_generation_blocked_message(state, pending)
+            return ChatOut(
+                message=message,
+                state=state,
+                expected_field=state_expected_field(state),
+                captured=captured_view(state),
+            )
 
         followup = build_conversational_followup(state)
         return ChatOut(
             message=followup,
             state=state,
-            expected_field=None,
+            expected_field=state_expected_field(state),
             captured=captured_view(state),
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        raise friendly_openai_error(e)
+        raise friendly_backend_error(e)
+
 
 
 @app.get("/widget", response_class=HTMLResponse)
