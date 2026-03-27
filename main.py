@@ -5,6 +5,8 @@ import json
 import base64
 import re
 import unicodedata
+import urllib.request
+import urllib.error
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
@@ -86,6 +88,99 @@ def get_client() -> OpenAI:
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured.")
     return OpenAI(api_key=OPENAI_API_KEY)
+
+
+def openai_chat_completion_raw(
+    *,
+    messages: List[Dict[str, Any]],
+    temperature: float = 0.0,
+    response_format: Optional[Dict[str, Any]] = None,
+    timeout_s: Optional[int] = None,
+    max_completion_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured.")
+
+    body: Dict[str, Any] = {
+        "model": MODEL,
+        "messages": messages,
+    }
+    if temperature is not None:
+        body["temperature"] = temperature
+    if response_format is not None:
+        body["response_format"] = response_format
+    if max_completion_tokens is not None:
+        body["max_completion_tokens"] = max_completion_tokens
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s or OPENAI_TIMEOUT_GENERATE_S) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        try:
+            raw_err = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw_err = str(e)
+        try:
+            err_payload = json.loads(raw_err)
+            msg = err_payload.get("error", {}).get("message") or raw_err
+        except Exception:
+            msg = raw_err or str(e)
+
+        if e.code == 400:
+            raise HTTPException(status_code=400, detail=f"OpenAI bad request: {msg}")
+        if e.code == 401:
+            raise HTTPException(status_code=401, detail="OPENAI_API_KEY inválida.")
+        if e.code == 429:
+            raise HTTPException(status_code=429, detail="OpenAI rate limit/quota. Verifique Billing/Créditos.")
+        if e.code == 408:
+            raise HTTPException(status_code=504, detail="OpenAI timeout. Tente novamente.")
+        raise HTTPException(status_code=502, detail=f"OpenAI API HTTP {e.code}: {msg}")
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=503, detail=f"Falha de conexão com OpenAI: {e.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI timeout. Tente novamente.")
+
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Resposta inválida da OpenAI (JSON).")
+
+    if payload.get("error"):
+        msg = payload.get("error", {}).get("message") or str(payload["error"])
+        raise HTTPException(status_code=502, detail=f"OpenAI API error: {msg}")
+
+    return payload
+
+
+def openai_chat_completion_text(
+    *,
+    messages: List[Dict[str, Any]],
+    temperature: float = 0.0,
+    response_format: Optional[Dict[str, Any]] = None,
+    timeout_s: Optional[int] = None,
+    max_completion_tokens: Optional[int] = None,
+) -> str:
+    payload = openai_chat_completion_raw(
+        messages=messages,
+        temperature=temperature,
+        response_format=response_format,
+        timeout_s=timeout_s,
+        max_completion_tokens=max_completion_tokens,
+    )
+    try:
+        return payload["choices"][0]["message"]["content"]
+    except Exception:
+        raise HTTPException(status_code=502, detail="Resposta da OpenAI sem conteúdo utilizável.")
 
 
 def friendly_backend_error(e: Exception) -> HTTPException:
@@ -831,17 +926,17 @@ JSON:
         "mensagem_usuario": message,
     }
 
-    r = client.chat.completions.create(
-        model=MODEL,
+    content = openai_chat_completion_text(
         messages=[
             {"role": "system", "content": extraction_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         temperature=0.0,
         response_format={"type": "json_object"},
+        timeout_s=OPENAI_TIMEOUT_EXTRACT_S,
     )
 
-    data = json.loads(r.choices[0].message.content)
+    data = json.loads(content)
     cleaned: Dict[str, Any] = {}
 
     for k in CONVERSATIONAL_FIELDS:
@@ -1260,20 +1355,17 @@ Retorne APENAS JSON.
 """
 
 def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15, timeout_s: Optional[int] = None, max_tokens: int = 6000) -> Dict[str, Any]:
-    kwargs = {
-        "model": MODEL,
-        "messages": [
+    content = openai_chat_completion_text(
+        messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
-        "temperature": temperature,
-        "response_format": {"type": "json_object"},
-        "max_completion_tokens": max_tokens,
-    }
-    if timeout_s:
-        kwargs["timeout"] = timeout_s
-    r = client.chat.completions.create(**kwargs)
-    return json.loads(r.choices[0].message.content)
+        temperature=temperature,
+        response_format={"type": "json_object"},
+        timeout_s=timeout_s,
+        max_completion_tokens=max_tokens,
+    )
+    return json.loads(content)
 
 
 def build_payload(state: Dict[str, Any]) -> Dict[str, Any]:
