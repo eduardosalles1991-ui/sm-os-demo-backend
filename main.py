@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 import os
-import uuid
 import re
+import uuid
 from io import BytesIO
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 import openai
-from openai import OpenAI
-from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from pypdf import PdfReader
+import requests
 from docx import Document as DocxDocument
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from pypdf import PdfReader
 
+# =========================
+# Config
+# =========================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.com")
 DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
@@ -24,7 +28,17 @@ MAX_TOTAL_MB_PER_SESSION = int(os.getenv("MAX_TOTAL_MB_PER_SESSION", "30"))
 MAX_EXCERPT_CHARS = int(os.getenv("MAX_EXCERPT_CHARS", "12000"))
 HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "18"))
 
-app = FastAPI(title="S&M Free Chat Backend", version="1.0.0")
+# DataJud
+DATAJUD_ENABLED = os.getenv("DATAJUD_ENABLED", "false").lower() == "true"
+DATAJUD_BASE_URL = (os.getenv("DATAJUD_BASE_URL") or "https://api-publica.datajud.cnj.jus.br").rstrip("/")
+DATAJUD_API_KEY = (os.getenv("DATAJUD_API_KEY") or "").strip()
+DATAJUD_TIMEOUT_S = int(os.getenv("DATAJUD_TIMEOUT_S", "25"))
+DATAJUD_DEFAULT_ALIAS = (os.getenv("DATAJUD_DEFAULT_ALIAS") or "").strip()
+
+# =========================
+# App
+# =========================
+app = FastAPI(title="S&M Free Chat + DataJud", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[ALLOWED_ORIGIN] if ALLOWED_ORIGIN else ["*"],
@@ -34,12 +48,16 @@ app.add_middleware(
 )
 
 SESSIONS: Dict[str, Dict[str, Any]] = {}
+PROCESS_NUMBER_RE = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
 
 
+# =========================
+# Models
+# =========================
 class SessionOut(BaseModel):
     session_id: str
     message: str = ""
-    state: Dict[str, Any] = {}
+    state: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatIn(BaseModel):
@@ -50,7 +68,7 @@ class ChatIn(BaseModel):
 
 class ChatOut(BaseModel):
     message: str
-    state: Dict[str, Any] = {}
+    state: Dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthOut(BaseModel):
@@ -60,8 +78,14 @@ class HealthOut(BaseModel):
     sessions: int
     uploads: int
     live_web_enabled: bool
+    datajud_enabled: bool
+    datajud_base_url: str
+    datajud_default_alias: str
 
 
+# =========================
+# Generic helpers
+# =========================
 def auth_or_401(x_demo_key: Optional[str]):
     if not DEMO_KEY:
         raise HTTPException(status_code=500, detail="Server misconfigured: DEMO_KEY not set.")
@@ -128,6 +152,9 @@ def live_web_enabled() -> bool:
     return bool((os.getenv("SEARCH_API_URL") or "").strip())
 
 
+# =========================
+# File extraction
+# =========================
 def extract_txt_bytes(raw: bytes) -> str:
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
@@ -164,7 +191,6 @@ def extract_upload_excerpt(filename: str, content_type: str, raw: bytes) -> str:
     elif name.endswith(".txt") or name.endswith(".md") or "text/" in ctype:
         text = extract_txt_bytes(raw)
     else:
-        # images and unsupported binaries are stored as metadata only
         return ""
     return clean_text(text)[:MAX_EXCERPT_CHARS]
 
@@ -182,6 +208,223 @@ def uploads_context(uploads: List[Dict[str, Any]]) -> str:
     return "\n\n".join(chunks)[:MAX_EXCERPT_CHARS]
 
 
+# =========================
+# DataJud
+# =========================
+class DataJudError(Exception):
+    pass
+
+
+def normalize_process_number(numero: str) -> str:
+    return re.sub(r"\D", "", numero or "")
+
+
+def alias_variants(alias: str) -> List[str]:
+    alias = (alias or "").strip().lower().replace("/", "")
+    if not alias:
+        return []
+    variants = []
+    if alias.startswith("api_publica_"):
+        variants.append(alias)
+    else:
+        variants.append(alias)
+        variants.append(f"api_publica_{alias}")
+    # dedupe preserving order
+    out = []
+    for x in variants:
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def infer_alias_from_text(message: str) -> Optional[str]:
+    msg = (message or "").lower()
+    compact = re.sub(r"[^a-z0-9]", "", msg)
+
+    patterns = [
+        (r"\btrt\s*([1-9]|1\d|2[0-4])\b", "trt{}"),
+        (r"\btrf\s*([1-6])\b", "trf{}"),
+        (r"\btj\s*sp\b", "tjsp"),
+        (r"\btj\s*rj\b", "tjrj"),
+        (r"\btj\s*mg\b", "tjmg"),
+        (r"\btj\s*rs\b", "tjrs"),
+        (r"\bstj\b", "stj"),
+        (r"\bstf\b", "stf"),
+        (r"\btse\b", "tse"),
+    ]
+    for pattern, fmt in patterns:
+        m = re.search(pattern, msg)
+        if m:
+            return fmt.format(m.group(1)) if m.groups() else fmt
+
+    simple_map = {
+        "trt2": "trt2",
+        "trt3": "trt3",
+        "trt15": "trt15",
+        "trf1": "trf1",
+        "tjsp": "tjsp",
+        "tjrj": "tjrj",
+        "tjmg": "tjmg",
+        "stj": "stj",
+        "stf": "stf",
+        "tse": "tse",
+    }
+    for key, value in simple_map.items():
+        if key in compact:
+            return value
+    return None
+
+
+class DataJudService:
+    def __init__(self):
+        self.enabled = DATAJUD_ENABLED
+        self.base_url = DATAJUD_BASE_URL
+        self.api_key = DATAJUD_API_KEY
+        self.timeout_s = DATAJUD_TIMEOUT_S
+        self.default_alias = DATAJUD_DEFAULT_ALIAS
+
+    def _headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"APIKey {self.api_key}"
+        return headers
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.enabled:
+            raise DataJudError("DataJud desabilitado.")
+        if not self.base_url:
+            raise DataJudError("DATAJUD_BASE_URL não configurado.")
+        if not self.api_key:
+            raise DataJudError("DATAJUD_API_KEY não configurado.")
+
+        url = f"{self.base_url}{path}"
+        try:
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            body = e.response.text if e.response is not None else ""
+            raise DataJudError(f"HTTP {getattr(e.response, 'status_code', '?')}: {body[:700]}")
+        except requests.RequestException as e:
+            raise DataJudError(f"Falha de conexão com DataJud: {str(e)}")
+        except ValueError as e:
+            raise DataJudError(f"Resposta JSON inválida: {str(e)}")
+
+    def search_process_by_number(self, numero: str, alias: Optional[str] = None, size: int = 1) -> Dict[str, Any]:
+        numero_limpo = normalize_process_number(numero)
+        if not numero_limpo:
+            raise DataJudError("Número do processo inválido.")
+
+        tribunal_alias = (alias or self.default_alias or "").strip()
+        aliases = alias_variants(tribunal_alias)
+        if not aliases:
+            raise DataJudError("Alias do tribunal não informado. Defina DATAJUD_DEFAULT_ALIAS ou informe alias.")
+
+        payload = {
+            "size": size,
+            "query": {
+                "match": {
+                    "numeroProcesso": numero_limpo
+                }
+            }
+        }
+
+        last_error: Optional[Exception] = None
+        for ali in aliases:
+            try:
+                return self._post(f"/{ali}/_search", payload)
+            except DataJudError as e:
+                last_error = e
+        raise DataJudError(str(last_error) if last_error else "Falha ao consultar DataJud.")
+
+    def extract_sources(self, raw: Dict[str, Any]) -> List[Dict[str, Any]]:
+        hits = (((raw or {}).get("hits") or {}).get("hits") or [])
+        out: List[Dict[str, Any]] = []
+        for item in hits:
+            source = item.get("_source") or {}
+            if source:
+                out.append(source)
+        return out
+
+    def normalize_process(self, source: Dict[str, Any]) -> Dict[str, Any]:
+        movimentos = source.get("movimentos") or []
+        movimentos_sorted = sorted(
+            movimentos,
+            key=lambda x: x.get("dataHora") or "",
+            reverse=True,
+        )
+        ultima_mov = movimentos_sorted[0] if movimentos_sorted else None
+
+        assuntos = source.get("assuntos") or []
+        classe = source.get("classe") or {}
+        orgao = source.get("orgaoJulgador") or {}
+        sistema = source.get("sistema") or {}
+        formato = source.get("formato") or {}
+
+        return {
+            "numero_processo": source.get("numeroProcesso"),
+            "tribunal": source.get("tribunal"),
+            "grau": source.get("grau"),
+            "data_ajuizamento": source.get("dataAjuizamento"),
+            "ultima_atualizacao": source.get("dataHoraUltimaAtualizacao"),
+            "classe_nome": classe.get("nome"),
+            "classe_codigo": classe.get("codigo"),
+            "orgao_julgador": orgao.get("nome"),
+            "sistema": sistema.get("nome"),
+            "formato": formato.get("nome"),
+            "assuntos": [a.get("nome") for a in assuntos if a.get("nome")],
+            "movimentos_total": len(movimentos),
+            "ultima_movimentacao_nome": (ultima_mov or {}).get("nome"),
+            "ultima_movimentacao_data": (ultima_mov or {}).get("dataHora"),
+            "movimentos": movimentos_sorted[:10],
+            "raw": source,
+        }
+
+
+DATAJUD = DataJudService()
+
+
+def looks_like_process_query(message: str) -> bool:
+    msg = (message or "").lower()
+    keywords = [
+        "processo", "proceso", "cnj", "andamento", "movimentação", "movimentacao",
+        "tribunal", "sentença", "sentenca", "acórdão", "acordao", "datajud"
+    ]
+    return bool(PROCESS_NUMBER_RE.search(message or "")) or any(k in msg for k in keywords)
+
+
+def format_process_summary(proc: Dict[str, Any]) -> str:
+    movimentos_txt = []
+    for mov in (proc.get("movimentos") or [])[:5]:
+        nome = mov.get("nome", "Movimentação")
+        data = mov.get("dataHora", "")
+        movimentos_txt.append(f"- {data} | {nome}")
+
+    assuntos = ", ".join(proc.get("assuntos") or []) or "—"
+    ult_mov = proc.get("ultima_movimentacao_nome") or "—"
+    ult_mov_data = proc.get("ultima_movimentacao_data") or "—"
+
+    msg = (
+        f"Encontrei dados do processo {proc.get('numero_processo')}.\n\n"
+        f"Tribunal: {proc.get('tribunal') or '—'}\n"
+        f"Grau: {proc.get('grau') or '—'}\n"
+        f"Classe: {proc.get('classe_nome') or '—'}\n"
+        f"Órgão julgador: {proc.get('orgao_julgador') or '—'}\n"
+        f"Assuntos: {assuntos}\n"
+        f"Data de ajuizamento: {proc.get('data_ajuizamento') or '—'}\n"
+        f"Última atualização: {proc.get('ultima_atualizacao') or '—'}\n"
+        f"Última movimentação: {ult_mov} ({ult_mov_data})\n"
+        f"Movimentos capturados: {proc.get('movimentos_total') or 0}"
+    )
+    if movimentos_txt:
+        msg += "\n\nÚltimas movimentações:\n" + "\n".join(movimentos_txt)
+    msg += "\n\nFonte: DataJud/CNJ"
+    return msg
+
+
+# =========================
+# Chat model helpers
+# =========================
 def build_messages(sess: Dict[str, Any], user_message: str) -> List[Dict[str, str]]:
     base_system = (
         "Você é um assistente geral, conversacional e útil. "
@@ -189,8 +432,9 @@ def build_messages(sess: Dict[str, Any], user_message: str) -> List[Dict[str, st
         "Não conduza a conversa como formulário. "
         "Não faça questionário estruturado a menos que o usuário peça explicitamente um documento, plano ou coleta organizada. "
         "Se houver arquivos anexados, use-os como contexto. "
-        "Se o usuário pedir informação em tempo real da internet, seja honesto: diga que nesta implantação você só tem web ao vivo se um conector de busca estiver configurado. "
+        "Se o usuário pedir informação em tempo real da internet, seja honesto: nesta implantação você não tem busca web ao vivo, a menos que um conector externo esteja configurado. "
         "Não invente fatos atuais, links, notícias, resultados de processo ou dados em tempo real. "
+        "Se o usuário perguntar por andamento processual sem número CNJ ou sem dados suficientes, peça o número do processo e, se necessário, o tribunal. "
         "Responda em português, a menos que o usuário use outro idioma."
     )
     messages: List[Dict[str, str]] = [{"role": "system", "content": base_system}]
@@ -217,6 +461,14 @@ def call_model(messages: List[Dict[str, str]]) -> str:
     return text or "Desculpe, não consegui gerar uma resposta útil agora."
 
 
+# =========================
+# Routes
+# =========================
+@app.get("/ping")
+def ping():
+    return {"ok": True, "service": "alive"}
+
+
 @app.get("/health", response_model=HealthOut)
 def health():
     uploads_count = sum(len(s.get("uploads", [])) for s in SESSIONS.values())
@@ -227,7 +479,23 @@ def health():
         sessions=len(SESSIONS),
         uploads=uploads_count,
         live_web_enabled=live_web_enabled(),
+        datajud_enabled=DATAJUD.enabled,
+        datajud_base_url=DATAJUD.base_url,
+        datajud_default_alias=DATAJUD.default_alias,
     )
+
+
+@app.get("/datajud/test-process")
+def datajud_test_process(numero: str, alias: Optional[str] = None):
+    try:
+        raw = DATAJUD.search_process_by_number(numero=numero, alias=alias)
+        items = DATAJUD.extract_sources(raw)
+        if not items:
+            return {"ok": True, "found": False, "message": "Nenhum processo encontrado."}
+        proc = DATAJUD.normalize_process(items[0])
+        return {"ok": True, "found": True, "process": proc}
+    except DataJudError as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/session/new", response_model=SessionOut)
@@ -246,14 +514,59 @@ def chat(body: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
         if not user_message:
             raise HTTPException(status_code=400, detail="Mensagem vazia")
 
+        # DataJud shortcut
+        if looks_like_process_query(user_message):
+            match = PROCESS_NUMBER_RE.search(user_message or "")
+            if match:
+                numero = match.group(0)
+                alias = infer_alias_from_text(user_message) or DATAJUD.default_alias
+                try:
+                    raw = DATAJUD.search_process_by_number(numero=numero, alias=alias)
+                    items = DATAJUD.extract_sources(raw)
+                    if items:
+                        proc = DATAJUD.normalize_process(items[0])
+                        reply = format_process_summary(proc)
+                        sess["history"] = trim_history(sess.get("history", []) + [
+                            {"role": "user", "content": user_message},
+                            {"role": "assistant", "content": reply},
+                        ])
+                        return ChatOut(message=reply, state=sess.get("state", {}))
+                    reply = f"Não encontrei resultado no DataJud para o processo {numero}."
+                    sess["history"] = trim_history(sess.get("history", []) + [
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": reply},
+                    ])
+                    return ChatOut(message=reply, state=sess.get("state", {}))
+                except DataJudError as e:
+                    reply = (
+                        "Não consegui consultar o DataJud agora. "
+                        f"Motivo: {str(e)}\n\n"
+                        "Confira o alias do tribunal e a chave da API."
+                    )
+                    sess["history"] = trim_history(sess.get("history", []) + [
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": reply},
+                    ])
+                    return ChatOut(message=reply, state=sess.get("state", {}))
+            else:
+                # Looks like process query but no CNJ number
+                reply = (
+                    "Para consultar andamento processual no DataJud, me envie o número CNJ completo do processo. "
+                    "Se quiser, também pode informar o tribunal, por exemplo: TRT2, TRF1, TJSP."
+                )
+                sess["history"] = trim_history(sess.get("history", []) + [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": reply},
+                ])
+                return ChatOut(message=reply, state=sess.get("state", {}))
+
+        # Free chat path
         messages = build_messages(sess, user_message)
         reply = call_model(messages)
-
         sess["history"] = trim_history(sess.get("history", []) + [
             {"role": "user", "content": user_message},
             {"role": "assistant", "content": reply},
         ])
-
         return ChatOut(message=reply, state=sess.get("state", {}))
     except HTTPException:
         raise
