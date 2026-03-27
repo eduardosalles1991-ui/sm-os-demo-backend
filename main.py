@@ -428,6 +428,107 @@ def build_conversational_followup(state: Dict[str, Any]) -> str:
     )
 
 
+
+
+def extract_fields_from_free_text(client: OpenAI, state: Dict[str, Any], message: str) -> Dict[str, Any]:
+    extraction_prompt = """
+Você vai extrair informações jurídicas de uma mensagem livre do usuário.
+Retorne APENAS JSON.
+
+Regras:
+- Extraia somente o que estiver explícito ou fortemente implícito.
+- Não invente nomes, datas, cidades ou valores.
+- Se o usuário não falou algo, deixe null.
+- Priorize utilidade prática: se a mensagem trouxer uma narrativa longa, consolide os fatos em 'fatos_cronologia'.
+- Se houver menção clara do objetivo do cliente (ex.: cobrar verbas, rescindir contrato, indenização, defesa, recurso), preencha 'objetivo_cliente'.
+- Se o usuário mencionar uma peça, normalize para um destes valores exatos:
+  "Notificação Extrajudicial",
+  "Petição Inicial",
+  "Contestação",
+  "Réplica",
+  "Recurso",
+  "Minuta de Acordo",
+  "Petição Intermediária (Manifestação)"
+
+JSON:
+{
+  "area_subarea": null,
+  "fase": null,
+  "objetivo_cliente": null,
+  "partes": null,
+  "contratante_nome": null,
+  "tipo_peca": null,
+  "fatos_cronologia": null,
+  "provas_existentes": null,
+  "urgencia_prazo": null,
+  "valor_envovido": null,
+  "notas_adicionais": null,
+  "parte_contraria_nome": null,
+  "cidade_uf": null,
+  "ano_fato": null,
+  "advogado_assinatura": null
+}
+"""
+    payload = {
+        "state_atual": captured_view(state),
+        "mensagem_usuario": message,
+    }
+
+    r = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": extraction_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+
+    data = json.loads(r.choices[0].message.content)
+    cleaned: Dict[str, Any] = {}
+
+    for k in CONVERSATIONAL_FIELDS:
+        v = data.get(k)
+        if v is None:
+            continue
+        txt = clean_text(str(v))
+        if not txt or txt.lower() == "null":
+            continue
+
+        if k == "tipo_peca":
+            mapped = map_tipo_peca(txt) or detect_tipo_peca_in_text(txt) or txt
+            if mapped in TIPOS_PECA:
+                cleaned[k] = mapped
+        elif k in ("valor_envovido", "valor_envolvido"):
+            cleaned["valor_envovido"] = txt
+            cleaned["valor_envolvido"] = txt
+        else:
+            cleaned[k] = txt
+
+    return cleaned
+
+
+def merge_conversational_update(state: Dict[str, Any], new_data: Dict[str, Any]):
+    for k, v in (new_data or {}).items():
+        if not is_answered(v):
+            continue
+
+        if k in ("valor_envovido", "valor_envolvido"):
+            state["valor_envovido"] = v
+            state["valor_envolvido"] = v
+            continue
+
+        current = state.get(k)
+        if not is_answered(current):
+            state[k] = v
+        else:
+            if k in {"fatos_cronologia", "provas_existentes", "notas_adicionais"}:
+                cur = clean_text(str(current))
+                nv = clean_text(str(v))
+                if nv and nv not in cur:
+                    state[k] = f"{cur} | {nv}"
+
+
 GENERATION_TRIGGER_TERMS = [
     "gera", "gerar", "gere", "criar", "crie", "elaborar", "elabore", "redigir",
     "redija", "fazer", "faça", "montar", "monte", "minuta", "peticao", "petição",
