@@ -202,6 +202,34 @@ def map_tipo_peca(user_text: str) -> Optional[str]:
     return TIPO_PECA_ALIASES.get(t)
 
 
+def detect_tipo_peca_in_text(user_text: str) -> Optional[str]:
+    t = _norm(user_text)
+    exact = map_tipo_peca(t)
+    if exact:
+        return exact
+
+    ordered_aliases = sorted(TIPO_PECA_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True)
+    for alias, mapped in ordered_aliases:
+        if alias in t:
+            return mapped
+
+    if "notificacao" in t and "extrajudicial" in t:
+        return "Notificação Extrajudicial"
+    if "peticao" in t and "inicial" in t:
+        return "Petição Inicial"
+    if "peticao" in t and "intermediaria" in t:
+        return "Petição Intermediária (Manifestação)"
+    if "contestacao" in t:
+        return "Contestação"
+    if "replica" in t:
+        return "Réplica"
+    if "recurso" in t:
+        return "Recurso"
+    if "acordo" in t:
+        return "Minuta de Acordo"
+    return None
+
+
 LABEL_RE = re.compile(r"^\s*([A-Za-zÀ-ÿ\/ _]+)\s*[:\-]\s*(.+?)\s*$")
 LABEL_TO_KEY = {
     "area": "area_subarea",
@@ -357,8 +385,7 @@ def build_conversational_followup(state: Dict[str, Any]) -> str:
         if "tipo_peca" in critical_missing:
             return (
                 summary
-                + "\n\nPara eu te devolver algo realmente útil, me diga qual peça você quer gerar primeiro: "
-                "notificação extrajudicial, petição inicial, contestação, réplica, recurso, acordo ou manifestação."
+                + "\n\nMe diga qual documento você quer primeiro: notificação extrajudicial, petição inicial, contestação, réplica, recurso, acordo ou manifestação."
             )
 
         ask_map = {
@@ -370,9 +397,9 @@ def build_conversational_followup(state: Dict[str, Any]) -> str:
         }
         asks = [ask_map[k] for k in critical_missing[:3] if k in ask_map]
         if len(asks) == 1:
-            return summary + f"\n\nAgora preciso confirmar {asks[0]}."
+            return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]}."
         if len(asks) == 2:
-            return summary + f"\n\nPara fechar melhor a análise, preciso confirmar {asks[0]} e {asks[1]}."
+            return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]} e {asks[1]}."
         return summary + f"\n\nPara eu estruturar isso direito, preciso confirmar {asks[0]}, {asks[1]} e {asks[2]}."
 
     if secondary_missing:
@@ -389,132 +416,206 @@ def build_conversational_followup(state: Dict[str, Any]) -> str:
         }
         items = [pretty[k] for k in secondary_missing[:3] if k in pretty]
         if len(items) == 1:
-            return summary + f"\n\nÓtimo. Antes de gerar, só preciso confirmar {items[0]}."
+            return summary + f"\n\nJá tenho a base. Antes de gerar, só preciso confirmar {items[0]}."
         if len(items) == 2:
-            return summary + f"\n\nPerfeito. Antes de gerar, me confirma {items[0]} e {items[1]}."
-        return summary + f"\n\nEstamos quase lá. Só preciso confirmar {items[0]}, {items[1]} e {items[2]}."
+            return summary + f"\n\nJá tenho a base. Antes de gerar, me confirme {items[0]} e {items[1]}."
+        return summary + f"\n\nJá tenho a base. Antes de gerar, me confirme {items[0]}, {items[1]} e {items[2]}."
 
-    return summary + "\n\nPerfeito. Já tenho base suficiente para gerar os documentos."
-
-
-def extract_fields_from_free_text(client: OpenAI, state: Dict[str, Any], message: str) -> Dict[str, Any]:
-    extraction_prompt = """
-Você vai extrair informações jurídicas de uma mensagem livre do usuário.
-Retorne APENAS JSON.
-
-Regras:
-- Extraia somente o que estiver explícito ou fortemente implícito.
-- Não invente nomes, datas, cidades ou valores.
-- Se o usuário não falou algo, deixe null.
-- Se o usuário mencionar uma peça, normalize para um destes valores exatos:
-  "Notificação Extrajudicial",
-  "Petição Inicial",
-  "Contestação",
-  "Réplica",
-  "Recurso",
-  "Minuta de Acordo",
-  "Petição Intermediária (Manifestação)"
-
-JSON:
-{
-  "area_subarea": null,
-  "fase": null,
-  "objetivo_cliente": null,
-  "partes": null,
-  "contratante_nome": null,
-  "tipo_peca": null,
-  "fatos_cronologia": null,
-  "provas_existentes": null,
-  "urgencia_prazo": null,
-  "valor_envovido": null,
-  "notas_adicionais": null,
-  "parte_contraria_nome": null,
-  "cidade_uf": null,
-  "ano_fato": null,
-  "advogado_assinatura": null
-}
-"""
-    payload = {
-        "state_atual": captured_view(state),
-        "mensagem_usuario": message,
-    }
-
-    r = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": extraction_prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0.0,
-        response_format={"type": "json_object"},
+    tipo = state.get("tipo_peca") or "documento"
+    return (
+        summary
+        + f"\n\nBase suficiente capturada. Quando quiser, eu já posso gerar a {tipo}, a proposta de honorários ou o relatório estratégico."
     )
 
-    data = json.loads(r.choices[0].message.content)
-    cleaned = {}
 
-    for k in CONVERSATIONAL_FIELDS:
-        v = data.get(k)
-        if v is None:
-            continue
-        txt = clean_text(str(v))
-        if not txt or txt.lower() == "null":
-            continue
+GENERATION_TRIGGER_TERMS = [
+    "gera", "gerar", "gere", "criar", "crie", "elaborar", "elabore", "redigir",
+    "redija", "fazer", "faça", "montar", "monte", "minuta", "peticao", "petição",
+    "contestacao", "contestação", "replica", "réplica", "recurso", "notificacao",
+    "notificação", "proposta", "honorarios", "honorários", "relatorio", "relatório",
+    "diagnostico", "diagnóstico", "documento", "documentos"
+]
 
-        if k == "tipo_peca":
-            mapped = map_tipo_peca(txt) or txt
-            if mapped in TIPOS_PECA:
-                cleaned[k] = mapped
-        elif k in ("valor_envovido", "valor_envolvido"):
-            cleaned["valor_envovido"] = txt
-            cleaned["valor_envolvido"] = txt
+ALL_DOC_TERMS = [
+    "tudo", "todos", "os 3", "3 doc", "tres doc", "três doc",
+    "pacote completo", "completo", "todos os documentos", "todos os docx"
+]
+
+
+def wants_generation(message: str) -> bool:
+    m = _norm(message)
+    return any(term in m for term in GENERATION_TRIGGER_TERMS)
+
+
+def wants_all_documents(message: str) -> bool:
+    m = _norm(message)
+    return any(term in m for term in ALL_DOC_TERMS)
+
+
+def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
+    m = _norm(message)
+    outputs: List[str] = []
+
+    if wants_all_documents(message):
+        return ["report", "proposal", "piece"]
+
+    if any(term in m for term in [
+        "proposta de honorarios", "proposta honorarios", "proposta de honorários",
+        "honorarios", "honorários", "fee proposal", "propuesta de honorarios"
+    ]):
+        outputs.append("proposal")
+
+    if any(term in m for term in [
+        "relatorio", "relatório", "diagnostico", "diagnóstico",
+        "analise estrategica", "análise estratégica", "parecer", "informe"
+    ]):
+        outputs.append("report")
+
+    piece_type = detect_tipo_peca_in_text(message) or state.get("tipo_peca")
+    if piece_type and (
+        piece_type != state.get("tipo_peca")
+        or any(term in m for term in [
+            "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
+            "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
+            "acordo", "minuta", "peca", "peça", "documento"
+        ])
+    ):
+        outputs.append("piece")
+
+    if not outputs and wants_generation(message):
+        if state.get("tipo_peca") or detect_tipo_peca_in_text(message):
+            outputs.append("piece")
         else:
-            cleaned[k] = txt
+            outputs.append("report")
 
-    return cleaned
-
-
-def merge_conversational_update(state: Dict[str, Any], new_data: Dict[str, Any]):
-    for k, v in (new_data or {}).items():
-        if not is_answered(v):
-            continue
-
-        if k in ("valor_envovido", "valor_envolvido"):
-            state["valor_envovido"] = v
-            state["valor_envolvido"] = v
-            continue
-
-        current = state.get(k)
-        if not is_answered(current):
-            state[k] = v
-        else:
-            if k in {"fatos_cronologia", "provas_existentes", "notas_adicionais"}:
-                cur = clean_text(str(current))
-                nv = clean_text(str(v))
-                if nv and nv not in cur:
-                    state[k] = f"{cur} | {nv}"
+    deduped: List[str] = []
+    for item in outputs:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
 
 
 def should_generate_now(state: Dict[str, Any], message: str) -> bool:
     crit_missing = conversational_missing(state, CRITICAL_FIELDS)
     if crit_missing:
         return False
+    return bool(detect_requested_outputs(message, state))
 
-    m = _norm(message)
-    if any(x in m for x in [
-        "gera", "pode gerar", "pode seguir", "pronto", "isso mesmo",
-        "e isso", "é isso", "ja pode gerar", "já pode gerar"
-    ]):
-        return True
 
-    secondary_missing = conversational_missing(
-        state,
-        ["fase", "contratante_nome", "urgencia_prazo", "valor_envovido"]
-    )
-    return len(secondary_missing) <= 1
+def preview_text(text: str, limit: int = 2200) -> str:
+    txt = (text or "").strip()
+    if len(txt) <= limit:
+        return txt
+    return txt[: limit - 3].rstrip() + "..."
 
-# =========================================================
-# VALIDAÇÕES / CONTEXTO
-# =========================================================
+
+def build_report_preview(report: Dict[str, Any]) -> str:
+    sec = report.get("secoes") or {}
+    parts = [
+        f"Força da tese: {report.get('forca_tese', '—')}",
+        f"Risco de improcedência: {report.get('risco_improcedencia', '—')}",
+        "",
+        str(sec.get("2_SINTESE", "") or ""),
+        "",
+        "Ações prioritárias:",
+        str(sec.get("15_ACOES_PRIORITARIAS", "") or ""),
+    ]
+    return preview_text("\n".join([p for p in parts if p is not None and str(p).strip()]))
+
+
+def build_proposal_preview(state: Dict[str, Any], fee: Dict[str, Any]) -> str:
+    total_num = int(fee.get("total") or 0)
+    entrada_num = int(fee.get("entrada") or 0)
+    parcelas = int(fee.get("parcelas") or 0)
+    saldo_num = max(0, total_num - entrada_num)
+    parcela_num = round(saldo_num / parcelas) if parcelas else saldo_num
+
+    parts = [
+        f"Contratante: {state.get('contratante_nome') or '[PREENCHER]'}",
+        f"Objeto: {state.get('tipo_peca') or 'Atuação jurídica no caso informado'}",
+        f"Entrada: {fmt_brl(entrada_num) if entrada_num else '—'}",
+        f"Saldo: {fmt_brl(saldo_num) if saldo_num else '—'}",
+        f"Parcelamento: {parcelas}x de {fmt_brl(parcela_num) if parcela_num else '—'}" if parcelas else "Parcelamento: —",
+        f"Total: {fmt_brl(total_num) if total_num else '—'}",
+        "",
+        str(fee.get("justificativa_curta", "") or ""),
+    ]
+    return preview_text("\n".join(parts))
+
+
+def build_piece_preview(report: Dict[str, Any]) -> str:
+    return preview_text(str(report.get("minuta_peca", "") or ""))
+
+
+def build_generation_success_message(state: Dict[str, Any], outputs: List[str]) -> str:
+    labels = {
+        "piece": state.get("tipo_peca") or "minuta da peça",
+        "proposal": "a proposta de honorários",
+        "report": "o relatório estratégico",
+    }
+    generated = [labels[o] for o in outputs if o in labels]
+
+    if len(generated) == 1:
+        head = f"✅ Ya preparé {generated[0]}."
+    elif len(generated) == 2:
+        head = f"✅ Ya preparé {generated[0]} e {generated[1]}."
+    else:
+        head = "✅ Ya preparé o pacote documental solicitado."
+
+    if "piece" in outputs and "proposal" not in outputs:
+        tail = "\n\nPróximo passo recomendado: quer que eu faça agora a proposta de honorários?"
+    elif "proposal" in outputs and "piece" not in outputs and state.get("tipo_peca"):
+        tail = f"\n\nPróximo passo recomendado: quer que eu gere agora a {state.get('tipo_peca')}?"
+    elif "report" in outputs and "piece" not in outputs and state.get("tipo_peca"):
+        tail = f"\n\nPróximo passo recomendado: quer que eu gere agora a {state.get('tipo_peca')}?"
+    elif "report" not in outputs:
+        tail = "\n\nSe quiser, depois eu também posso montar o relatório estratégico."
+    else:
+        tail = "\n\nSe quiser, eu também posso ajustar os documentos, mudar a estratégia ou gerar a próxima peça."
+
+    return head + tail
+
+
+def build_generation_blocked_message(state: Dict[str, Any], requested_outputs: List[str]) -> str:
+    summary = build_short_case_summary(state)
+    critical_missing = conversational_missing(state, CRITICAL_FIELDS)
+    secondary_missing = conversational_missing(state, ["fase", "contratante_nome", "urgencia_prazo", "valor_envovido"])
+
+    labels = {
+        "piece": state.get("tipo_peca") or "a peça",
+        "proposal": "a proposta de honorários",
+        "report": "o relatório estratégico",
+    }
+    requested_label = ", ".join(labels[o] for o in requested_outputs if o in labels) or "o documento"
+
+    pretty = {
+        "area_subarea": "área/subárea jurídica",
+        "objetivo_cliente": "objetivo do cliente",
+        "partes": "partes envolvidas",
+        "tipo_peca": "tipo de peça",
+        "fatos_cronologia": "fatos em ordem cronológica",
+        "provas_existentes": "provas existentes",
+        "fase": "fase atual",
+        "contratante_nome": "nome do contratante/recebedor",
+        "urgencia_prazo": "urgência ou prazo",
+        "valor_envovido": "valor envolvido",
+    }
+
+    missing = critical_missing if critical_missing else secondary_missing
+    if not missing:
+        return summary + f"\n\nAinda não consegui liberar {requested_label}. Me envie mais detalhes do caso para eu fechar a base."
+
+    listed = [pretty.get(k, k) for k in missing[:3]]
+    if len(listed) == 1:
+        ask = listed[0]
+    elif len(listed) == 2:
+        ask = f"{listed[0]} e {listed[1]}"
+    else:
+        ask = f"{listed[0]}, {listed[1]} e {listed[2]}"
+
+    return summary + f"\n\nPara eu gerar {requested_label} com segurança, ainda preciso confirmar {ask}."
+
+
 def normalize_points(raw: Any) -> List[str]:
     if isinstance(raw, list):
         items = [str(x).strip() for x in raw if str(x).strip()]
@@ -1260,10 +1361,13 @@ class ChatOut(BaseModel):
     captured: Optional[Dict[str, Any]] = None
     report_docx_b64: Optional[str] = None
     report_docx_filename: Optional[str] = None
+    report_preview: Optional[str] = None
     proposal_docx_b64: Optional[str] = None
     proposal_docx_filename: Optional[str] = None
+    proposal_preview: Optional[str] = None
     piece_docx_b64: Optional[str] = None
     piece_docx_filename: Optional[str] = None
+    piece_preview: Optional[str] = None
 
 
 class UploadIn(BaseModel):
@@ -1310,9 +1414,9 @@ def session_new(x_demo_key: Optional[str] = Header(default=None)):
     state = get_session_state(sid)
 
     msg = (
-        "Olá. Pode me contar o caso do seu jeito.\n\n"
-        "Exemplo: 'Sofri uma queda no trabalho, fui demitido depois, tenho vídeo e atestado "
-        "e quero uma indenização com notificação extrajudicial.'"
+        "Olá. Sou seu assistente jurídico.\n\n"
+        "Você pode me contar o caso com liberdade, subir provas ou pedir diretamente um documento.\n"
+        "Exemplos de pedido: petição inicial, notificação extrajudicial, contestação, réplica, recurso, manifestação, minuta de acordo, proposta de honorários ou relatório estratégico."
     )
 
     return SessionOut(
@@ -1381,50 +1485,72 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
     msg = clean_text(inp.message or "")
     if not msg:
         return ChatOut(
-            message="Pode me contar o caso com liberdade. Eu vou organizar as informações e só perguntar o que faltar.",
+            message="Pode me contar o caso com liberdade. Eu organizo o contexto jurídico e só peço o que faltar para gerar documentos com segurança.",
             state=state,
             expected_field=None,
             captured=captured_view(state),
         )
 
     try:
-        client = get_client()
-
         parsed = parse_labeled_answer(msg)
         if parsed:
             key, val = parsed
             set_value(state, key, val)
         else:
-            mapped_piece = map_tipo_peca(msg)
-            if mapped_piece and not is_answered(state.get("tipo_peca")):
-                state["tipo_peca"] = mapped_piece
-            else:
-                extracted = extract_fields_from_free_text(client, state, msg)
-                merge_conversational_update(state, extracted)
+            detected_piece = detect_tipo_peca_in_text(msg)
+            if detected_piece and not is_answered(state.get("tipo_peca")):
+                state["tipo_peca"] = detected_piece
 
-        if should_generate_now(state, msg):
+            client = get_client()
+            extracted = extract_fields_from_free_text(client, state, msg)
+            merge_conversational_update(state, extracted)
+
+            if not is_answered(state.get("tipo_peca")) and detected_piece:
+                state["tipo_peca"] = detected_piece
+
+        requested_outputs = detect_requested_outputs(msg, state)
+
+        if requested_outputs:
+            if not should_generate_now(state, msg):
+                return ChatOut(
+                    message=build_generation_blocked_message(state, requested_outputs),
+                    state=state,
+                    expected_field=None,
+                    captured=captured_view(state),
+                )
+
             report = generate_report_strict(state)
             fee = pricing_engine(state, report)
-
-            doc_report = build_report_strategy_docx(report, state)
-            doc_prop = build_proposal_docx(state, fee)
-            doc_piece = build_piece_docx(report, state)
 
             ts = datetime.now().strftime("%Y%m%d-%H%M")
             tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
 
-            return ChatOut(
-                message="✅ Perfeito. Estruturei o caso e gerei os 3 DOCX: relatório, proposta e minuta da peça.",
-                state=state,
-                expected_field=None,
-                captured=captured_view(state),
-                report_docx_b64=docx_to_b64(doc_report),
-                report_docx_filename=f"Relatorio_SM_OS_{ts}.docx",
-                proposal_docx_b64=docx_to_b64(doc_prop),
-                proposal_docx_filename=f"Proposta_Honorarios_SM_{ts}.docx",
-                piece_docx_b64=docx_to_b64(doc_piece),
-                piece_docx_filename=f"Minuta_{tipo_safe}_{ts}.docx",
-            )
+            out_kwargs: Dict[str, Any] = {
+                "message": build_generation_success_message(state, requested_outputs),
+                "state": state,
+                "expected_field": None,
+                "captured": captured_view(state),
+            }
+
+            if "report" in requested_outputs:
+                doc_report = build_report_strategy_docx(report, state)
+                out_kwargs["report_docx_b64"] = docx_to_b64(doc_report)
+                out_kwargs["report_docx_filename"] = f"Relatorio_SM_OS_{ts}.docx"
+                out_kwargs["report_preview"] = build_report_preview(report)
+
+            if "proposal" in requested_outputs:
+                doc_prop = build_proposal_docx(state, fee)
+                out_kwargs["proposal_docx_b64"] = docx_to_b64(doc_prop)
+                out_kwargs["proposal_docx_filename"] = f"Proposta_Honorarios_SM_{ts}.docx"
+                out_kwargs["proposal_preview"] = build_proposal_preview(state, fee)
+
+            if "piece" in requested_outputs:
+                doc_piece = build_piece_docx(report, state)
+                out_kwargs["piece_docx_b64"] = docx_to_b64(doc_piece)
+                out_kwargs["piece_docx_filename"] = f"Minuta_{tipo_safe}_{ts}.docx"
+                out_kwargs["piece_preview"] = build_piece_preview(report)
+
+            return ChatOut(**out_kwargs)
 
         followup = build_conversational_followup(state)
         return ChatOut(
