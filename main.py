@@ -31,6 +31,8 @@ ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "https://correamendes.wpcomstaging.
 DEMO_KEY = (os.getenv("DEMO_KEY") or "").strip()
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.15"))
+OPENAI_TIMEOUT_EXTRACT_S = int(os.getenv("OPENAI_TIMEOUT_EXTRACT_S", "45"))
+OPENAI_TIMEOUT_GENERATE_S = int(os.getenv("OPENAI_TIMEOUT_GENERATE_S", "180"))
 
 MANDATARIA_NOME = os.getenv("MANDATARIA_NOME", "(Nome do Mandatario/a)")
 MANDATARIA_OAB = os.getenv("MANDATARIA_OAB", "OAB: (Numero de OAB)")
@@ -249,9 +251,71 @@ def detect_tipo_peca_in_text(user_text: str) -> Optional[str]:
         return "Réplica"
     if "recurso" in t:
         return "Recurso"
-    if "acordo" in t:
+    if "minuta de acordo" in t or "acordo extrajudicial" in t or "termo de acordo" in t:
         return "Minuta de Acordo"
     return None
+
+
+DOC_REQUEST_VERBS = [
+    "quero", "preciso", "gere", "gera", "gerar", "crie", "criar", "faça", "faca",
+    "elabore", "elaborar", "redija", "redigir", "monte", "montar", "prepare", "prepara"
+]
+
+DOC_REFERENCE_TERMS = [
+    "peticao", "petição", "inicial", "contestacao", "contestação", "replica", "réplica",
+    "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
+    "minuta", "acordo", "proposta", "honorarios", "honorários", "relatorio", "relatório",
+    "diagnostico", "diagnóstico", "parecer", "peça", "peca", "documento", "docx"
+]
+
+DOC_REQUEST_PATTERNS = [
+    r"\b(?:quero|preciso|gere|gera|gerar|crie|criar|fa[çc]a|elabore|elaborar|redija|redigir|monte|montar|prepare|prepara)\b.{0,60}\b(?:peti(?:ç|c)ao|inicial|contesta(?:ç|c)ao|r[eé]plica|recurso|notifica(?:ç|c)ao|manifesta(?:ç|c)ao|minuta|acordo|proposta|honor[aá]rios|relat[oó]rio|diagn[oó]stico|parecer|pe[cç]a|documento)\b",
+    r"^\s*(?:peti(?:ç|c)ao inicial|notifica(?:ç|c)ao extrajudicial|contesta(?:ç|c)ao|r[eé]plica|recurso|minuta de acordo|proposta de honor[aá]rios|relat[oó]rio estrat[eé]gico|parecer)\b",
+]
+
+
+def message_looks_like_doc_request(message: str) -> bool:
+    raw = clean_text(message)
+    t = _norm(raw)
+    if not raw:
+        return False
+
+    short = len(raw) <= 180
+    very_short = len(raw) <= 90
+
+    if any(re.search(p, t, flags=re.I) for p in DOC_REQUEST_PATTERNS):
+        return True
+
+    starts_like_direct_doc = any(t.startswith(_norm(term)) for term in [
+        "petição inicial", "peticao inicial", "notificação extrajudicial", "notificacao extrajudicial",
+        "contestação", "contestacao", "réplica", "replica", "recurso", "minuta de acordo",
+        "proposta de honorários", "proposta de honorarios", "relatório estratégico", "relatorio estrategico",
+        "parecer", "manifestação", "manifestacao"
+    ])
+    if starts_like_direct_doc and short:
+        return True
+
+    has_doc_term = any(term in t for term in [
+        "peticao", "petição", "contestacao", "contestação", "replica", "réplica", "recurso",
+        "notificacao", "notificação", "manifestacao", "manifestação", "minuta", "proposta",
+        "honorarios", "honorários", "relatorio", "relatório", "diagnostico", "diagnóstico",
+        "parecer", "peça", "peca", "documento", "docx"
+    ])
+    has_request_verb = any(re.search(rf"\b{re.escape(v)}\b", t) for v in [_norm(v) for v in DOC_REQUEST_VERBS])
+
+    if short and has_doc_term and (has_request_verb or t in {"inicial", "contestacao", "contestação", "replica", "réplica", "recurso", "acordo", "minuta", "parecer", "relatorio", "relatório", "proposta", "proposta de honorarios", "proposta de honorários"}):
+        return True
+
+    if very_short and any(term == t for term in ["peticao inicial", "petição inicial", "contestacao", "contestação", "replica", "réplica", "recurso", "acordo", "minuta de acordo"]):
+        return True
+
+    return False
+
+
+def detect_tipo_peca_request_in_text(user_text: str) -> Optional[str]:
+    if not message_looks_like_doc_request(user_text):
+        return None
+    return detect_tipo_peca_in_text(user_text)
 
 
 LABEL_RE = re.compile(r"^\s*([A-Za-zÀ-ÿ\/ _]+)\s*[:\-]\s*(.+?)\s*$")
@@ -829,7 +893,7 @@ def merge_conversational_update(state: Dict[str, Any], new_data: Dict[str, Any])
 
 GENERATION_TRIGGER_TERMS = [
     "gera", "gerar", "gere", "criar", "crie", "elaborar", "elabore", "redigir",
-    "redija", "fazer", "faça", "montar", "monte", "minuta", "peticao", "petição",
+    "redija", "faça", "faca", "montar", "monte", "minuta", "peticao", "petição",
     "contestacao", "contestação", "replica", "réplica", "recurso", "notificacao",
     "notificação", "proposta", "honorarios", "honorários", "relatorio", "relatório",
     "diagnostico", "diagnóstico", "documento", "documentos"
@@ -842,46 +906,48 @@ ALL_DOC_TERMS = [
 
 
 def wants_generation(message: str) -> bool:
-    m = _norm(message)
-    return any(term in m for term in GENERATION_TRIGGER_TERMS)
+    return message_looks_like_doc_request(message)
 
 
 def wants_all_documents(message: str) -> bool:
     m = _norm(message)
+    if not message_looks_like_doc_request(message):
+        return False
     return any(term in m for term in ALL_DOC_TERMS)
 
 
 def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
     m = _norm(message)
     outputs: List[str] = []
+    is_doc_request = message_looks_like_doc_request(message)
 
     if wants_all_documents(message):
         return ["report", "proposal", "piece"]
 
-    if any(term in m for term in [
+    if is_doc_request and any(term in m for term in [
         "proposta de honorarios", "proposta honorarios", "proposta de honorários",
         "honorarios", "honorários", "fee proposal", "propuesta de honorarios"
     ]):
         outputs.append("proposal")
 
-    if any(term in m for term in [
+    if is_doc_request and any(term in m for term in [
         "relatorio", "relatório", "diagnostico", "diagnóstico",
         "analise estrategica", "análise estratégica", "parecer", "informe"
     ]):
         outputs.append("report")
 
-    explicit_piece_type = detect_tipo_peca_in_text(message)
-    explicit_piece_language = any(term in m for term in [
+    explicit_piece_type = detect_tipo_peca_request_in_text(message)
+    explicit_piece_language = is_doc_request and any(term in m for term in [
         "peticao", "petição", "contestacao", "contestação", "replica", "réplica",
         "recurso", "notificacao", "notificação", "manifestacao", "manifestação",
-        "acordo", "minuta", "peca", "peça"
+        "minuta", "peça", "peca"
     ])
 
     if explicit_piece_type or explicit_piece_language:
         outputs.append("piece")
 
-    if not outputs and wants_generation(message):
-        if state.get("tipo_peca"):
+    if not outputs and is_doc_request and wants_generation(message):
+        if state.get("tipo_peca") and any(term in m for term in ["gere", "gera", "gerar", "faça", "faca", "elabore", "redija", "monte", "prepare", "documento", "peça", "peca"]):
             outputs.append("piece")
         else:
             outputs.append("report")
@@ -891,14 +957,6 @@ def detect_requested_outputs(message: str, state: Dict[str, Any]) -> List[str]:
         if item not in deduped:
             deduped.append(item)
     return deduped
-
-
-def should_generate_now(state: Dict[str, Any], message: str) -> bool:
-    outputs = detect_requested_outputs(message, state) or pending_outputs(state)
-    if not outputs:
-        return False
-    return len(required_missing_for_outputs(state, outputs)) == 0
-
 
 def preview_text(text: str, limit: int = 2200) -> str:
     txt = (text or "").strip()
@@ -1201,16 +1259,20 @@ Corrigir:
 Retorne APENAS JSON.
 """
 
-def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15) -> Dict[str, Any]:
-    r = client.chat.completions.create(
-        model=MODEL,
-        messages=[
+def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15, timeout_s: Optional[int] = None, max_tokens: int = 6000) -> Dict[str, Any]:
+    kwargs = {
+        "model": MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
+        "max_tokens": max_tokens,
+    }
+    if timeout_s:
+        kwargs["timeout"] = timeout_s
+    r = client.chat.completions.create(**kwargs)
     return json.loads(r.choices[0].message.content)
 
 
@@ -1347,7 +1409,7 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
     system = (OS_6_1_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT).strip()
 
     try:
-        data = call_json(client, system, payload, temperature=TEMPERATURE)
+        data = call_json(client, system, payload, temperature=TEMPERATURE, timeout_s=OPENAI_TIMEOUT_GENERATE_S, max_tokens=7000)
         issues = validate_report_json(state, data)
         if not issues:
             data["_warnings"] = []
@@ -1358,6 +1420,8 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
             REPAIR_PROMPT + "\n\n" + OUTPUT_SCHEMA_PROMPT,
             {**payload, "issues": issues, "previous": data},
             temperature=0.10,
+            timeout_s=OPENAI_TIMEOUT_GENERATE_S,
+            max_tokens=7000,
         )
         issues2 = validate_report_json(state, data2)
 
@@ -1786,6 +1850,8 @@ def health():
         "allowed_origin": ALLOWED_ORIGIN,
         "model": MODEL,
         "prompt_loaded": PROMPT_LOADED,
+        "openai_timeout_extract_s": OPENAI_TIMEOUT_EXTRACT_S,
+        "openai_timeout_generate_s": OPENAI_TIMEOUT_GENERATE_S,
         "mandataria_default": f"{MANDATARIA_NOME} — {MANDATARIA_OAB}",
         "sessions": len(SESSIONS),
     }
@@ -1905,7 +1971,7 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
             if heur:
                 merge_conversational_update(state, heur)
 
-            explicit_piece = detect_tipo_peca_in_text(msg)
+            explicit_piece = detect_tipo_peca_request_in_text(msg)
             if explicit_piece:
                 state["tipo_peca"] = explicit_piece
 
