@@ -1381,6 +1381,27 @@ Corrigir:
 Retorne APENAS JSON.
 """
 
+PIECE_ONLY_PROMPT = r"""
+RETORNE APENAS JSON.
+
+Você vai redigir APENAS a minuta jurídica pedida, sem relatório estratégico completo.
+
+REGRAS DURAS:
+- Não inventar fatos, datas, valores, nomes, tribunal, processo ou documentos.
+- Se faltar dado, usar [PREENCHER] ou [HIP] quando estritamente necessário.
+- A minuta deve ser completa, utilizável e estruturada.
+- Deve iniciar exatamente com: "Copie e cole no timbrado do seu escritório antes de finalizar."
+- O advogado nunca é o autor dos fatos; atua como representante.
+- Se o caso for trabalhista, usar linguagem compatível com Justiça do Trabalho / Vara do Trabalho.
+- Use a base normativa recebida quando pertinente, sem citar norma inexistente.
+- Não use markdown.
+
+SAÍDA:
+{
+  "minuta_peca": "..."
+}
+"""
+
 def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature: float = 0.15) -> Dict[str, Any]:
     r = client.chat.completions.create(
         model=MODEL,
@@ -1557,6 +1578,36 @@ def generate_report_strict(state: Dict[str, Any]) -> Dict[str, Any]:
         raise
     except Exception as e:
         raise friendly_openai_error(e)
+
+def generate_piece_only_strict(state: Dict[str, Any]) -> str:
+    if not PROMPT_LOADED:
+        raise HTTPException(status_code=500, detail="OS_6_1_PROMPT não carregado (Render env).")
+
+    client = get_client()
+    payload = build_payload(state)
+    payload["requested_output"] = "piece_only"
+    payload["instructions"] = "Gerar somente a minuta da peça pedida, sem relatório completo."
+    system = (OS_6_1_PROMPT + "\n\n" + PIECE_ONLY_PROMPT).strip()
+
+    try:
+        data = call_json(client, system, payload, temperature=min(TEMPERATURE, 0.12))
+        minuta = clean_text(str(data.get("minuta_peca") or ""))
+        if not minuta:
+            raise HTTPException(status_code=502, detail="Falha ao gerar a minuta da peça.")
+        if not _norm(minuta).startswith("copie e cole no timbrado"):
+            minuta = "Copie e cole no timbrado do seu escritório antes de finalizar.\n\n" + minuta
+        issues = validate_minuta(state, minuta)
+        if issues:
+            return build_fallback_minuta(state, {"minuta_peca": minuta})
+        return minuta
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise friendly_openai_error(e)
+
+
+def build_piece_preview_from_text(minuta: str) -> str:
+    return preview_text(minuta)
 
 # =========================================================
 # PRICING
@@ -2115,8 +2166,21 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
         pending = pending_outputs(state)
 
         if pending and len(required_missing_for_outputs(state, pending)) == 0:
-            report = generate_report_strict(state)
-            fee = pricing_engine(state, report)
+            need_report = "report" in pending
+            need_piece = "piece" in pending
+            need_proposal = "proposal" in pending
+
+            report = None
+            fee = None
+            piece_text = None
+
+            if need_report:
+                report = generate_report_strict(state)
+            elif need_piece:
+                piece_text = generate_piece_only_strict(state)
+
+            if need_proposal:
+                fee = pricing_engine(state, report or {})
 
             ts = datetime.now().strftime("%Y%m%d-%H%M")
             tipo_safe = (state.get("tipo_peca", "Peca")).replace(" ", "_").replace("/", "_")
@@ -2128,23 +2192,28 @@ def chat(inp: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
                 "captured": captured_view(state),
             }
 
-            if "report" in pending:
+            if need_report and report is not None:
                 doc_report = build_report_strategy_docx(report, state)
                 out_kwargs["report_docx_b64"] = docx_to_b64(doc_report)
                 out_kwargs["report_docx_filename"] = f"Relatorio_SM_OS_{ts}.docx"
                 out_kwargs["report_preview"] = build_report_preview(report)
 
-            if "proposal" in pending:
+            if need_proposal and fee is not None:
                 doc_prop = build_proposal_docx(state, fee)
                 out_kwargs["proposal_docx_b64"] = docx_to_b64(doc_prop)
                 out_kwargs["proposal_docx_filename"] = f"Proposta_Honorarios_SM_{ts}.docx"
                 out_kwargs["proposal_preview"] = build_proposal_preview(state, fee)
 
-            if "piece" in pending:
-                doc_piece = build_piece_docx(report, state)
+            if need_piece:
+                if report is not None:
+                    doc_piece = build_piece_docx(report, state)
+                    out_kwargs["piece_preview"] = build_piece_preview(report)
+                else:
+                    piece_payload = {"minuta_peca": piece_text or build_fallback_minuta(state, {})}
+                    doc_piece = build_piece_docx(piece_payload, state)
+                    out_kwargs["piece_preview"] = build_piece_preview_from_text(piece_payload["minuta_peca"])
                 out_kwargs["piece_docx_b64"] = docx_to_b64(doc_piece)
                 out_kwargs["piece_docx_filename"] = f"Minuta_{tipo_safe}_{ts}.docx"
-                out_kwargs["piece_preview"] = build_piece_preview(report)
 
             clear_pending_outputs(state)
             set_expected_field(state, None)
