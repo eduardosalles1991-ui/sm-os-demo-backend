@@ -48,6 +48,15 @@ FEE_VALIDITY_DAYS = int(os.getenv("FEE_VALIDITY_DAYS", "7"))
 OS_6_1_PROMPT = (os.getenv("OS_6_1_PROMPT") or "").strip()
 PROMPT_LOADED = bool(OS_6_1_PROMPT) and (len(OS_6_1_PROMPT) > 1200)
 
+# DataJud
+DATAJUD_ENABLED = os.getenv("DATAJUD_ENABLED", "false").lower() == "true"
+DATAJUD_BASE_URL = (os.getenv("DATAJUD_BASE_URL") or "https://api-publica.datajud.cnj.jus.br").strip().rstrip("/")
+DATAJUD_API_KEY = (os.getenv("DATAJUD_API_KEY") or "").strip()
+DATAJUD_TIMEOUT_S = int(os.getenv("DATAJUD_TIMEOUT_S", "25"))
+DATAJUD_DEFAULT_ALIAS = (os.getenv("DATAJUD_DEFAULT_ALIAS") or "").strip()
+DATAJUD_SORT_FIELD = (os.getenv("DATAJUD_SORT_FIELD") or "dataHoraUltimaAtualizacao").strip()
+
+
 TIPOS_PECA = [
     "Notificação Extrajudicial",
     "Petição Inicial",
