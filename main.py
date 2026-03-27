@@ -1268,7 +1268,7 @@ def call_json(client: OpenAI, system: str, payload: Dict[str, Any], temperature:
         ],
         "temperature": temperature,
         "response_format": {"type": "json_object"},
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
     }
     if timeout_s:
         kwargs["timeout"] = timeout_s
