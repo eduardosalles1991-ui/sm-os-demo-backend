@@ -575,6 +575,92 @@ def extract_text(file: UploadFile, data: bytes) -> str:
         except: return ""
     return ""
 
+@app.post("/relatorio")
+def gerar_relatorio(payload: RelatorioIn,
+                    x_demo_key: Optional[str] = Header(default=None)):
+    """Gera relatório PDF completo com análise OS 6.1."""
+    from fastapi.responses import Response
+    auth(x_demo_key)
+
+    if not PDF_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Módulo relatorio_pdf não instalado.")
+
+    session = get_session(payload.session_id)
+    numero  = payload.numero_processo or session.get("last_process_numero")
+    if not numero:
+        raise HTTPException(status_code=400, detail="Nenhum processo identificado na sessão.")
+
+    alias = (
+        payload.alias
+        or (infer_alias(numero) if numero else None)
+        or session.get("last_alias")
+        or DATAJUD_DEFAULT_ALIAS
+    )
+
+    try:
+        raw   = DJ.get_process(numero, alias)
+        items = DJ.sources(raw)
+        if not items:
+            raise HTTPException(status_code=404,
+                detail=f"Processo {numero} não encontrado no {alias_nome(alias)}.")
+
+        mni_data = None
+        if MNI.is_available():
+            try:
+                mni_data = MNI.consultar_processo(numero)
+            except MNIError:
+                pass
+
+        proc    = DJ.normalize(items[0], mni_data)
+        context = build_process_context(proc, "resumo", alias)
+
+        instrucao = (
+            "Gere análise jurídica COMPLETA e ESTRUTURADA conforme protocolo OS 6.1. "
+            "Use EXATAMENTE estas seções:\n"
+            "SÍNTESE\nANÁLISE TÉCNICA\nQUESTÃO JURÍDICA\nFORÇA DA TESE\n"
+            "CONFIABILIDADE\nSCORES (liste: Viabilidade: XX, Risco: XX, "
+            "Rentabilidade: XX, Urgência: XX, Prioridade: XX, Composto: XX)\n"
+            "RISCOS (liste com nível: CRÍTICO/ALTO/MÉDIO/BAIXO)\n"
+            "RED TEAM\nATAQUES\nPONTO MAIS VULNERÁVEL\nMEDIDAS PREVENTIVAS\n"
+            "ESTRATÉGIA\nLINHA PRINCIPAL\nLINHAS SUBSIDIÁRIAS\nAÇÕES PRIORITÁRIAS\n"
+            "PENDÊNCIAS\nALERTAS\n"
+            "Responda em português formal. Seja técnico e objetivo."
+        )
+
+        sys_prompt = build_prompt(MessageMode.PROCESS, extra_context=context)
+        msgs = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user",   "content": instrucao},
+        ]
+        analise_texto = call_openai(msgs, temperature=0.1)
+        analise_dict  = parse_analise_gpt(analise_texto)
+
+        pdf_bytes = build_relatorio_pdf(
+            processo=proc,
+            analise_os61=analise_dict,
+            mandataria_nome=MANDATARIA_NOME,
+            mandataria_oab=MANDATARIA_OAB,
+        )
+
+        session["last_analise"]       = analise_dict
+        session["last_analise_texto"] = analise_texto
+
+        numero_safe = re.sub(r"[^\w\-]", "_", numero)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="relatorio_{numero_safe}.pdf"'},
+        )
+
+    except HTTPException:
+        raise
+    except DataJudError as e:
+        raise HTTPException(status_code=502, detail=f"Erro DataJud: {e}")
+    except Exception as e:
+        log.exception("Erro ao gerar relatório")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
+
+
 @app.get("/ping")
 def ping(): return {"ok":True}
 
