@@ -646,6 +646,11 @@ class ChatIn(BaseModel):
 class ChatOut(BaseModel):
     message: str; state: Dict[str,Any] = {}; prompt_level: Optional[str] = None
 
+class RelatorioIn(BaseModel):
+    session_id: str
+    numero_processo: Optional[str] = None
+    alias: Optional[str] = None
+
 def auth401(k): 
     if DEMO_KEY and k != DEMO_KEY: raise HTTPException(status_code=401,detail="Não autorizado")
 
