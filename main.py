@@ -679,7 +679,7 @@ def chat_endpoint(payload: ChatIn, x_demo_key: Optional[str] = Header(default=No
                     reply = (
                         f"Não encontrei o processo **{numero}** no **{tribunal_tentado}**.\n\n"
                         f"Se o processo for de outro tribunal, informe qual. Por exemplo:\n"
-                        f"> *"Processo {numero} no TRT3"* ou *"no TJSP"*"
+                        f'> *"Processo {numero} no TRT3"* ou *"no TJSP"*'
                     )
                     session["messages"].append({"role": "assistant", "content": reply})
                     return ChatOut(message=reply, state=state)
