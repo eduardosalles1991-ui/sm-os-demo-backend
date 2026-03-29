@@ -20,17 +20,14 @@ try:
 except Exception:
     DocxDocument = None
 
-# -----------------------------
+# ─────────────────────────────────────────────
 # Environment
-# -----------------------------
+# ─────────────────────────────────────────────
 OPENAI_API_KEY        = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_MODEL          = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
 DEMO_KEY              = (os.getenv("DEMO_KEY") or "").strip()
 ALLOWED_ORIGIN        = (os.getenv("ALLOWED_ORIGIN") or "*").strip()
-
-# Prompt jurídico OS 6.1 — lido da env
 OS_6_1_PROMPT         = (os.getenv("OS_6_1_PROMPT") or "").strip()
-
 DATAJUD_ENABLED       = os.getenv("DATAJUD_ENABLED", "false").lower() == "true"
 DATAJUD_BASE_URL      = (os.getenv("DATAJUD_BASE_URL") or "https://api-publica.datajud.cnj.jus.br").strip().rstrip("/")
 DATAJUD_API_KEY       = (os.getenv("DATAJUD_API_KEY") or "").strip()
@@ -40,15 +37,96 @@ DATAJUD_SORT_FIELD    = (os.getenv("DATAJUD_SORT_FIELD") or "dataHoraUltimaAtual
 MANDATARIA_NOME       = (os.getenv("MANDATARIA_NOME") or "").strip()
 MANDATARIA_OAB        = (os.getenv("MANDATARIA_OAB") or "").strip()
 
-# -----------------------------
-# System prompt builder
-# -----------------------------
+# ─────────────────────────────────────────────
+# Códigos TPU — Tabela Processual Unificada CNJ
+# Justiça do Trabalho
+# ─────────────────────────────────────────────
+
+# Movimentos que indicam SENTENÇA (mérito 1º grau)
+CODIGOS_SENTENCA = {
+    11: "Julgamento",
+    193: "Sentença",
+    198: "Sentença com Resolução de Mérito",
+    199: "Sentença sem Resolução de Mérito",
+    17: "Sentença Homologatória",
+    14: "Improcedência",
+    15: "Procedência",
+    16: "Procedência em Parte",
+}
+
+# Movimentos que indicam DECISÃO INTERLOCUTÓRIA
+CODIGOS_DECISAO_INTERLOCUTORIA = {
+    85: "Decisão",
+    26: "Despacho",
+    51: "Despacho de Mero Expediente",
+    60: "Liminar",
+    61: "Antecipação de Tutela",
+    87: "Decisão Interlocutória",
+    1038: "Decisão Parcial de Mérito",
+}
+
+# Movimentos que indicam ACÓRDÃO (2º grau)
+CODIGOS_ACORDAO = {
+    941: "Acórdão",
+    237: "Acórdão Publicado",
+    196: "Julgamento de Recurso",
+    7: "Recurso Improvido",
+    8: "Recurso Provido",
+    9: "Recurso Provido em Parte",
+}
+
+# Assuntos trabalhistas — horas extras e periculosidade
+ASSUNTOS_HORAS_EXTRAS = {1723, 14548, 14549, 14550, 14551}
+ASSUNTOS_PERICULOSIDADE = {1856, 14552, 14553}
+ASSUNTOS_INSALUBRIDADE = {1855, 14554}
+ASSUNTOS_TEMATICOS = ASSUNTOS_HORAS_EXTRAS | ASSUNTOS_PERICULOSIDADE | ASSUNTOS_INSALUBRIDADE
+
+# ─────────────────────────────────────────────
+# Intent detection keywords
+# ─────────────────────────────────────────────
+INTENT_PROCESS_FULL = [
+    "andamento completo", "histórico completo", "timeline", "linha do tempo",
+    "todas as movimentações", "todos os andamentos", "andamento detalhado",
+    "histórico do processo", "movimentações completas",
+]
+INTENT_MAGISTRADO = [
+    "magistrado", "juiz", "juíza", "quem sentenciou", "quem julgou",
+    "quem decidiu", "prolator", "responsável pelo processo",
+]
+INTENT_BANCO_DECISOES = [
+    "banco de decisões", "outros processos", "processos similares",
+    "processos semelhantes", "decisões do juiz", "decisões da vara",
+    "jurisprudência da vara", "padrão decisório", "como esse juiz decide",
+    "histórico do juiz", "outros casos",
+]
+INTENT_TEMATICO = [
+    "horas extras", "hora extra", "adicional de periculosidade", "periculosidade",
+    "insalubridade", "adicional noturno", "análise temática",
+]
+INTENT_CLASSIFICAR = [
+    "sentença", "decisão interlocutória", "acórdão", "tipo de decisão",
+    "classifica", "separar decisões", "tipos de movimentação",
+]
+
+def detect_intent(message: str) -> str:
+    """Detecta intenção principal da mensagem do usuário."""
+    msg = message.lower()
+    if any(k in msg for k in INTENT_BANCO_DECISOES):
+        return "banco_decisoes"
+    if any(k in msg for k in INTENT_MAGISTRADO):
+        return "magistrado"
+    if any(k in msg for k in INTENT_TEMATICO):
+        return "tematico"
+    if any(k in msg for k in INTENT_CLASSIFICAR):
+        return "classificar"
+    if any(k in msg for k in INTENT_PROCESS_FULL):
+        return "andamento_completo"
+    return "resumo"  # padrão
+
+# ─────────────────────────────────────────────
+# System prompt
+# ─────────────────────────────────────────────
 def build_system_prompt(extra_context: str = "") -> str:
-    """
-    Monta o system prompt final combinando:
-    1. Prompt OS 6.1 da env (núcleo jurídico)
-    2. Contexto adicional (dados de processo, arquivos, etc.)
-    """
     base = OS_6_1_PROMPT if OS_6_1_PROMPT else (
         "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
         "Responda sempre em português, de forma técnica, clara e objetiva. "
@@ -56,26 +134,19 @@ def build_system_prompt(extra_context: str = "") -> str:
         "Cite os fundamentos legais (CLT, súmulas TST/TRT) quando relevante. "
         "Sinalize quando uma análise exigir validação humana por advogado responsável."
     )
-
     mandate_info = ""
     if MANDATARIA_NOME or MANDATARIA_OAB:
         mandate_info = (
-            f"\n\nEste sistema opera para o escritório/mandatária: "
-            f"{MANDATARIA_NOME} — {MANDATARIA_OAB}. "
+            f"\n\nEste sistema opera para: {MANDATARIA_NOME} — {MANDATARIA_OAB}. "
             "Todas as análises são assistivas e sujeitas à revisão do advogado responsável."
         )
-
-    context_block = ""
-    if extra_context:
-        context_block = f"\n\n===CONTEXTO ADICIONAL===\n{extra_context}\n===FIM DO CONTEXTO==="
-
+    context_block = f"\n\n===CONTEXTO===\n{extra_context}\n===FIM===" if extra_context else ""
     return base + mandate_info + context_block
 
-# -----------------------------
-# FastAPI app
-# -----------------------------
-app = FastAPI(title="SM OS Chat", version="3.0.0")
-
+# ─────────────────────────────────────────────
+# FastAPI
+# ─────────────────────────────────────────────
+app = FastAPI(title="SM OS Chat", version="4.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if ALLOWED_ORIGIN == "*" else [ALLOWED_ORIGIN],
@@ -83,12 +154,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 SESSIONS: Dict[str, Dict[str, Any]] = {}
 
-# -----------------------------
-# Models
-# -----------------------------
 class SessionOut(BaseModel):
     session_id: str
     state: Dict[str, Any] = {}
@@ -109,12 +176,13 @@ class DataJudSearchRequest(BaseModel):
     assunto_nome: Optional[str] = None
     tribunal: Optional[str] = None
     orgao_julgador: Optional[str] = None
+    assunto_codigo: Optional[int] = None
     size: int = 10
     cursor: Optional[str] = None
 
-# -----------------------------
+# ─────────────────────────────────────────────
 # Helpers
-# -----------------------------
+# ─────────────────────────────────────────────
 def auth_or_401(x_demo_key: Optional[str]) -> None:
     if DEMO_KEY and x_demo_key != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Não autorizado")
@@ -122,11 +190,8 @@ def auth_or_401(x_demo_key: Optional[str]) -> None:
 def get_session_state(session_id: str) -> Dict[str, Any]:
     return SESSIONS.setdefault(
         session_id,
-        {
-            "messages": [],
-            "uploaded_contexts": [],
-            "last_datajud_search": None,
-        },
+        {"messages": [], "uploaded_contexts": [], "last_datajud_search": None,
+         "last_process": None},
     )
 
 def normalize_process_number(numero: str) -> str:
@@ -145,12 +210,11 @@ def detect_process_numbers(text: str) -> List[str]:
             out.append(item)
     return out
 
-def infer_datajud_alias_from_number(numero: str) -> Optional[str]:
+def infer_datajud_alias(numero: str) -> Optional[str]:
     m = re.match(r"(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})", numero or "")
     if not m:
         return None
-    justice  = m.group(4)
-    tribunal = m.group(5)
+    justice, tribunal = m.group(4), m.group(5)
     try:
         tr_num = int(tribunal)
     except Exception:
@@ -161,61 +225,21 @@ def infer_datajud_alias_from_number(numero: str) -> Optional[str]:
         return f"api_publica_trf{tr_num}"
     return None
 
-def looks_like_process_summary_request(message: str) -> bool:
-    msg = (message or "").lower()
-    if detect_process_numbers(message):
-        return True
-    keywords = [
-        "resumo do processo", "resumir processo", "andamento",
-        "movimenta", "status do processo", "situação do processo",
-        "resumo desse processo", "o que aconteceu nesse processo",
-        "últimas movimentações", "ultima movimentacao",
-    ]
-    return any(k in msg for k in keywords)
-
-def looks_like_natural_search_request(message: str) -> bool:
-    msg = (message or "").lower()
-    search_words = ["busque", "busca", "procure", "pesquise", "pesquisa",
-                    "me mostre processos", "encontre processos"]
-    filter_words = ["classe", "assunto", "tribunal", "órgão", "orgao"]
-    return any(w in msg for w in search_words) and any(f in msg for f in filter_words)
-
-def encode_search_after_token(values: Optional[List[Any]]) -> Optional[str]:
-    if not values:
-        return None
-    raw = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
-    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8")
-
-def decode_search_after_token(token: Optional[str]) -> Optional[List[Any]]:
-    if not token:
-        return None
-    try:
-        raw    = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
-        values = json.loads(raw)
-        return values if isinstance(values, list) else None
-    except Exception:
-        return None
+def compact_text(text: str, limit: int = 6000) -> str:
+    text = (text or "").strip()
+    return text[:limit] if len(text) > limit else text
 
 def extract_text_from_upload(file: UploadFile, data: bytes) -> str:
     filename = (file.filename or "").lower()
-    if filename.endswith(".txt") or filename.endswith(".md"):
-        try:
-            return data.decode("utf-8", errors="ignore")
-        except Exception:
-            return ""
-    if filename.endswith(".pdf") and PdfReader is not None:
+    if filename.endswith((".txt", ".md")):
+        return data.decode("utf-8", errors="ignore")
+    if filename.endswith(".pdf") and PdfReader:
         try:
             reader = PdfReader(io.BytesIO(data))
-            texts  = []
-            for page in reader.pages[:40]:
-                try:
-                    texts.append(page.extract_text() or "")
-                except Exception:
-                    pass
-            return "\n".join(texts).strip()
+            return "\n".join(p.extract_text() or "" for p in reader.pages[:40]).strip()
         except Exception:
             return ""
-    if filename.endswith(".docx") and DocxDocument is not None:
+    if filename.endswith(".docx") and DocxDocument:
         try:
             doc = DocxDocument(io.BytesIO(data))
             return "\n".join(p.text for p in doc.paragraphs if p.text).strip()
@@ -223,13 +247,79 @@ def extract_text_from_upload(file: UploadFile, data: bytes) -> str:
             return ""
     return ""
 
-def compact_text(text: str, limit: int = 6000) -> str:
-    text = (text or "").strip()
-    return text[:limit] if len(text) > limit else text
+def encode_cursor(values: Optional[List[Any]]) -> Optional[str]:
+    if not values:
+        return None
+    return base64.urlsafe_b64encode(json.dumps(values).encode()).decode()
 
-# -----------------------------
-# DataJud
-# -----------------------------
+def decode_cursor(token: Optional[str]) -> Optional[List[Any]]:
+    if not token:
+        return None
+    try:
+        return json.loads(base64.urlsafe_b64decode(token.encode()).decode())
+    except Exception:
+        return None
+
+# ─────────────────────────────────────────────
+# Classificadores de movimentação
+# ─────────────────────────────────────────────
+def classify_movimento(mov: Dict[str, Any]) -> str:
+    """Classifica uma movimentação em sentença / decisão_interlocutoria / acordao / outro."""
+    codigo = None
+    # campo codigoNacional pode vir de formas diferentes
+    if isinstance(mov.get("codigoNacional"), int):
+        codigo = mov["codigoNacional"]
+    elif isinstance(mov.get("movimentoNacional"), dict):
+        codigo = mov["movimentoNacional"].get("codigo")
+
+    if codigo:
+        if codigo in CODIGOS_SENTENCA:
+            return "sentenca"
+        if codigo in CODIGOS_DECISAO_INTERLOCUTORIA:
+            return "decisao_interlocutoria"
+        if codigo in CODIGOS_ACORDAO:
+            return "acordao"
+
+    nome = (mov.get("nome") or "").lower()
+    if any(w in nome for w in ["sentença", "sentenca", "julgament", "procedente", "improcedente"]):
+        return "sentenca"
+    if any(w in nome for w in ["acórdão", "acordao", "recurso provido", "recurso improvido"]):
+        return "acordao"
+    if any(w in nome for w in ["decisão", "decisao", "despacho", "liminar", "tutela"]):
+        return "decisao_interlocutoria"
+    return "outro"
+
+def extract_magistrado_from_movimentos(movimentos: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Tenta extrair o nome/identificador do magistrado prolator.
+    O DataJud envia 'magistradoProlator' ou 'responsavelMovimento' dentro de cada movimento.
+    """
+    for mov in movimentos:
+        # Tenta campo direto
+        mag = mov.get("magistradoProlator") or mov.get("responsavelMovimento")
+        if mag:
+            if isinstance(mag, dict):
+                nome = mag.get("nome") or mag.get("nomeServidor") or mag.get("cpf")
+            else:
+                nome = str(mag)
+            if nome and len(nome) > 3:
+                return nome
+        # Tenta dentro de complementos
+        complementos = mov.get("complementosTabelados") or []
+        for comp in complementos:
+            if isinstance(comp, dict):
+                desc = (comp.get("descricao") or "").lower()
+                if "magistrado" in desc or "juiz" in desc:
+                    return comp.get("valor") or comp.get("nome")
+    return None
+
+def get_orgao_julgador(source: Dict[str, Any]) -> Optional[str]:
+    orgao = source.get("orgaoJulgador") or {}
+    return orgao.get("nome") or orgao.get("codigo")
+
+# ─────────────────────────────────────────────
+# DataJud Service
+# ─────────────────────────────────────────────
 class DataJudError(Exception):
     pass
 
@@ -240,291 +330,434 @@ class DataJudService:
         self.api_key       = DATAJUD_API_KEY
         self.timeout_s     = DATAJUD_TIMEOUT_S
         self.default_alias = DATAJUD_DEFAULT_ALIAS
-        self.default_sort_field = DATAJUD_SORT_FIELD
+        self.sort_field    = DATAJUD_SORT_FIELD
 
-    def _headers(self) -> Dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+    def _headers(self):
+        h = {"Content-Type": "application/json"}
         if self.api_key:
-            headers["Authorization"] = f"APIKey {self.api_key}"
-        return headers
+            h["Authorization"] = f"APIKey {self.api_key}"
+        return h
 
-    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _post(self, path: str, payload: dict) -> dict:
         if not self.enabled:
             raise DataJudError("DataJud desabilitado.")
-        if not self.base_url:
-            raise DataJudError("DATAJUD_BASE_URL não configurado.")
         if not self.api_key:
             raise DataJudError("DATAJUD_API_KEY não configurado.")
         url = f"{self.base_url}{path}"
         try:
-            resp = requests.post(
-                url, headers=self._headers(), json=payload, timeout=self.timeout_s
-            )
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=self.timeout_s)
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as e:
-            body = e.response.text if e.response is not None else ""
-            raise DataJudError(f"HTTP {getattr(e.response, 'status_code', '?')}: {body[:1200]}")
+            body = e.response.text if e.response else ""
+            raise DataJudError(f"HTTP {getattr(e.response, 'status_code', '?')}: {body[:800]}")
         except requests.RequestException as e:
-            raise DataJudError(f"Falha de conexão com DataJud: {str(e)}")
-        except ValueError as e:
-            raise DataJudError(f"Resposta JSON inválida: {str(e)}")
+            raise DataJudError(f"Falha de conexão: {str(e)}")
 
-    def _build_base_payload(self, query, size=10, sort=None, search_after=None, source_fields=None):
-        payload: Dict[str, Any] = {
-            "size":  size,
+    def search(self, alias: str, query: dict, size: int = 10,
+               sort: list = None, search_after: list = None,
+               source_fields: list = None) -> dict:
+        alias = (alias or self.default_alias or "").strip()
+        if not alias:
+            raise DataJudError("Alias do tribunal não informado.")
+        payload: dict = {
+            "size":  min(size, 50),
             "query": query,
-            "sort":  sort or [{self.default_sort_field: "desc"}],
+            "sort":  sort or [{self.sort_field: "desc"}],
         }
         if search_after:
             payload["search_after"] = search_after
         if source_fields:
             payload["_source"] = source_fields
-        return payload
+        return self._post(f"/{alias}/_search", payload)
 
-    def search_raw(self, alias, query, size=10, sort=None, search_after=None, source_fields=None):
-        tribunal_alias = (alias or self.default_alias or "").strip()
-        if not tribunal_alias:
-            raise DataJudError("Alias do tribunal não informado.")
-        payload = self._build_base_payload(query=query, size=size, sort=sort,
-                                           search_after=search_after, source_fields=source_fields)
-        return self._post(f"/{tribunal_alias}/_search", payload)
-
-    def search_process_by_number(self, numero: str, alias: Optional[str] = None, size: int = 1):
-        tribunal_alias = (alias or self.default_alias or "").strip()
-        if not tribunal_alias:
-            inferred = infer_datajud_alias_from_number(numero)
-            tribunal_alias = inferred or ""
-        if not tribunal_alias:
-            raise DataJudError("Alias do tribunal não informado nem inferido do número CNJ.")
+    def get_process(self, numero: str, alias: str = None) -> dict:
+        alias = alias or infer_datajud_alias(numero) or self.default_alias
+        if not alias:
+            raise DataJudError("Não foi possível inferir o tribunal do número CNJ.")
         numero_limpo = normalize_process_number(numero)
-        if not numero_limpo:
-            raise DataJudError("Número do processo inválido.")
-        query = {"match": {"numeroProcesso": numero_limpo}}
-        return self.search_raw(alias=tribunal_alias, query=query, size=size)
+        return self.search(
+            alias=alias,
+            query={"match": {"numeroProcesso": numero_limpo}},
+            size=1,
+        )
 
-    def search_paginated(self, alias, query, size=10, cursor=None, sort=None, source_fields=None):
-        search_after = decode_search_after_token(cursor)
-        raw = self.search_raw(alias=alias, query=query, size=size, sort=sort,
-                              search_after=search_after, source_fields=source_fields)
-        hits_block  = ((raw or {}).get("hits") or {})
-        hits        = hits_block.get("hits") or []
-        total       = hits_block.get("total") or {}
-        total_value = total.get("value") if isinstance(total, dict) else total
-        items: List[Dict[str, Any]] = []
-        next_cursor: Optional[str]  = None
-        for hit in hits:
-            source = hit.get("_source") or {}
-            items.append({"_id": hit.get("_id"), "_score": hit.get("_score"),
-                          "sort": hit.get("sort") or [], "source": source})
-        if hits:
-            last_sort   = hits[-1].get("sort") or []
-            next_cursor = encode_search_after_token(last_sort) if last_sort else None
-        return {"total": total_value, "count": len(items), "items": items,
-                "next_cursor": next_cursor, "raw_took_ms": raw.get("took"),
-                "timed_out": raw.get("timed_out", False)}
+    def get_process_full(self, numero: str, alias: str = None) -> dict:
+        """Busca processo pedindo TODOS os campos disponíveis."""
+        alias = alias or infer_datajud_alias(numero) or self.default_alias
+        if not alias:
+            raise DataJudError("Não foi possível inferir o tribunal do número CNJ.")
+        numero_limpo = normalize_process_number(numero)
+        # Sem _source filter = retorna tudo
+        return self.search(
+            alias=alias,
+            query={"match": {"numeroProcesso": numero_limpo}},
+            size=1,
+        )
 
-    def extract_sources(self, raw: Dict[str, Any]) -> List[Dict[str, Any]]:
-        hits = (((raw or {}).get("hits") or {}).get("hits") or [])
-        return [item.get("_source") or {} for item in hits if item.get("_source")]
+    def search_by_orgao_and_assunto(self, orgao_nome: str, assunto_codigo: int = None,
+                                     assunto_nome: str = None, alias: str = None,
+                                     size: int = 10) -> dict:
+        """Banco de decisões: processos da mesma vara com assunto similar."""
+        alias = alias or self.default_alias
+        must = [{"match": {"orgaoJulgador.nome": orgao_nome}}]
+        if assunto_codigo:
+            must.append({"match": {"assuntos.codigo": assunto_codigo}})
+        if assunto_nome:
+            must.append({"match": {"assuntos.nome": assunto_nome}})
+        return self.search(
+            alias=alias,
+            query={"bool": {"must": must}},
+            size=size,
+            source_fields=[
+                "numeroProcesso", "tribunal", "grau", "dataAjuizamento",
+                "dataHoraUltimaAtualizacao", "classe", "assuntos",
+                "orgaoJulgador", "movimentos", "valorCausa",
+            ],
+        )
 
-    def normalize_process(self, source: Dict[str, Any]) -> Dict[str, Any]:
-        movimentos        = source.get("movimentos") or []
+    def search_tematico(self, codigos_assunto: set, alias: str = None, size: int = 15) -> dict:
+        """Busca por tema (horas extras, periculosidade, insalubridade)."""
+        alias = alias or self.default_alias
+        should = [{"match": {"assuntos.codigo": c}} for c in codigos_assunto]
+        return self.search(
+            alias=alias,
+            query={"bool": {"should": should, "minimum_should_match": 1}},
+            size=size,
+            source_fields=[
+                "numeroProcesso", "tribunal", "grau", "dataAjuizamento",
+                "dataHoraUltimaAtualizacao", "classe", "assuntos",
+                "orgaoJulgador", "movimentos", "valorCausa",
+            ],
+        )
+
+    def extract_sources(self, raw: dict) -> List[dict]:
+        return [h.get("_source") or {} for h in ((raw or {}).get("hits") or {}).get("hits") or []]
+
+    def normalize_process(self, source: dict) -> dict:
+        movimentos = source.get("movimentos") or []
         movimentos_sorted = sorted(movimentos, key=lambda x: x.get("dataHora") or "", reverse=True)
-        ultima_mov        = movimentos_sorted[0] if movimentos_sorted else None
-        assuntos          = source.get("assuntos") or []
-        classe            = source.get("classe") or {}
-        orgao             = source.get("orgaoJulgador") or {}
-        sistema           = source.get("sistema") or {}
-        formato           = source.get("formato") or {}
+        ultima_mov = movimentos_sorted[0] if movimentos_sorted else None
+        assuntos   = source.get("assuntos") or []
+        classe     = source.get("classe") or {}
+        orgao      = source.get("orgaoJulgador") or {}
+
+        # Classificar movimentos por tipo
+        sentencas   = [m for m in movimentos_sorted if classify_movimento(m) == "sentenca"]
+        interlocut  = [m for m in movimentos_sorted if classify_movimento(m) == "decisao_interlocutoria"]
+        acordaos    = [m for m in movimentos_sorted if classify_movimento(m) == "acordao"]
+
+        # Tentar extrair magistrado
+        magistrado = extract_magistrado_from_movimentos(movimentos_sorted)
+
         return {
-            "numero_processo":           source.get("numeroProcesso"),
-            "tribunal":                  source.get("tribunal"),
-            "grau":                      source.get("grau"),
-            "data_ajuizamento":          source.get("dataAjuizamento"),
-            "ultima_atualizacao":        source.get("dataHoraUltimaAtualizacao"),
-            "classe_nome":               classe.get("nome"),
-            "classe_codigo":             classe.get("codigo"),
-            "orgao_julgador":            orgao.get("nome"),
-            "sistema":                   sistema.get("nome"),
-            "formato":                   formato.get("nome"),
-            "assuntos":                  [a.get("nome") for a in assuntos if a.get("nome")],
-            "movimentos_total":          len(movimentos),
-            "ultima_movimentacao_nome":  (ultima_mov or {}).get("nome"),
-            "ultima_movimentacao_data":  (ultima_mov or {}).get("dataHora"),
-            "movimentos":                movimentos_sorted[:15],
-            "raw":                       source,
+            "numero_processo":          source.get("numeroProcesso"),
+            "tribunal":                 source.get("tribunal"),
+            "grau":                     source.get("grau"),
+            "data_ajuizamento":         source.get("dataAjuizamento"),
+            "ultima_atualizacao":       source.get("dataHoraUltimaAtualizacao"),
+            "valor_causa":              source.get("valorCausa"),
+            "classe_nome":              classe.get("nome"),
+            "classe_codigo":            classe.get("codigo"),
+            "orgao_julgador":           orgao.get("nome"),
+            "orgao_codigo":             orgao.get("codigo"),
+            "assuntos":                 [a.get("nome") for a in assuntos if a.get("nome")],
+            "assuntos_codigos":         [a.get("codigo") for a in assuntos if a.get("codigo")],
+            "movimentos_total":         len(movimentos),
+            "magistrado":               magistrado,
+            "ultima_movimentacao_nome": (ultima_mov or {}).get("nome"),
+            "ultima_movimentacao_data": (ultima_mov or {}).get("dataHora"),
+            "movimentos_todos":         movimentos_sorted,
+            "sentencas":                sentencas,
+            "decisoes_interlocutorias": interlocut,
+            "acordaos":                 acordaos,
+            "raw":                      source,
         }
 
 DATAJUD = DataJudService()
 
-def build_datajud_query(req: DataJudSearchRequest) -> dict:
-    must = []
-    if req.numero_processo:
-        numero_limpo = "".join(ch for ch in req.numero_processo if ch.isdigit())
-        if numero_limpo:
-            must.append({"match": {"numeroProcesso": numero_limpo}})
-    if req.classe_nome:
-        must.append({"match": {"classe.nome": req.classe_nome}})
-    if req.assunto_nome:
-        must.append({"match": {"assuntos.nome": req.assunto_nome}})
-    if req.tribunal:
-        must.append({"match": {"tribunal": req.tribunal}})
-    if req.orgao_julgador:
-        must.append({"match": {"orgaoJulgador.nome": req.orgao_julgador}})
-    if not must:
-        return {"match_all": {}}
-    return {"bool": {"must": must}}
+# ─────────────────────────────────────────────
+# Context builders para GPT
+# ─────────────────────────────────────────────
+def _fmt_mov(mov: Dict[str, Any], incluir_tipo: bool = False) -> str:
+    nome  = mov.get("nome") or "Movimentação"
+    data  = (mov.get("dataHora") or "")[:10]
+    tipo  = f" [{classify_movimento(mov).replace('_',' ').upper()}]" if incluir_tipo else ""
+    mag   = mov.get("magistradoProlator") or ""
+    mag_s = f" | Magistrado: {mag}" if mag and isinstance(mag, str) else ""
+    return f"  • {data}{tipo} — {nome}{mag_s}"
 
-def build_process_context_for_gpt(proc: Dict[str, Any]) -> str:
-    """
-    Monta bloco de contexto estruturado do processo para injetar no prompt do GPT.
-    O OS 6.1 vai analisar esses dados com toda a sua inteligência jurídica.
-    """
-    assuntos = ", ".join(proc.get("assuntos") or []) or "não identificados"
-    movimentos_txt = []
-    for mov in (proc.get("movimentos") or [])[:10]:
-        nome = mov.get("nome", "Movimentação")
-        data = mov.get("dataHora", "")
-        movimentos_txt.append(f"  - {data} | {nome}")
-
+def build_context_resumo(proc: dict) -> str:
+    assuntos = ", ".join(proc["assuntos"]) or "não identificados"
     lines = [
-        f"DADOS DO PROCESSO (fonte: DataJud/CNJ — {proc.get('tribunal')}):",
-        f"Número: {proc.get('numero_processo')}",
-        f"Tribunal: {proc.get('tribunal')} | Grau: {proc.get('grau')}",
-        f"Classe: {proc.get('classe_nome')} | Órgão Julgador: {proc.get('orgao_julgador')}",
+        f"PROCESSO: {proc['numero_processo']}",
+        f"Tribunal: {proc['tribunal']} | Grau: {proc['grau']}",
+        f"Classe: {proc['classe_nome']} | Vara: {proc['orgao_julgador']}",
         f"Assuntos: {assuntos}",
-        f"Data de ajuizamento: {proc.get('data_ajuizamento') or 'não disponível'}",
-        f"Última atualização: {proc.get('ultima_atualizacao') or 'não disponível'}",
-        f"Total de movimentações: {proc.get('movimentos_total')}",
-        f"Última movimentação: {proc.get('ultima_movimentacao_nome') or 'não disponível'} "
-        f"({proc.get('ultima_movimentacao_data') or ''})",
+        f"Ajuizamento: {proc['data_ajuizamento'] or 'n/d'}",
+        f"Última atualização: {proc['ultima_atualizacao'] or 'n/d'}",
+        f"Total de movimentações: {proc['movimentos_total']}",
+        f"Magistrado identificado: {proc['magistrado'] or 'não disponível na API'}",
+        f"Última movimentação: {proc['ultima_movimentacao_nome']} ({proc['ultima_movimentacao_data'] or ''[:10]})",
         "",
-        "Histórico recente de movimentações (últimas 10):",
-    ] + movimentos_txt
-
+        "ÚLTIMAS 10 MOVIMENTAÇÕES:",
+    ] + [_fmt_mov(m) for m in proc["movimentos_todos"][:10]]
     return "\n".join(lines)
 
-# -----------------------------
-# OpenAI HTTP helper
-# -----------------------------
-def call_openai_chat(messages: List[Dict[str, str]], temperature: float = 0.2) -> str:
+def build_context_andamento_completo(proc: dict) -> str:
+    lines = [
+        f"ANDAMENTO COMPLETO — {proc['numero_processo']}",
+        f"Tribunal: {proc['tribunal']} | Vara: {proc['orgao_julgador']}",
+        f"Ajuizamento: {proc['data_ajuizamento'] or 'n/d'} | Total movimentações: {proc['movimentos_total']}",
+        f"Magistrado prolator identificado: {proc['magistrado'] or 'não disponível via API'}",
+        "",
+        f"▶ SENTENÇAS ({len(proc['sentencas'])}):",
+    ] + ([_fmt_mov(m) for m in proc["sentencas"]] or ["  (nenhuma encontrada)"]) + [
+        "",
+        f"▶ ACÓRDÃOS ({len(proc['acordaos'])}):",
+    ] + ([_fmt_mov(m) for m in proc["acordaos"]] or ["  (nenhum encontrado)"]) + [
+        "",
+        f"▶ DECISÕES INTERLOCUTÓRIAS ({len(proc['decisoes_interlocutorias'])}):",
+    ] + ([_fmt_mov(m, True) for m in proc["decisoes_interlocutorias"][:10]] or ["  (nenhuma)"]) + [
+        "",
+        f"▶ HISTÓRICO CRONOLÓGICO COMPLETO ({proc['movimentos_total']} movimentos):",
+    ] + [_fmt_mov(m, True) for m in proc["movimentos_todos"]]
+    return "\n".join(lines)
+
+def build_context_magistrado(proc: dict) -> str:
+    mag = proc["magistrado"] or "não disponível diretamente via API pública"
+    # Tentar identificar nos movimentos com mais detalhe
+    mag_detalhes = []
+    for m in proc["movimentos_todos"]:
+        raw_mag = m.get("magistradoProlator") or m.get("responsavelMovimento")
+        if raw_mag:
+            data  = (m.get("dataHora") or "")[:10]
+            nome_mov = m.get("nome") or ""
+            mag_detalhes.append(f"  • {data} — {nome_mov} | Prolator: {raw_mag}")
+    lines = [
+        f"IDENTIFICAÇÃO DO MAGISTRADO — {proc['numero_processo']}",
+        f"Vara/Órgão Julgador: {proc['orgao_julgador']}",
+        f"Magistrado prolator (campo API): {mag}",
+        "",
+        "Movimentos com magistrado identificado nos dados brutos:"
+        if mag_detalhes else "Nenhum movimento retornou magistradoProlator na API do DataJud.",
+    ] + mag_detalhes[:20]
+    return "\n".join(lines)
+
+def build_context_banco_decisoes(processos: List[dict], orgao: str, assunto: str) -> str:
+    lines = [
+        f"BANCO DE DECISÕES — {orgao}",
+        f"Assunto filtrado: {assunto}",
+        f"Processos encontrados: {len(processos)}",
+        "",
+    ]
+    for p in processos:
+        proc = DATAJUD.normalize_process(p)
+        mag  = proc["magistrado"] or "n/d"
+        ult  = proc["ultima_movimentacao_nome"] or "n/d"
+        n_sent = len(proc["sentencas"])
+        lines += [
+            f"── {proc['numero_processo']}",
+            f"   Vara: {proc['orgao_julgador']} | Magistrado: {mag}",
+            f"   Assuntos: {', '.join(proc['assuntos'][:3])}",
+            f"   Ajuizamento: {proc['data_ajuizamento'] or 'n/d'} | Sentenças: {n_sent}",
+            f"   Última movimentação: {ult}",
+            "",
+        ]
+    return "\n".join(lines)
+
+def build_context_tematico(processos: List[dict], tema: str) -> str:
+    lines = [
+        f"ANÁLISE TEMÁTICA — {tema.upper()}",
+        f"Processos encontrados: {len(processos)}",
+        "",
+    ]
+    total_sentencas  = 0
+    total_acordaos   = 0
+    total_procedente = 0
+    for p in processos:
+        proc = DATAJUD.normalize_process(p)
+        total_sentencas  += len(proc["sentencas"])
+        total_acordaos   += len(proc["acordaos"])
+        # Heurística: sentença de procedência
+        for s in proc["sentencas"]:
+            nome_s = (s.get("nome") or "").lower()
+            if "procedente" in nome_s and "improcedente" not in nome_s:
+                total_procedente += 1
+        lines += [
+            f"── {proc['numero_processo']}",
+            f"   Vara: {proc['orgao_julgador']} | Magistrado: {proc['magistrado'] or 'n/d'}",
+            f"   Assuntos: {', '.join(proc['assuntos'][:4])}",
+            f"   Sentenças: {len(proc['sentencas'])} | Acórdãos: {len(proc['acordaos'])}",
+            f"   Última mov.: {proc['ultima_movimentacao_nome'] or 'n/d'}",
+            "",
+        ]
+    lines += [
+        "── CONSOLIDADO:",
+        f"   Total sentenças: {total_sentencas}",
+        f"   Total acórdãos: {total_acordaos}",
+        f"   Sentenças de procedência (estimado): {total_procedente}",
+    ]
+    return "\n".join(lines)
+
+def build_context_classificacao(proc: dict) -> str:
+    lines = [
+        f"CLASSIFICAÇÃO DE DECISÕES — {proc['numero_processo']}",
+        f"Vara: {proc['orgao_julgador']} | Total movimentos: {proc['movimentos_total']}",
+        "",
+        f"SENTENÇAS DE MÉRITO ({len(proc['sentencas'])}):",
+    ] + ([_fmt_mov(m) for m in proc["sentencas"]] or ["  (nenhuma)"]) + [
+        "",
+        f"ACÓRDÃOS ({len(proc['acordaos'])}):",
+    ] + ([_fmt_mov(m) for m in proc["acordaos"]] or ["  (nenhum)"]) + [
+        "",
+        f"DECISÕES INTERLOCUTÓRIAS ({len(proc['decisoes_interlocutorias'])}):",
+    ] + ([_fmt_mov(m) for m in proc["decisoes_interlocutorias"][:15]] or ["  (nenhuma)"]) + [
+        "",
+        f"OUTROS ANDAMENTOS ({len([m for m in proc['movimentos_todos'] if classify_movimento(m) == 'outro'])}):",
+        "  (despachos de expediente, conclusão, redistribuição, etc.)",
+    ]
+    return "\n".join(lines)
+
+# ─────────────────────────────────────────────
+# Intent-to-prompt instructions
+# ─────────────────────────────────────────────
+INSTRUCAO_POR_INTENT = {
+    "resumo": (
+        "Realize análise jurídica completa do processo acima conforme protocolo OS 6.1. "
+        "Identifique fase processual, última movimentação relevante, riscos e próximos passos. "
+        "Destaque alertas críticos. Responda em português."
+    ),
+    "andamento_completo": (
+        "Apresente o andamento completo do processo em ordem cronológica. "
+        "Organize por categorias: sentenças, acórdãos, decisões interlocutórias e demais andamentos. "
+        "Comente o significado jurídico de cada fase. Sinalize marcos importantes (citação, audiência, sentença, recurso). "
+        "Responda em português."
+    ),
+    "magistrado": (
+        "Identifique e informe tudo que for possível sobre o magistrado responsável pelo processo. "
+        "Se o campo magistradoProlator não estiver disponível na API, explique essa limitação e informe o órgão julgador. "
+        "Analise o padrão das decisões do processo para inferir tendências. Responda em português."
+    ),
+    "banco_decisoes": (
+        "Analise os processos semelhantes da mesma vara listados acima. "
+        "Identifique padrões decisórios do magistrado/vara: taxa de procedência, temas mais recorrentes, "
+        "tendência em horas extras e periculosidade. Use isso para orientar estratégia no caso principal. "
+        "Responda em português."
+    ),
+    "tematico": (
+        "Realize análise temática dos processos encontrados. "
+        "Identifique padrões: taxa de procedência em horas extras, periculosidade e insalubridade; "
+        "magistrados que mais julgam o tema; tendência das varas do TRT2. "
+        "Use os dados para fundamentar estratégia no caso. Responda em português."
+    ),
+    "classificar": (
+        "Classifique e explique cada tipo de decisão do processo: "
+        "sentenças de mérito, acórdãos, decisões interlocutórias e despachos. "
+        "Explique o impacto jurídico de cada uma e o que esperar nas próximas fases. "
+        "Responda em português."
+    ),
+}
+
+# ─────────────────────────────────────────────
+# OpenAI
+# ─────────────────────────────────────────────
+def call_openai(messages: List[dict], temperature: float = 0.15) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY não configurado.")
     resp = requests.post(
         "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model":       OPENAI_MODEL,
-            "messages":    messages,
-            "temperature": temperature,
-        },
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        json={"model": OPENAI_MODEL, "messages": messages, "temperature": temperature},
         timeout=90,
     )
     try:
         resp.raise_for_status()
     except requests.HTTPError as e:
-        body = e.response.text if e.response is not None else ""
-        raise RuntimeError(f"Erro OpenAI: {body[:1000]}")
-    data = resp.json()
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip() \
-           or "Não consegui responder agora."
+        raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:800]}")
+    return (resp.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip() \
+           or "Não consegui gerar resposta."
 
-# -----------------------------
+# ─────────────────────────────────────────────
+# Intent detection helpers
+# ─────────────────────────────────────────────
+def looks_like_process_request(message: str) -> bool:
+    msg = message.lower()
+    if detect_process_numbers(message):
+        return True
+    return any(k in msg for k in [
+        "resumo do processo", "andamento", "movimentações", "status do processo",
+        "magistrado", "juiz", "quem sentenciou", "banco de decisões",
+        "processos similares", "análise temática", "horas extras",
+        "periculosidade", "sentença", "acórdão",
+    ])
+
+def looks_like_natural_search(message: str) -> bool:
+    msg = message.lower()
+    return any(w in msg for w in ["busque", "procure", "pesquise", "me mostre processos"]) \
+        and any(f in msg for f in ["classe", "assunto", "tribunal", "órgão"])
+
+def parse_natural_search(message: str) -> Optional[DataJudSearchRequest]:
+    msg = message or ""
+    req = DataJudSearchRequest(size=5)
+    for pattern, field in [
+        (r"classe\s*[:=]\s*([^,;\n]+)", "classe_nome"),
+        (r"assunto\s*[:=]\s*([^,;\n]+)", "assunto_nome"),
+        (r"tribunal\s*[:=]\s*([^,;\n]+)", "tribunal"),
+        (r"(?:órgão|orgao)\s*[:=]\s*([^,;\n]+)", "orgao_julgador"),
+    ]:
+        m = re.search(pattern, msg, flags=re.I)
+        if m:
+            setattr(req, field, m.group(1).strip())
+    numbers = detect_process_numbers(msg)
+    if numbers:
+        req.numero_processo = numbers[0]
+    if not any([req.numero_processo, req.classe_nome, req.assunto_nome,
+                req.tribunal, req.orgao_julgador]):
+        return None
+    return req
+
+# ─────────────────────────────────────────────
 # Routes
-# -----------------------------
+# ─────────────────────────────────────────────
 @app.get("/ping")
 def ping():
-    return {"ok": True, "service": "alive"}
+    return {"ok": True}
 
 @app.get("/health")
 def health():
     return {
-        "ok":    True,
+        "ok": True, "version": "4.0.0",
         "model": OPENAI_MODEL,
-        "os_61_prompt_loaded": bool(OS_6_1_PROMPT),
-        "datajud": {
-            "enabled":       DATAJUD_ENABLED,
-            "base_url":      DATAJUD_BASE_URL,
-            "default_alias": DATAJUD_DEFAULT_ALIAS,
-        },
+        "os_61_loaded": bool(OS_6_1_PROMPT),
+        "datajud": {"enabled": DATAJUD_ENABLED, "alias": DATAJUD_DEFAULT_ALIAS},
     }
 
 @app.post("/session/new", response_model=SessionOut)
 def session_new(x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
     sid = str(uuid.uuid4())
-    SESSIONS[sid] = {"messages": [], "uploaded_contexts": [], "last_datajud_search": None}
+    SESSIONS[sid] = {"messages": [], "uploaded_contexts": [], "last_datajud_search": None, "last_process": None}
     return SessionOut(session_id=sid, state={})
 
 @app.post("/upload")
-async def upload(
-    session_id: str = Form(...),
-    file: UploadFile = File(...),
-    x_demo_key: Optional[str] = Header(default=None),
-):
+async def upload(session_id: str = Form(...), file: UploadFile = File(...),
+                 x_demo_key: Optional[str] = Header(default=None)):
     auth_or_401(x_demo_key)
     session = get_session_state(session_id)
-    data    = await file.read()
-    text    = extract_text_from_upload(file, data)
-    text    = compact_text(text, 12000)
-    session["uploaded_contexts"].append({"filename": file.filename,
-                                         "content_type": file.content_type, "text": text})
-    if text:
-        return {"ok": True,
-                "message": f"Arquivo '{file.filename}' anexado. Vou considerar o conteúdo na análise.",
-                "filename": file.filename, "text_preview": text[:800]}
-    return {"ok": True, "message": f"Arquivo '{file.filename}' anexado.", "filename": file.filename}
+    data = await file.read()
+    text = compact_text(extract_text_from_upload(file, data), 12000)
+    session["uploaded_contexts"].append({"filename": file.filename, "text": text})
+    return {"ok": True, "message": f"Arquivo '{file.filename}' anexado com sucesso.", "filename": file.filename}
 
 @app.get("/datajud/test-process")
-def datajud_test_process(numero: str, alias: Optional[str] = None):
+def datajud_test(numero: str, alias: Optional[str] = None):
     try:
-        raw   = DATAJUD.search_process_by_number(numero=numero, alias=alias)
+        raw   = DATAJUD.get_process_full(numero, alias)
         items = DATAJUD.extract_sources(raw)
         if not items:
-            return {"ok": True, "found": False, "message": "Nenhum processo encontrado."}
-        proc = DATAJUD.normalize_process(items[0])
-        return {"ok": True, "found": True, "process": proc}
-    except DataJudError as e:
-        return {"ok": False, "error": str(e)}
-
-@app.post("/datajud/search")
-def datajud_search(req: DataJudSearchRequest, x_demo_key: Optional[str] = Header(default=None)):
-    auth_or_401(x_demo_key)
-    try:
-        query  = build_datajud_query(req)
-        result = DATAJUD.search_paginated(
-            alias=req.alias, query=query,
-            size=max(1, min(req.size, 50)),
-            cursor=req.cursor,
-            sort=[{DATAJUD_SORT_FIELD: "desc"}],
-            source_fields=["numeroProcesso", "tribunal", "grau", "dataAjuizamento",
-                           "dataHoraUltimaAtualizacao", "classe", "assuntos",
-                           "orgaoJulgador", "movimentos", "sistema", "formato"],
-        )
-        items = []
-        for item in result["items"]:
-            source = item.get("source") or {}
-            proc   = DATAJUD.normalize_process(source)
-            items.append({
-                "numero_processo":          proc["numero_processo"],
-                "tribunal":                 proc["tribunal"],
-                "grau":                     proc["grau"],
-                "classe_nome":              proc["classe_nome"],
-                "orgao_julgador":           proc["orgao_julgador"],
-                "assuntos":                 proc["assuntos"],
-                "data_ajuizamento":         proc["data_ajuizamento"],
-                "ultima_atualizacao":       proc["ultima_atualizacao"],
-                "ultima_movimentacao_nome": proc["ultima_movimentacao_nome"],
-                "ultima_movimentacao_data": proc["ultima_movimentacao_data"],
-                "movimentos_total":         proc["movimentos_total"],
-            })
-        return {"ok": True, "total": result["total"], "count": result["count"],
-                "items": items, "next_cursor": result["next_cursor"],
-                "timed_out": result["timed_out"], "raw_took_ms": result["raw_took_ms"]}
+            return {"ok": True, "found": False}
+        return {"ok": True, "found": True, "process": DATAJUD.normalize_process(items[0])}
     except DataJudError as e:
         return {"ok": False, "error": str(e)}
 
@@ -538,144 +771,157 @@ def chat_endpoint(payload: ChatIn, x_demo_key: Optional[str] = Header(default=No
     session["messages"].append({"role": "user", "content": message})
     session["messages"] = session["messages"][-20:]
 
-    # ------------------------------------------------------------------
-    # 1) Busca natural por filtros no DataJud
-    # ------------------------------------------------------------------
-    if looks_like_natural_search_request(message):
-        natural_req = _parse_natural_search_filters(message)
-        if natural_req:
+    # ── 1. Busca natural estruturada ──────────────────────────────────
+    if looks_like_natural_search(message):
+        req = parse_natural_search(message)
+        if req:
             try:
-                result = datajud_search(natural_req, x_demo_key=x_demo_key)
-                session["last_datajud_search"] = {"request": natural_req.dict(), "response": result}
-                count = result.get("count", 0)
-                total = result.get("total")
-                items = result.get("items") or []
+                query: dict
+                must = []
+                if req.numero_processo:
+                    must.append({"match": {"numeroProcesso": normalize_process_number(req.numero_processo)}})
+                if req.classe_nome:
+                    must.append({"match": {"classe.nome": req.classe_nome}})
+                if req.assunto_nome:
+                    must.append({"match": {"assuntos.nome": req.assunto_nome}})
+                if req.orgao_julgador:
+                    must.append({"match": {"orgaoJulgador.nome": req.orgao_julgador}})
+                query = {"bool": {"must": must}} if must else {"match_all": {}}
+                raw   = DATAJUD.search(DATAJUD_DEFAULT_ALIAS, query, size=req.size)
+                items = DATAJUD.extract_sources(raw)
                 if not items:
-                    reply = "Não encontrei processos com esses filtros no DataJud."
+                    reply = "Não encontrei processos com esses filtros."
                 else:
-                    lines = [
-                        f"Encontrei **{count} resultado(s)**" +
-                        (f" de um total de {total}" if total is not None else "") + ":\n"
-                    ]
-                    for item in items[:5]:
-                        lines.append(
-                            f"- **{item.get('numero_processo')}** | {item.get('tribunal')} | "
-                            f"{item.get('classe_nome')} | {item.get('orgao_julgador')}"
-                        )
-                    lines.append("\nSe quiser uma análise jurídica de qualquer um deles, "
-                                 "basta me enviar o número do processo.")
+                    lines = [f"**{len(items)} processo(s) encontrado(s):**\n"]
+                    for s in items[:5]:
+                        p = DATAJUD.normalize_process(s)
+                        lines.append(f"- **{p['numero_processo']}** | {p['tribunal']} | {p['classe_nome']} | {p['orgao_julgador']}")
+                    lines.append("\nEnvie o número de qualquer processo para análise completa.")
                     reply = "\n".join(lines)
                 session["messages"].append({"role": "assistant", "content": reply})
                 return ChatOut(message=reply, state=state)
             except Exception as e:
-                reply = f"Não consegui concluir a pesquisa no DataJud. Motivo: {str(e)}"
+                reply = f"Erro na busca DataJud: {str(e)}"
                 session["messages"].append({"role": "assistant", "content": reply})
                 return ChatOut(message=reply, state=state)
 
-    # ------------------------------------------------------------------
-    # 2) Resumo/análise de processo — busca DataJud + GPT com OS 6.1
-    # ------------------------------------------------------------------
-    if DATAJUD_ENABLED and looks_like_process_summary_request(message):
+    # ── 2. Requisição envolvendo processo ────────────────────────────
+    if DATAJUD_ENABLED and looks_like_process_request(message):
         numbers = detect_process_numbers(message)
+        intent  = detect_intent(message)
+
+        # Recuperar número do processo — da mensagem ou da sessão
+        numero = None
         if numbers:
             numero = numbers[0]
+            session["last_process_numero"] = numero
+        elif session.get("last_process_numero") and any(
+            k in message.lower() for k in INTENT_MAGISTRADO + INTENT_BANCO_DECISOES +
+            INTENT_TEMATICO + INTENT_CLASSIFICAR + INTENT_PROCESS_FULL
+        ):
+            numero = session["last_process_numero"]
+
+        if numero:
             try:
-                alias = infer_datajud_alias_from_number(numero) or DATAJUD_DEFAULT_ALIAS or None
-                raw   = DATAJUD.search_process_by_number(numero=numero, alias=alias)
+                alias = infer_datajud_alias(numero) or DATAJUD_DEFAULT_ALIAS
+                raw   = DATAJUD.get_process_full(numero, alias)
                 items = DATAJUD.extract_sources(raw)
 
                 if not items:
-                    reply = f"Não encontrei resultado no DataJud para o processo **{numero}**."
+                    reply = f"Não encontrei o processo **{numero}** no DataJud."
                     session["messages"].append({"role": "assistant", "content": reply})
                     return ChatOut(message=reply, state=state)
 
-                proc            = DATAJUD.normalize_process(items[0])
-                process_context = build_process_context_for_gpt(proc)
+                proc = DATAJUD.normalize_process(items[0])
+                session["last_process"] = proc
+                session["last_process_numero"] = numero
 
-                # ✅ OS 6.1 analisa os dados do processo com inteligência jurídica real
-                system_prompt = build_system_prompt(extra_context=process_context)
+                # ── Banco de decisões: busca adicional ────────────────
+                if intent == "banco_decisoes":
+                    orgao   = proc["orgao_julgador"] or ""
+                    assunto = (proc["assuntos"] or [""])[0]
+                    assunto_cod = (proc["assuntos_codigos"] or [None])[0]
+                    try:
+                        raw2   = DATAJUD.search_by_orgao_and_assunto(orgao, assunto_cod, assunto, alias, size=8)
+                        fontes = DATAJUD.extract_sources(raw2)
+                        # Excluir o próprio processo
+                        fontes = [f for f in fontes if
+                                  normalize_process_number(f.get("numeroProcesso") or "") !=
+                                  normalize_process_number(numero)][:6]
+                        context_block = (
+                            build_context_resumo(proc) + "\n\n" +
+                            build_context_banco_decisoes(fontes, orgao, assunto)
+                        )
+                    except Exception:
+                        context_block = build_context_resumo(proc)
+
+                # ── Análise temática: busca por assunto ───────────────
+                elif intent == "tematico":
+                    msg_lower = message.lower()
+                    if "periculosidade" in msg_lower:
+                        codigos = ASSUNTOS_PERICULOSIDADE
+                        tema    = "Adicional de Periculosidade"
+                    elif "insalubridade" in msg_lower:
+                        codigos = ASSUNTOS_INSALUBRIDADE
+                        tema    = "Adicional de Insalubridade"
+                    else:
+                        codigos = ASSUNTOS_HORAS_EXTRAS
+                        tema    = "Horas Extras"
+                    try:
+                        raw2   = DATAJUD.search_tematico(codigos, alias, size=12)
+                        fontes = DATAJUD.extract_sources(raw2)
+                        context_block = (
+                            build_context_resumo(proc) + "\n\n" +
+                            build_context_tematico(fontes, tema)
+                        )
+                    except Exception:
+                        context_block = build_context_resumo(proc)
+                        tema = "tema solicitado"
+
+                # ── Intents que usam apenas o processo principal ───────
+                elif intent == "andamento_completo":
+                    context_block = build_context_andamento_completo(proc)
+                elif intent == "magistrado":
+                    context_block = build_context_magistrado(proc)
+                elif intent == "classificar":
+                    context_block = build_context_classificacao(proc)
+                else:
+                    context_block = build_context_resumo(proc)
+
+                instrucao = INSTRUCAO_POR_INTENT.get(intent, INSTRUCAO_POR_INTENT["resumo"])
+                system_prompt = build_system_prompt(extra_context=context_block)
                 msgs = [{"role": "system", "content": system_prompt}]
-
-                # Histórico recente para manter contexto da conversa
                 for item in session["messages"][-6:]:
                     if item["role"] in {"user", "assistant"}:
                         msgs.append(item)
+                msgs[-1] = {"role": "user", "content": f"{message}\n\n[INSTRUÇÃO: {instrucao}]"}
 
-                # Instrução explícita para usar os dados do processo
-                analysis_instruction = (
-                    f"{message}\n\n"
-                    "[INSTRUÇÃO INTERNA: Os dados do processo acima foram obtidos em tempo real "
-                    "via DataJud/CNJ. Use-os para realizar análise jurídica completa conforme "
-                    "o protocolo OS 6.1. Identifique fase processual, movimentações relevantes, "
-                    "riscos, próximos passos e alertas. Responda em português.]"
-                )
-                msgs[-1]["content"] = analysis_instruction
-
-                reply = call_openai_chat(msgs, temperature=0.15)
+                reply = call_openai(msgs, temperature=0.15)
                 session["messages"].append({"role": "assistant", "content": reply})
                 return ChatOut(message=reply, state=state)
 
             except DataJudError as e:
-                reply = f"Não consegui consultar o DataJud agora. Motivo: {str(e)}"
+                reply = f"Não consegui consultar o DataJud. Motivo: {str(e)}"
                 session["messages"].append({"role": "assistant", "content": reply})
                 return ChatOut(message=reply, state=state)
 
-    # ------------------------------------------------------------------
-    # 3) Chat jurídico livre — usa OS 6.1 completo
-    # ------------------------------------------------------------------
+    # ── 3. Chat jurídico livre com OS 6.1 ────────────────────────────
     uploaded_context = "\n\n".join(
         f"[Arquivo: {x.get('filename')}]\n{compact_text(x.get('text') or '', 4000)}"
-        for x in session.get("uploaded_contexts", [])[-3:]
-        if x.get("text")
+        for x in session.get("uploaded_contexts", [])[-3:] if x.get("text")
     ).strip()
 
     system_prompt = build_system_prompt(extra_context=uploaded_context)
     msgs = [{"role": "system", "content": system_prompt}]
-
     for item in session["messages"][-12:]:
         if item["role"] in {"user", "assistant"}:
             msgs.append(item)
 
     try:
-        reply = call_openai_chat(msgs, temperature=0.2)
+        reply = call_openai(msgs, temperature=0.2)
     except Exception as e:
         reply = f"Erro no servidor: {str(e)}"
 
     session["messages"].append({"role": "assistant", "content": reply})
     session["messages"] = session["messages"][-20:]
     return ChatOut(message=reply, state=state)
-
-
-def _parse_natural_search_filters(message: str) -> Optional[DataJudSearchRequest]:
-    msg   = message or ""
-    lower = msg.lower()
-
-    req = DataJudSearchRequest(size=5)
-    m_size = re.search(r"\b(?:size|limite|top)\s*[:=]?\s*(\d{1,2})\b", lower)
-    if m_size:
-        req.size = max(1, min(50, int(m_size.group(1))))
-
-    m_classe = re.search(r"(?:classe)\s*[:=]\s*([^,;\n]+)", msg, flags=re.I)
-    if m_classe:
-        req.classe_nome = m_classe.group(1).strip()
-
-    m_assunto = re.search(r"(?:assunto)\s*[:=]\s*([^,;\n]+)", msg, flags=re.I)
-    if m_assunto:
-        req.assunto_nome = m_assunto.group(1).strip()
-
-    m_trib = re.search(r"(?:tribunal)\s*[:=]\s*([^,;\n]+)", msg, flags=re.I)
-    if m_trib:
-        req.tribunal = m_trib.group(1).strip()
-
-    m_orgao = re.search(r"(?:órgão|orgao)\s*[:=]\s*([^,;\n]+)", msg, flags=re.I)
-    if m_orgao:
-        req.orgao_julgador = m_orgao.group(1).strip()
-
-    numbers = detect_process_numbers(msg)
-    if numbers:
-        req.numero_processo = numbers[0]
-
-    if not any([req.numero_processo, req.classe_nome, req.assunto_nome,
-                req.tribunal, req.orgao_julgador]):
-        return None
-    return req
