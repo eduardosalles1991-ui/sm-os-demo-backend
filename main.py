@@ -120,56 +120,147 @@ def trib_from_msg(msg: str) -> Optional[str]:
     return None
 
 # ── Smart prompt router ──────────────────────────────────────────────
+#
+# 5 níveis de resposta:
+#   "simples"       → saudação/trivial: resposta curta, sem OS 6.1
+#   "doc_resumo"    → "resume", "explica", "o que diz": resposta direta 3-5 parágrafos
+#   "doc_medio"     → "analise", "pontos principais", "riscos": síntese + riscos + alertas
+#   "juridico"      → pergunta técnica / processo DataJud: jurídico sem OS 6.1 completo
+#   "os61"          → análise completa / red team / estratégia: OS 6.1 completo
+#
+TRIVIAL_EXACT = {
+    "olá","oi","ola","bom dia","boa tarde","boa noite","tudo bem","tudo bom",
+    "obrigado","obrigada","valeu","ok","certo","entendi","show","perfeito",
+    "ótimo","otimo","pode","sim","não","nao","hello","hi","thanks","thank you",
+}
+
+# Ativa OS 6.1 COMPLETO — usuário quer análise profunda
 OS61_TRIGGERS = [
-    "viabilidade","tese","estratégia","estrategia","risco jurídico","risco juridico",
-    "análise jurídica","analise juridica","red team","força da tese","forca da tese",
-    "score","rentabilidade","prioridade","carteira",
-    "tenho um caso","novo caso","quero contratar","quero abrir",
-    "fui demitido","fui dispensado","não recebi","nao recebi",
-    "acidente de trabalho","assédio","assedio","horas extras não pagas",
-    "rescisão","rescisao","verbas trabalhistas","fgts","aviso prévio",
-    "elabore","redija","minuta","petição","peticao","recurso",
-    "contestação","contestacao","inicial","acordo","negociação","negociacao",
+    "análise completa","analise completa","full analysis",
+    "red team","força da tese","forca da tese",
+    "estratégia","estrategia completa",
+    "score","matriz de score","rentabilidade do caso",
+    "viabilidade do caso","viabilidade jurídica",
+    "risco jurídico","risco juridico",
+    "elabore","redija","minuta","petição","peticao",
+    "contestação","contestacao","inicial trabalhista",
+    "tenho um caso","novo caso","quero abrir processo",
+    "fui demitido","fui dispensado","rescisão indevida",
+    "verbas trabalhistas","análise de risco completa",
 ]
+
+# Ativa nível médio — síntese + riscos + alertas (sem 18 seções)
+DOC_MEDIO_TRIGGERS = [
+    "analise","análise","analyze","pontos principais","principais pontos",
+    "o que é importante","riscos desse documento","riscos do documento",
+    "o que devo saber","me diz o que","avalie","avalia","avaliação",
+    "implicações","implicacoes","consequências","consequencias",
+    "posso usar","serve para","aplica ao","pertinente",
+]
+
+# Ativa nível resumo — resposta direta e curta
+DOC_RESUMO_TRIGGERS = [
+    "resume","resumo","resumir","summarize","summary",
+    "explica","explain","o que diz","what does","me conta",
+    "do que se trata","do que trata","sobre o que","qual o assunto",
+    "me fala sobre","me diga","síntese","sintese",
+]
+
 PROC_TRIGGERS = [
-    "resumo","andamento","movimentações","movimentacoes","magistrado","juiz","juíza",
-    "partes","banco de decisões","timeline","sentença","acórdão","decisão","histórico",
+    "andamento","movimentações","movimentacoes","magistrado","juiz","juíza",
+    "partes","banco de decisões","timeline","histórico do processo",
 ]
-TRIVIAL = ["olá","oi","bom dia","boa tarde","boa noite","tudo bem",
-           "obrigado","obrigada","valeu","ok","certo","entendi","hello","thanks"]
 
 def classify_prompt(message: str, has_proc: bool) -> str:
-    msg = message.lower().strip()
-    if any(msg.startswith(t) for t in TRIVIAL) and len(message) < 60:
-        return "conversacional"
+    msg   = message.lower().strip()
+    words = set(msg.split())
+
+    # 1. Trivial / saudação
+    if words & TRIVIAL_EXACT and len(message.split()) <= 6:
+        return "simples"
+
+    # 2. OS 6.1 completo — só quando usuário pede explicitamente
     if any(t in msg for t in OS61_TRIGGERS):
         return "os61"
+
+    # 3. Documento + pedido de resumo simples
+    #    Detecta se há arquivo carregado na sessão E pedido de resumo
+    if any(t in msg for t in DOC_RESUMO_TRIGGERS):
+        return "doc_resumo"
+
+    # 4. Documento + análise média
+    if any(t in msg for t in DOC_MEDIO_TRIGGERS):
+        return "doc_medio"
+
+    # 5. Processo DataJud ou pergunta técnica jurídica
     if has_proc or any(t in msg for t in PROC_TRIGGERS):
         return "juridico"
+
     jur = ["direito","lei","clt","tst","trt","prazo","processo","trabalhista",
-           "jurisprudência","súmula","artigo","indenização","multa"]
+           "jurisprudência","jurisprudencia","súmula","sumula","artigo","indenização",
+           "indenizacao","multa","rescisão","rescisao","fgts","verbas","contrato"]
     if any(t in msg for t in jur):
         return "juridico"
-    return "conversacional"
+
+    return "simples"
 
 PROMPT_CONV = (
     "Você é um assistente do escritório Salles & Mendes. "
-    "Responda em português, de forma direta e cordial. Para perguntas simples, seja breve."
+    "Responda em português, de forma direta e cordial. Seja breve."
 )
 PROMPT_JUR = (
     "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
     "Responda em português, de forma técnica, clara e objetiva. "
     "Nunca prometa resultados. Separe fato de hipótese. "
-    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante. "
-    "Sinalize quando exigir validação humana por advogado responsável."
+    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante."
 )
 
+# Instrução de formato por nível — injetada no final da mensagem do usuário
+_FMT: Dict[str, str] = {
+    "simples": (
+        "Responda de forma breve e cordial, em no máximo 2-3 frases."
+    ),
+    "doc_resumo": (
+        "Responda com um resumo direto e claro em português. "
+        "Use no máximo 4 parágrafos curtos. "
+        "NÃO use seções numeradas, scores, red team nem estrutura OS 6.1. "
+        "Apenas explique o conteúdo de forma acessível."
+    ),
+    "doc_medio": (
+        "Responda em português com estrutura simples: "
+        "1) Síntese (1 parágrafo), "
+        "2) Pontos principais (lista curta), "
+        "3) Riscos ou alertas relevantes (se houver). "
+        "NÃO use scores, red team completo nem 18 seções. Seja objetivo."
+    ),
+    "juridico": (
+        "Responda em português de forma técnica e objetiva. "
+        "Analise o caso/processo com foco em: fase processual, última movimentação, "
+        "riscos imediatos e próximos passos. "
+        "NÃO gere análise OS 6.1 completa com 18 seções, scores ou red team "
+        "a menos que o usuário peça explicitamente."
+    ),
+    "os61": (
+        "Execute análise jurídica COMPLETA conforme protocolo OS 6.1. "
+        "Use a estrutura padrão: Classificação, Síntese, Análise Técnica, "
+        "Força da Tese, Confiabilidade, Provas, Riscos, Cenários, "
+        "Análise Econômica, Scores, Red Team, Estratégia, Ações Prioritárias, "
+        "Pendências, Alertas, Reflexão Final. Responda em português formal."
+    ),
+}
+
 def build_system_prompt(level: str, ctx: str = "") -> str:
-    base = (OS_6_1_PROMPT if OS_6_1_PROMPT else PROMPT_JUR) if level == "os61" else \
-           (PROMPT_JUR if level == "juridico" else PROMPT_CONV)
-    mandate = (f"\n\nEste sistema opera para: {MANDATARIA_NOME} — {MANDATARIA_OAB}. "
-               "Análises são assistivas, sujeitas à revisão do advogado responsável."
-               if MANDATARIA_NOME or MANDATARIA_OAB else "")
+    if level == "os61":
+        base = OS_6_1_PROMPT if OS_6_1_PROMPT else PROMPT_JUR
+    elif level in ("juridico", "doc_medio"):
+        base = PROMPT_JUR
+    else:
+        base = PROMPT_CONV
+    mandate = (
+        f"\n\nEste sistema opera para: {MANDATARIA_NOME} — {MANDATARIA_OAB}. "
+        "Análises são assistivas, sujeitas à revisão do advogado responsável."
+        if MANDATARIA_NOME or MANDATARIA_OAB else ""
+    )
     context = f"\n\n===CONTEXTO===\n{ctx}\n===FIM===" if ctx else ""
     return base + mandate + context
 
@@ -759,11 +850,12 @@ def chat(payload: ChatIn, x_demo_key: Optional[str]=Header(default=None)):
                 ctx      = build_ctx(proc, intent, alias) + extra
                 eff_lvl  = "os61" if plevel=="os61" else "juridico"
                 instruc  = INSTRUCAO.get(intent, INSTRUCAO["resumo"])
+                fmt_hint = _FMT.get(plevel, _FMT["juridico"])
                 sys_p    = build_system_prompt(eff_lvl, ctx)
                 msgs     = [{"role":"system","content":sys_p}]
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
-                msgs[-1] = {"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc}]"}
+                msgs[-1] = {"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
 
                 reply = call_openai(msgs, 0.15)
                 s["messages"].append({"role":"assistant","content":reply})
@@ -785,7 +877,12 @@ def chat(payload: ChatIn, x_demo_key: Optional[str]=Header(default=None)):
     for item in s["messages"][-12:]:
         if item["role"] in {"user","assistant"}: msgs.append(item)
 
-    temp = 0.15 if plevel=="os61" else (0.2 if plevel=="juridico" else 0.35)
+    # Injetar instrução de formato na última mensagem do usuário
+    fmt_hint = _FMT.get(plevel, "")
+    if fmt_hint and msgs and msgs[-1]["role"] == "user":
+        msgs[-1] = {"role":"user","content":f"{msgs[-1]['content']}\n\n[FORMATO: {fmt_hint}]"}
+
+    temp = 0.1 if plevel=="os61" else (0.2 if plevel in ("juridico","doc_medio") else 0.35)
     try:
         reply = call_openai(msgs, temp)
     except Exception as e:
