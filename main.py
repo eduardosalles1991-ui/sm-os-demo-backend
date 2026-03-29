@@ -1,9 +1,8 @@
-import os
-import re
-import io
-import uuid
-import json
-import base64
+"""
+SM OS Chat — v6.0
+DataJud + MNI/PJe + Smart Prompt Router
+"""
+import os, re, io, uuid, json, base64, textwrap
 from typing import Any, Dict, List, Optional
 import requests
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -14,755 +13,698 @@ try:
     from pypdf import PdfReader
 except Exception:
     PdfReader = None
-
 try:
     from docx import Document as DocxDocument
 except Exception:
     DocxDocument = None
 
-# ─────────────────────────────────────────────
-# Environment
-# ─────────────────────────────────────────────
+# ── Env ──────────────────────────────────────────────────────────────
 OPENAI_API_KEY        = (os.getenv("OPENAI_API_KEY") or "").strip()
 OPENAI_MODEL          = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
 DEMO_KEY              = (os.getenv("DEMO_KEY") or "").strip()
 ALLOWED_ORIGIN        = (os.getenv("ALLOWED_ORIGIN") or "*").strip()
 OS_6_1_PROMPT         = (os.getenv("OS_6_1_PROMPT") or "").strip()
+MANDATARIA_NOME       = (os.getenv("MANDATARIA_NOME") or "").strip()
+MANDATARIA_OAB        = (os.getenv("MANDATARIA_OAB") or "").strip()
+
 DATAJUD_ENABLED       = os.getenv("DATAJUD_ENABLED", "false").lower() == "true"
 DATAJUD_BASE_URL      = (os.getenv("DATAJUD_BASE_URL") or "https://api-publica.datajud.cnj.jus.br").strip().rstrip("/")
 DATAJUD_API_KEY       = (os.getenv("DATAJUD_API_KEY") or "").strip()
 DATAJUD_TIMEOUT_S     = int(os.getenv("DATAJUD_TIMEOUT_S", "25"))
 DATAJUD_DEFAULT_ALIAS = (os.getenv("DATAJUD_DEFAULT_ALIAS") or "api_publica_trt2").strip()
 DATAJUD_SORT_FIELD    = (os.getenv("DATAJUD_SORT_FIELD") or "dataHoraUltimaAtualizacao").strip()
-MANDATARIA_NOME       = (os.getenv("MANDATARIA_NOME") or "").strip()
-MANDATARIA_OAB        = (os.getenv("MANDATARIA_OAB") or "").strip()
 
-# ─────────────────────────────────────────────
-# Mapa completo de aliases DataJud — todos os tribunais brasileiros
-# Formato CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO
-#   J=1 STF/STJ  J=2 JE/JF  J=3 TSE/TRE  J=4 STM/TRF  J=5 TST/TRT  J=6 TJDFT  J=8 TJ
-# ─────────────────────────────────────────────
+# MNI/PJe — habilitar quando tiver credenciais
+MNI_ENABLED   = os.getenv("MNI_ENABLED", "false").lower() == "true"
+MNI_BASE_URL  = (os.getenv("MNI_BASE_URL") or "https://pje.trt2.jus.br/pje/intercomunicacao").strip()
+MNI_USERNAME  = (os.getenv("MNI_USERNAME") or "").strip()
+MNI_PASSWORD  = (os.getenv("MNI_PASSWORD") or "").strip()
+MNI_TIMEOUT_S = int(os.getenv("MNI_TIMEOUT_S", "30"))
 
+# ── Alias map ────────────────────────────────────────────────────────
 ALIAS_MAP: Dict[str, str] = {
-    # ── Justiça do Trabalho (J=5) ──────────────────────────────────
-    "5.01": "api_publica_trt1",   # TRT1  — Rio de Janeiro
-    "5.02": "api_publica_trt2",   # TRT2  — São Paulo
-    "5.03": "api_publica_trt3",   # TRT3  — Minas Gerais
-    "5.04": "api_publica_trt4",   # TRT4  — Rio Grande do Sul
-    "5.05": "api_publica_trt5",   # TRT5  — Bahia
-    "5.06": "api_publica_trt6",   # TRT6  — Pernambuco
-    "5.07": "api_publica_trt7",   # TRT7  — Ceará
-    "5.08": "api_publica_trt8",   # TRT8  — Pará/Amapá
-    "5.09": "api_publica_trt9",   # TRT9  — Paraná
-    "5.10": "api_publica_trt10",  # TRT10 — DF/TO
-    "5.11": "api_publica_trt11",  # TRT11 — AM/RR
-    "5.12": "api_publica_trt12",  # TRT12 — Santa Catarina
-    "5.13": "api_publica_trt13",  # TRT13 — Paraíba
-    "5.14": "api_publica_trt14",  # TRT14 — RO/AC
-    "5.15": "api_publica_trt15",  # TRT15 — Campinas
-    "5.16": "api_publica_trt16",  # TRT16 — Maranhão
-    "5.17": "api_publica_trt17",  # TRT17 — Espírito Santo
-    "5.18": "api_publica_trt18",  # TRT18 — Goiás
-    "5.19": "api_publica_trt19",  # TRT19 — Alagoas
-    "5.20": "api_publica_trt20",  # TRT20 — Sergipe
-    "5.21": "api_publica_trt21",  # TRT21 — Rio Grande do Norte
-    "5.22": "api_publica_trt22",  # TRT22 — Piauí
-    "5.23": "api_publica_trt23",  # TRT23 — Mato Grosso
-    "5.24": "api_publica_trt24",  # TRT24 — Mato Grosso do Sul
-    "5.00": "api_publica_tst",    # TST
-
-    # ── Justiça Federal (J=4) ───────────────────────────────────────
-    "4.01": "api_publica_trf1",   # TRF1 — DF e Norte/Centro-Oeste
-    "4.02": "api_publica_trf2",   # TRF2 — RJ/ES
-    "4.03": "api_publica_trf3",   # TRF3 — SP/MS
-    "4.04": "api_publica_trf4",   # TRF4 — Sul
-    "4.05": "api_publica_trf5",   # TRF5 — Nordeste
-    "4.06": "api_publica_trf6",   # TRF6 — MG
-
-    # ── Tribunais de Justiça Estaduais (J=8) ───────────────────────
-    "8.01": "api_publica_tjac",   # TJAC — Acre
-    "8.02": "api_publica_tjal",   # TJAL — Alagoas
-    "8.03": "api_publica_tjam",   # TJAM — Amazonas
-    "8.04": "api_publica_tjap",   # TJAP — Amapá
-    "8.05": "api_publica_tjba",   # TJBA — Bahia
-    "8.06": "api_publica_tjce",   # TJCE — Ceará
-    "8.07": "api_publica_tjdft",  # TJDFT — Distrito Federal
-    "8.08": "api_publica_tjes",   # TJES — Espírito Santo
-    "8.09": "api_publica_tjgo",   # TJGO — Goiás
-    "8.10": "api_publica_tjma",   # TJMA — Maranhão
-    "8.11": "api_publica_tjmg",   # TJMG — Minas Gerais
-    "8.12": "api_publica_tjms",   # TJMS — Mato Grosso do Sul
-    "8.13": "api_publica_tjmt",   # TJMT — Mato Grosso
-    "8.14": "api_publica_tjpa",   # TJPA — Pará
-    "8.15": "api_publica_tjpb",   # TJPB — Paraíba
-    "8.16": "api_publica_tjpe",   # TJPE — Pernambuco
-    "8.17": "api_publica_tjpi",   # TJPI — Piauí
-    "8.18": "api_publica_tjpr",   # TJPR — Paraná
-    "8.19": "api_publica_tjrj",   # TJRJ — Rio de Janeiro
-    "8.20": "api_publica_tjrn",   # TJRN — Rio Grande do Norte
-    "8.21": "api_publica_tjro",   # TJRO — Rondônia
-    "8.22": "api_publica_tjrr",   # TJRR — Roraima
-    "8.23": "api_publica_tjrs",   # TJRS — Rio Grande do Sul
-    "8.24": "api_publica_tjsc",   # TJSC — Santa Catarina
-    "8.25": "api_publica_tjse",   # TJSE — Sergipe
-    "8.26": "api_publica_tjsp",   # TJSP — São Paulo
-    "8.27": "api_publica_tjto",   # TJTO — Tocantins
-
-    # ── Justiça Eleitoral (J=3) ─────────────────────────────────────
-    "3.00": "api_publica_tse",
-    "3.01": "api_publica_tre-ac",
-    "3.02": "api_publica_tre-al",
-    "3.03": "api_publica_tre-am",
-    "3.04": "api_publica_tre-ap",
-    "3.05": "api_publica_tre-ba",
-    "3.06": "api_publica_tre-ce",
-    "3.07": "api_publica_tre-df",
-    "3.08": "api_publica_tre-es",
-    "3.09": "api_publica_tre-go",
-    "3.10": "api_publica_tre-ma",
-    "3.11": "api_publica_tre-mg",
-    "3.12": "api_publica_tre-ms",
-    "3.13": "api_publica_tre-mt",
-    "3.14": "api_publica_tre-pa",
-    "3.15": "api_publica_tre-pb",
-    "3.16": "api_publica_tre-pe",
-    "3.17": "api_publica_tre-pi",
-    "3.18": "api_publica_tre-pr",
-    "3.19": "api_publica_tre-rj",
-    "3.20": "api_publica_tre-rn",
-    "3.21": "api_publica_tre-ro",
-    "3.22": "api_publica_tre-rr",
-    "3.23": "api_publica_tre-rs",
-    "3.24": "api_publica_tre-sc",
-    "3.25": "api_publica_tre-se",
-    "3.26": "api_publica_tre-sp",
-    "3.27": "api_publica_tre-to",
-
-    # ── Superiores (J=1) ────────────────────────────────────────────
-    "1.00": "api_publica_stj",
-    "1.01": "api_publica_stf",
-
-    # ── Militar (J=9) ───────────────────────────────────────────────
-    "9.00": "api_publica_stm",
+    "5.00":"api_publica_tst",
+    "5.01":"api_publica_trt1","5.02":"api_publica_trt2","5.03":"api_publica_trt3",
+    "5.04":"api_publica_trt4","5.05":"api_publica_trt5","5.06":"api_publica_trt6",
+    "5.07":"api_publica_trt7","5.08":"api_publica_trt8","5.09":"api_publica_trt9",
+    "5.10":"api_publica_trt10","5.11":"api_publica_trt11","5.12":"api_publica_trt12",
+    "5.13":"api_publica_trt13","5.14":"api_publica_trt14","5.15":"api_publica_trt15",
+    "5.16":"api_publica_trt16","5.17":"api_publica_trt17","5.18":"api_publica_trt18",
+    "5.19":"api_publica_trt19","5.20":"api_publica_trt20","5.21":"api_publica_trt21",
+    "5.22":"api_publica_trt22","5.23":"api_publica_trt23","5.24":"api_publica_trt24",
+    "4.01":"api_publica_trf1","4.02":"api_publica_trf2","4.03":"api_publica_trf3",
+    "4.04":"api_publica_trf4","4.05":"api_publica_trf5","4.06":"api_publica_trf6",
+    "8.01":"api_publica_tjac","8.02":"api_publica_tjal","8.03":"api_publica_tjam",
+    "8.04":"api_publica_tjap","8.05":"api_publica_tjba","8.06":"api_publica_tjce",
+    "8.07":"api_publica_tjdft","8.08":"api_publica_tjes","8.09":"api_publica_tjgo",
+    "8.10":"api_publica_tjma","8.11":"api_publica_tjmg","8.12":"api_publica_tjms",
+    "8.13":"api_publica_tjmt","8.14":"api_publica_tjpa","8.15":"api_publica_tjpb",
+    "8.16":"api_publica_tjpe","8.17":"api_publica_tjpi","8.18":"api_publica_tjpr",
+    "8.19":"api_publica_tjrj","8.20":"api_publica_tjrn","8.21":"api_publica_tjro",
+    "8.22":"api_publica_tjrr","8.23":"api_publica_tjrs","8.24":"api_publica_tjsc",
+    "8.25":"api_publica_tjse","8.26":"api_publica_tjsp","8.27":"api_publica_tjto",
+    "3.00":"api_publica_tse","1.00":"api_publica_stj","1.01":"api_publica_stf",
+    "9.00":"api_publica_stm",
 }
-
-# Nomes legíveis para exibição ao usuário
 ALIAS_NOME: Dict[str, str] = {
-    "api_publica_trt1":  "TRT1 (Rio de Janeiro)",
-    "api_publica_trt2":  "TRT2 (São Paulo)",
-    "api_publica_trt3":  "TRT3 (Minas Gerais)",
-    "api_publica_trt4":  "TRT4 (Rio Grande do Sul)",
-    "api_publica_trt5":  "TRT5 (Bahia)",
-    "api_publica_trt6":  "TRT6 (Pernambuco)",
-    "api_publica_trt7":  "TRT7 (Ceará)",
-    "api_publica_trt8":  "TRT8 (Pará/Amapá)",
-    "api_publica_trt9":  "TRT9 (Paraná)",
-    "api_publica_trt10": "TRT10 (DF/TO)",
-    "api_publica_trt11": "TRT11 (AM/RR)",
-    "api_publica_trt12": "TRT12 (Santa Catarina)",
-    "api_publica_trt13": "TRT13 (Paraíba)",
-    "api_publica_trt14": "TRT14 (RO/AC)",
-    "api_publica_trt15": "TRT15 (Campinas)",
-    "api_publica_trt16": "TRT16 (Maranhão)",
-    "api_publica_trt17": "TRT17 (Espírito Santo)",
-    "api_publica_trt18": "TRT18 (Goiás)",
-    "api_publica_trt19": "TRT19 (Alagoas)",
-    "api_publica_trt20": "TRT20 (Sergipe)",
-    "api_publica_trt21": "TRT21 (RN)",
-    "api_publica_trt22": "TRT22 (Piauí)",
-    "api_publica_trt23": "TRT23 (Mato Grosso)",
-    "api_publica_trt24": "TRT24 (MS)",
-    "api_publica_tst":   "TST",
-    "api_publica_trf1":  "TRF1",
-    "api_publica_trf2":  "TRF2",
-    "api_publica_trf3":  "TRF3",
-    "api_publica_trf4":  "TRF4",
-    "api_publica_trf5":  "TRF5",
-    "api_publica_trf6":  "TRF6",
-    "api_publica_stj":   "STJ",
-    "api_publica_stf":   "STF",
+    "api_publica_trt1":"TRT1 (RJ)","api_publica_trt2":"TRT2 (SP)",
+    "api_publica_trt3":"TRT3 (MG)","api_publica_trt4":"TRT4 (RS)",
+    "api_publica_trt5":"TRT5 (BA)","api_publica_trt6":"TRT6 (PE)",
+    "api_publica_trt7":"TRT7 (CE)","api_publica_trt9":"TRT9 (PR)",
+    "api_publica_trt10":"TRT10 (DF/TO)","api_publica_trt15":"TRT15 (Campinas)",
+    "api_publica_tst":"TST","api_publica_trf1":"TRF1","api_publica_trf2":"TRF2",
+    "api_publica_trf3":"TRF3","api_publica_trf4":"TRF4","api_publica_trf5":"TRF5",
+    "api_publica_tjsp":"TJSP","api_publica_tjrj":"TJRJ","api_publica_tjmg":"TJMG",
+    "api_publica_tjrs":"TJRS","api_publica_tjpr":"TJPR","api_publica_stj":"STJ",
+    "api_publica_stf":"STF",
+}
+TRIBUNAL_KW: Dict[str, str] = {
+    "trt1":"api_publica_trt1","trt2":"api_publica_trt2","trt3":"api_publica_trt3",
+    "trt4":"api_publica_trt4","trt5":"api_publica_trt5","trt6":"api_publica_trt6",
+    "trt7":"api_publica_trt7","trt9":"api_publica_trt9","trt15":"api_publica_trt15",
+    "tst":"api_publica_tst","trf1":"api_publica_trf1","trf2":"api_publica_trf2",
+    "trf3":"api_publica_trf3","trf4":"api_publica_trf4",
+    "tjsp":"api_publica_tjsp","tjrj":"api_publica_tjrj","tjmg":"api_publica_tjmg",
+    "tjrs":"api_publica_tjrs","stj":"api_publica_stj","stf":"api_publica_stf",
+    "sao paulo":"api_publica_trt2","minas gerais":"api_publica_trt3",
+    "rio de janeiro":"api_publica_trt1","parana":"api_publica_trt9",
+    "campinas":"api_publica_trt15",
 }
 
-def alias_para_nome(alias: str) -> str:
-    return ALIAS_NOME.get(alias, alias)
+def alias_nome(a: str) -> str:
+    return ALIAS_NOME.get(a, a)
 
-# ─────────────────────────────────────────────
-# Inferência de alias a partir do número CNJ
-# ─────────────────────────────────────────────
-PROCESS_NUMBER_RE = re.compile(r"\b(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})\b")
+# ── CNJ utils ────────────────────────────────────────────────────────
+PROC_RE = re.compile(r"\b(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})\b")
 
-def infer_alias_from_cnj(numero: str) -> Optional[str]:
-    """
-    Extrai J e TR do número CNJ e mapeia para o alias DataJud.
-    Retorna None se não reconhecido.
-    """
-    m = PROCESS_NUMBER_RE.match(numero.strip()) or PROCESS_NUMBER_RE.search(numero)
-    if not m:
-        return None
-    j  = m.group(4)   # segmento de justiça
-    tr = m.group(5)   # código do tribunal
-    try:
-        tr_int = int(tr)
-    except ValueError:
-        return None
-
-    key = f"{j}.{tr_int:02d}"
-    return ALIAS_MAP.get(key)
-
-def detect_process_numbers(text: str) -> List[str]:
-    if not text:
-        return []
-    found = PROCESS_NUMBER_RE.findall(text)
+def detect_numbers(text: str) -> List[str]:
     out, seen = [], set()
-    for groups in found:
-        full = f"{groups[0]}-{groups[1]}.{groups[2]}.{groups[3]}.{groups[4]}.{groups[5]}"
-        if full not in seen:
-            seen.add(full)
-            out.append(full)
+    for g in PROC_RE.findall(text or ""):
+        n = f"{g[0]}-{g[1]}.{g[2]}.{g[3]}.{g[4]}.{g[5]}"
+        if n not in seen:
+            seen.add(n); out.append(n)
     return out
 
-def normalize_process_number(numero: str) -> str:
-    return re.sub(r"\D", "", numero or "")
+def norm_num(n: str) -> str:
+    return re.sub(r"\D","",n or "")
 
-# Detecção de tribunal mencionado em linguagem natural
-TRIBUNAL_KEYWORDS: Dict[str, str] = {
-    "trt1": "api_publica_trt1",   "rio de janeiro": "api_publica_trt1",
-    "trt2": "api_publica_trt2",   "são paulo": "api_publica_trt2", "sao paulo": "api_publica_trt2",
-    "trt3": "api_publica_trt3",   "minas gerais": "api_publica_trt3", "mg": "api_publica_trt3",
-    "trt4": "api_publica_trt4",   "rio grande do sul": "api_publica_trt4", "rs": "api_publica_trt4",
-    "trt5": "api_publica_trt5",   "bahia": "api_publica_trt5",
-    "trt6": "api_publica_trt6",   "pernambuco": "api_publica_trt6",
-    "trt7": "api_publica_trt7",   "ceará": "api_publica_trt7", "ceara": "api_publica_trt7",
-    "trt9": "api_publica_trt9",   "paraná": "api_publica_trt9", "parana": "api_publica_trt9",
-    "trt15": "api_publica_trt15", "campinas": "api_publica_trt15",
-    "tst": "api_publica_tst",
-    "trf1": "api_publica_trf1",   "trf2": "api_publica_trf2",
-    "trf3": "api_publica_trf3",   "trf4": "api_publica_trf4",
-    "stj": "api_publica_stj",     "stf": "api_publica_stf",
-    "tjsp": "api_publica_tjsp",   "tjrj": "api_publica_tjrj",
-    "tjmg": "api_publica_tjmg",   "tjrs": "api_publica_tjrs",
-    "tjpr": "api_publica_tjpr",   "tjba": "api_publica_tjba",
-}
+def infer_alias(numero: str) -> Optional[str]:
+    m = PROC_RE.search(numero or "")
+    if not m: return None
+    return ALIAS_MAP.get(f"{m.group(4)}.{int(m.group(5)):02d}")
 
-def detect_tribunal_from_message(message: str) -> Optional[str]:
-    msg = message.lower()
-    for keyword, alias in TRIBUNAL_KEYWORDS.items():
-        if keyword in msg:
-            return alias
+def trib_from_msg(msg: str) -> Optional[str]:
+    low = msg.lower()
+    for k, v in TRIBUNAL_KW.items():
+        if k in low: return v
     return None
 
-# ─────────────────────────────────────────────
-# Códigos TPU
-# ─────────────────────────────────────────────
-CODIGOS_SENTENCA = {11, 193, 198, 199, 17, 14, 15, 16}
-CODIGOS_DECISAO_INTERLOCUTORIA = {85, 26, 51, 60, 61, 87, 1038}
-CODIGOS_ACORDAO = {941, 237, 196, 7, 8, 9}
+# ── Smart prompt router ──────────────────────────────────────────────
+OS61_TRIGGERS = [
+    "viabilidade","tese","estratégia","estrategia","risco jurídico","risco juridico",
+    "análise jurídica","analise juridica","red team","força da tese","forca da tese",
+    "score","rentabilidade","prioridade","carteira",
+    "tenho um caso","novo caso","quero contratar","quero abrir",
+    "fui demitido","fui dispensado","não recebi","nao recebi",
+    "acidente de trabalho","assédio","assedio","horas extras não pagas",
+    "rescisão","rescisao","verbas trabalhistas","fgts","aviso prévio",
+    "elabore","redija","minuta","petição","peticao","recurso",
+    "contestação","contestacao","inicial","acordo","negociação","negociacao",
+]
+PROC_TRIGGERS = [
+    "resumo","andamento","movimentações","movimentacoes","magistrado","juiz","juíza",
+    "partes","banco de decisões","timeline","sentença","acórdão","decisão","histórico",
+]
+TRIVIAL = ["olá","oi","bom dia","boa tarde","boa noite","tudo bem",
+           "obrigado","obrigada","valeu","ok","certo","entendi","hello","thanks"]
 
-ASSUNTOS_HORAS_EXTRAS    = {1723, 14548, 14549, 14550, 14551}
-ASSUNTOS_PERICULOSIDADE  = {1856, 14552, 14553}
-ASSUNTOS_INSALUBRIDADE   = {1855, 14554}
+def classify_prompt(message: str, has_proc: bool) -> str:
+    msg = message.lower().strip()
+    if any(msg.startswith(t) for t in TRIVIAL) and len(message) < 60:
+        return "conversacional"
+    if any(t in msg for t in OS61_TRIGGERS):
+        return "os61"
+    if has_proc or any(t in msg for t in PROC_TRIGGERS):
+        return "juridico"
+    jur = ["direito","lei","clt","tst","trt","prazo","processo","trabalhista",
+           "jurisprudência","súmula","artigo","indenização","multa"]
+    if any(t in msg for t in jur):
+        return "juridico"
+    return "conversacional"
 
-INTENT_PROCESS_FULL  = ["andamento completo","histórico completo","timeline","linha do tempo","todas as movimentações","todos os andamentos","andamento detalhado","movimentações completas"]
-INTENT_MAGISTRADO    = ["magistrado","juiz","juíza","quem sentenciou","quem julgou","quem decidiu","prolator"]
-INTENT_BANCO_DECISOES = ["banco de decisões","processos similares","processos semelhantes","decisões do juiz","decisões da vara","padrão decisório","como esse juiz decide","outros casos","outros processos"]
-INTENT_TEMATICO      = ["horas extras","hora extra","adicional de periculosidade","periculosidade","insalubridade","análise temática"]
-INTENT_CLASSIFICAR   = ["sentença","decisão interlocutória","acórdão","tipo de decisão","classifica","separar decisões"]
+PROMPT_CONV = (
+    "Você é um assistente do escritório Salles & Mendes. "
+    "Responda em português, de forma direta e cordial. Para perguntas simples, seja breve."
+)
+PROMPT_JUR = (
+    "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
+    "Responda em português, de forma técnica, clara e objetiva. "
+    "Nunca prometa resultados. Separe fato de hipótese. "
+    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante. "
+    "Sinalize quando exigir validação humana por advogado responsável."
+)
 
-def detect_intent(message: str) -> str:
-    msg = message.lower()
-    if any(k in msg for k in INTENT_BANCO_DECISOES):  return "banco_decisoes"
-    if any(k in msg for k in INTENT_MAGISTRADO):       return "magistrado"
-    if any(k in msg for k in INTENT_TEMATICO):         return "tematico"
-    if any(k in msg for k in INTENT_CLASSIFICAR):      return "classificar"
-    if any(k in msg for k in INTENT_PROCESS_FULL):     return "andamento_completo"
-    return "resumo"
-
-# ─────────────────────────────────────────────
-# System prompt
-# ─────────────────────────────────────────────
-def build_system_prompt(extra_context: str = "") -> str:
-    base = OS_6_1_PROMPT if OS_6_1_PROMPT else (
-        "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
-        "Responda sempre em português, de forma técnica, clara e objetiva. "
-        "Nunca prometa resultados. Separe fato de hipótese. "
-        "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante."
-    )
+def build_system_prompt(level: str, ctx: str = "") -> str:
+    base = (OS_6_1_PROMPT if OS_6_1_PROMPT else PROMPT_JUR) if level == "os61" else \
+           (PROMPT_JUR if level == "juridico" else PROMPT_CONV)
     mandate = (f"\n\nEste sistema opera para: {MANDATARIA_NOME} — {MANDATARIA_OAB}. "
                "Análises são assistivas, sujeitas à revisão do advogado responsável."
                if MANDATARIA_NOME or MANDATARIA_OAB else "")
-    ctx = f"\n\n===CONTEXTO===\n{extra_context}\n===FIM===" if extra_context else ""
-    return base + mandate + ctx
+    context = f"\n\n===CONTEXTO===\n{ctx}\n===FIM===" if ctx else ""
+    return base + mandate + context
 
-# ─────────────────────────────────────────────
-# FastAPI
-# ─────────────────────────────────────────────
-app = FastAPI(title="SM OS Chat", version="5.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if ALLOWED_ORIGIN == "*" else [ALLOWED_ORIGIN],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
-SESSIONS: Dict[str, Dict[str, Any]] = {}
+# ── Intent detection ─────────────────────────────────────────────────
+INT_FULL  = ["andamento completo","histórico completo","timeline","todas as movimentações","linha do tempo"]
+INT_MAG   = ["magistrado","juiz","juíza","quem sentenciou","quem julgou","nome do juiz","prolator"]
+INT_PART  = ["partes","quem são as partes","autor","reclamante","reclamado","réu","advogado"]
+INT_BANCO = ["banco de decisões","processos similares","decisões do juiz","padrão decisório","outros casos"]
+INT_TEM   = ["horas extras","hora extra","periculosidade","insalubridade","análise temática"]
+INT_CL    = ["sentença","acórdão","decisão interlocutória","tipos de decisão","separar decisões"]
 
-class SessionOut(BaseModel):
-    session_id: str
-    state: Dict[str, Any] = {}
+def detect_intent(msg: str) -> str:
+    m = msg.lower()
+    if any(k in m for k in INT_BANCO): return "banco_decisoes"
+    if any(k in m for k in INT_PART):  return "partes"
+    if any(k in m for k in INT_MAG):   return "magistrado"
+    if any(k in m for k in INT_TEM):   return "tematico"
+    if any(k in m for k in INT_CL):    return "classificar"
+    if any(k in m for k in INT_FULL):  return "andamento_completo"
+    return "resumo"
 
-class ChatIn(BaseModel):
-    session_id: str
-    message: str
-    state: Optional[Dict[str, Any]] = None
+# ── MNI/PJe client ───────────────────────────────────────────────────
+class MNIError(Exception): pass
 
-class ChatOut(BaseModel):
-    message: str
-    state: Dict[str, Any] = {}
+class MNIClient:
+    def _envelope(self, numero: str) -> str:
+        return textwrap.dedent(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <soapenv:Envelope
+          xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+          xmlns:mni="http://www.cnj.jus.br/servicos/sistemas/intercomunicacao/1.0">
+          <soapenv:Header/>
+          <soapenv:Body>
+            <mni:consultarProcesso>
+              <numeroProcesso>{numero}</numeroProcesso>
+              <idConsultante>{MNI_USERNAME}</idConsultante>
+              <senhaConsultante>{MNI_PASSWORD}</senhaConsultante>
+              <movimentos>true</movimentos>
+              <incluirDocumentos>false</incluirDocumentos>
+            </mni:consultarProcesso>
+          </soapenv:Body>
+        </soapenv:Envelope>""")
 
-class DataJudSearchRequest(BaseModel):
-    alias: Optional[str] = None
-    numero_processo: Optional[str] = None
-    classe_nome: Optional[str] = None
-    assunto_nome: Optional[str] = None
-    tribunal: Optional[str] = None
-    orgao_julgador: Optional[str] = None
-    size: int = 10
-    cursor: Optional[str] = None
-
-# ─────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────
-def auth_or_401(key: Optional[str]):
-    if DEMO_KEY and key != DEMO_KEY:
-        raise HTTPException(status_code=401, detail="Não autorizado")
-
-def get_session(sid: str) -> dict:
-    return SESSIONS.setdefault(sid, {
-        "messages": [], "uploaded_contexts": [],
-        "last_process": None, "last_process_numero": None,
-        "last_alias": None,
-    })
-
-def compact_text(text: str, limit: int = 6000) -> str:
-    return (text or "").strip()[:limit]
-
-def extract_text_from_upload(file: UploadFile, data: bytes) -> str:
-    fn = (file.filename or "").lower()
-    if fn.endswith((".txt", ".md")):
-        return data.decode("utf-8", errors="ignore")
-    if fn.endswith(".pdf") and PdfReader:
+    def consultar(self, numero: str) -> Dict[str, Any]:
+        if not MNI_ENABLED:
+            raise MNIError("MNI desabilitado.")
+        if not MNI_USERNAME or not MNI_PASSWORD:
+            raise MNIError("MNI_USERNAME e MNI_PASSWORD não configurados.")
         try:
-            r = PdfReader(io.BytesIO(data))
-            return "\n".join(p.extract_text() or "" for p in r.pages[:40]).strip()
-        except Exception:
-            return ""
-    if fn.endswith(".docx") and DocxDocument:
-        try:
-            d = DocxDocument(io.BytesIO(data))
-            return "\n".join(p.text for p in d.paragraphs if p.text).strip()
-        except Exception:
-            return ""
-    return ""
+            resp = requests.post(
+                MNI_BASE_URL,
+                data=self._envelope(numero).encode("utf-8"),
+                headers={"Content-Type":"text/xml; charset=utf-8","SOAPAction":'"consultarProcesso"'},
+                timeout=MNI_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            raise MNIError(f"HTTP {getattr(e.response,'status_code','?')}: {(e.response.text if e.response else '')[:300]}")
+        except requests.RequestException as e:
+            raise MNIError(f"Conexão MNI falhou: {e}")
+        return self._parse(resp.text)
 
-# ─────────────────────────────────────────────
-# Classificadores
-# ─────────────────────────────────────────────
-def classify_movimento(mov: dict) -> str:
-    codigo = mov.get("codigoNacional")
-    if not codigo and isinstance(mov.get("movimentoNacional"), dict):
-        codigo = mov["movimentoNacional"].get("codigo")
-    if codigo:
-        if codigo in CODIGOS_SENTENCA:              return "sentenca"
-        if codigo in CODIGOS_DECISAO_INTERLOCUTORIA: return "decisao_interlocutoria"
-        if codigo in CODIGOS_ACORDAO:               return "acordao"
-    nome = (mov.get("nome") or "").lower()
-    if any(w in nome for w in ["sentença","sentenca","procedente","improcedente","julgament"]):
-        return "sentenca"
-    if any(w in nome for w in ["acórdão","acordao","recurso provido","recurso improvido"]):
-        return "acordao"
-    if any(w in nome for w in ["decisão","decisao","despacho","liminar","tutela"]):
-        return "decisao_interlocutoria"
+    def _parse(self, xml: str) -> Dict[str, Any]:
+        def first(tag: str) -> Optional[str]:
+            m = re.search(rf"<(?:[^:>]+:)?{re.escape(tag)}[^>]*>(.*?)</(?:[^:>]+:)?{re.escape(tag)}>",
+                          xml, re.DOTALL|re.IGNORECASE)
+            return m.group(1).strip() if m else None
+
+        result: Dict[str, Any] = {
+            "juiz":None,"polo_ativo":[],"polo_passivo":[],
+            "advogados":[],"movimentos_mni":[],"valor_causa":None,
+        }
+        result["juiz"]       = first("magistrado") or first("nomeMagistrado")
+        result["valor_causa"]= first("valorCausa")
+
+        for bloco in re.findall(
+            r"<(?:[^:>]+:)?polo[^>]*>(.*?)</(?:[^:>]+:)?polo>", xml, re.DOTALL|re.IGNORECASE
+        ):
+            tipo  = re.search(r'tipo["\s]*[=:]["\s]*([^"<>\s]+)', bloco, re.IGNORECASE)
+            nomes = re.findall(r"<(?:[^:>]+:)?nome[^>]*>(.*?)</(?:[^:>]+:)?nome>", bloco, re.DOTALL|re.IGNORECASE)
+            advs  = re.findall(r"<(?:[^:>]+:)?advogado[^>]*>(.*?)</(?:[^:>]+:)?advogado>", bloco, re.DOTALL|re.IGNORECASE)
+            pt    = (tipo.group(1) if tipo else "").lower()
+            ns    = [n.strip() for n in nomes if n.strip()]
+            if "at" in pt or "ativo" in pt or "reclamante" in pt:
+                result["polo_ativo"].extend(ns)
+            else:
+                result["polo_passivo"].extend(ns)
+            result["advogados"].extend([re.sub(r"<[^>]+>","",a).strip() for a in advs if a.strip()])
+
+        for bloco in re.findall(
+            r"<(?:[^:>]+:)?movimento[^>]*>(.*?)</(?:[^:>]+:)?movimento>", xml, re.DOTALL|re.IGNORECASE
+        ):
+            dh   = re.search(r"<(?:[^:>]+:)?dataHora[^>]*>(.*?)</", bloco, re.DOTALL|re.IGNORECASE)
+            nd   = re.search(r"<(?:[^:>]+:)?descricao[^>]*>(.*?)</", bloco, re.DOTALL|re.IGNORECASE)
+            nd2  = re.search(r"<(?:[^:>]+:)?nome[^>]*>(.*?)</", bloco, re.DOTALL|re.IGNORECASE)
+            mag  = re.search(r"<(?:[^:>]+:)?magistrado[^>]*>(.*?)</", bloco, re.DOTALL|re.IGNORECASE)
+            result["movimentos_mni"].append({
+                "dataHora":  (dh.group(1) if dh else "").strip()[:19],
+                "nome":      (nd.group(1) if nd else (nd2.group(1) if nd2 else "")).strip(),
+                "magistrado":(mag.group(1) if mag else "").strip() or None,
+            })
+
+        if not result["juiz"]:
+            for m in result["movimentos_mni"]:
+                if m.get("magistrado"):
+                    result["juiz"] = m["magistrado"]; break
+        return result
+
+MNI = MNIClient()
+
+def enrich_with_mni(proc: dict, numero: str) -> dict:
+    proc["mni_status"] = "disabled"
+    proc["mni_error"]  = None
+    proc["movimentos_mni"] = []
+    proc["movimentos_mni_total"] = "N/A"
+    if not MNI_ENABLED:
+        return proc
+    try:
+        d = MNI.consultar(numero)
+        proc["mni_status"] = "ok"
+        if d.get("juiz"):            proc["magistrado"]  = d["juiz"]
+        if d.get("polo_ativo"):      proc["polo_ativo"]  = d["polo_ativo"]
+        if d.get("polo_passivo"):    proc["polo_passivo"]= d["polo_passivo"]
+        if d.get("advogados"):       proc["advogados"]   = d["advogados"]
+        if d.get("valor_causa") and not proc.get("valor_causa"):
+            proc["valor_causa"] = d["valor_causa"]
+        proc["movimentos_mni"]       = d.get("movimentos_mni") or []
+        proc["movimentos_mni_total"] = len(proc["movimentos_mni"])
+    except MNIError as e:
+        proc["mni_status"] = "error"
+        proc["mni_error"]  = str(e)
+    return proc
+
+# ── DataJud ──────────────────────────────────────────────────────────
+COD_SENT  = {11,193,198,199,17,14,15,16}
+COD_INT   = {85,26,51,60,61,87,1038}
+COD_AC    = {941,237,196,7,8,9}
+ASS_HE    = {1723,14548,14549,14550,14551}
+ASS_PERI  = {1856,14552,14553}
+ASS_INS   = {1855,14554}
+
+def classif_mov(mov: dict) -> str:
+    cod = mov.get("codigoNacional")
+    if not cod and isinstance(mov.get("movimentoNacional"),dict):
+        cod = mov["movimentoNacional"].get("codigo")
+    if cod:
+        if cod in COD_SENT: return "sentenca"
+        if cod in COD_INT:  return "decisao_interlocutoria"
+        if cod in COD_AC:   return "acordao"
+    n = (mov.get("nome") or "").lower()
+    if any(w in n for w in ["sentença","procedente","improcedente","julgament"]): return "sentenca"
+    if any(w in n for w in ["acórdão","recurso provido","recurso improvido"]):   return "acordao"
+    if any(w in n for w in ["decisão","despacho","liminar","tutela"]):           return "decisao_interlocutoria"
     return "outro"
 
-def extract_magistrado(movimentos: List[dict]) -> Optional[str]:
-    for mov in movimentos:
-        mag = mov.get("magistradoProlator") or mov.get("responsavelMovimento")
+def extract_mag_datajud(movs: list) -> Optional[str]:
+    for m in movs:
+        mag = m.get("magistradoProlator") or m.get("responsavelMovimento")
         if mag:
-            nome = mag.get("nome") or mag.get("nomeServidor") or str(mag) if isinstance(mag, dict) else str(mag)
-            if nome and len(nome) > 3:
-                return nome
+            nome = (mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag,dict) else str(mag)
+            if nome and len(str(nome)) > 3: return str(nome)
     return None
 
-# ─────────────────────────────────────────────
-# DataJud Service
-# ─────────────────────────────────────────────
-class DataJudError(Exception):
-    pass
+class DataJudError(Exception): pass
 
 class DataJudService:
-    def _headers(self):
-        h = {"Content-Type": "application/json"}
-        if DATAJUD_API_KEY:
-            h["Authorization"] = f"APIKey {DATAJUD_API_KEY}"
+    def _h(self):
+        h = {"Content-Type":"application/json"}
+        if DATAJUD_API_KEY: h["Authorization"] = f"APIKey {DATAJUD_API_KEY}"
         return h
 
     def _post(self, alias: str, payload: dict) -> dict:
-        if not DATAJUD_ENABLED:
-            raise DataJudError("DataJud desabilitado (DATAJUD_ENABLED=false).")
-        if not DATAJUD_API_KEY:
-            raise DataJudError("DATAJUD_API_KEY não configurado.")
-        if not alias:
-            raise DataJudError("Alias do tribunal não identificado.")
+        if not DATAJUD_ENABLED: raise DataJudError("DataJud desabilitado.")
+        if not DATAJUD_API_KEY: raise DataJudError("DATAJUD_API_KEY não configurado.")
         url = f"{DATAJUD_BASE_URL}/{alias}/_search"
         try:
-            r = requests.post(url, headers=self._headers(), json=payload, timeout=DATAJUD_TIMEOUT_S)
-            r.raise_for_status()
-            return r.json()
+            r = requests.post(url, headers=self._h(), json=payload, timeout=DATAJUD_TIMEOUT_S)
+            r.raise_for_status(); return r.json()
         except requests.HTTPError as e:
-            body = e.response.text if e.response else ""
-            raise DataJudError(f"HTTP {getattr(e.response,'status_code','?')}: {body[:600]}")
+            raise DataJudError(f"HTTP {getattr(e.response,'status_code','?')}: {(e.response.text if e.response else '')[:300]}")
         except requests.RequestException as e:
-            raise DataJudError(f"Falha de conexão: {e}")
+            raise DataJudError(f"Conexão DataJud falhou: {e}")
 
-    def search(self, alias: str, query: dict, size: int = 10,
-               sort: list = None, source_fields: list = None) -> dict:
-        payload: dict = {
-            "size":  min(size, 50),
-            "query": query,
-            "sort":  sort or [{DATAJUD_SORT_FIELD: "desc"}],
-        }
-        if source_fields:
-            payload["_source"] = source_fields
-        return self._post(alias, payload)
+    def search(self, alias: str, query: dict, size: int = 10, sort: list = None) -> dict:
+        return self._post((alias or DATAJUD_DEFAULT_ALIAS).strip(), {
+            "size": min(size, 50), "query": query,
+            "sort": sort or [{DATAJUD_SORT_FIELD: "desc"}],
+        })
 
     def get_process(self, numero: str, alias: str) -> dict:
-        return self.search(
-            alias=alias,
-            query={"match": {"numeroProcesso": normalize_process_number(numero)}},
-            size=1,
-        )
+        return self.search(alias, {"match": {"numeroProcesso": norm_num(numero)}}, size=1)
 
-    def extract_sources(self, raw: dict) -> List[dict]:
-        return [h.get("_source") or {} for h in
-                ((raw or {}).get("hits") or {}).get("hits") or []]
+    def sources(self, raw: dict) -> List[dict]:
+        return [h.get("_source") or {} for h in ((raw or {}).get("hits") or {}).get("hits") or []]
 
-    def normalize(self, source: dict) -> dict:
-        movs   = source.get("movimentos") or []
+    def normalize(self, src: dict) -> dict:
+        movs   = src.get("movimentos") or []
         movs_s = sorted(movs, key=lambda x: x.get("dataHora") or "", reverse=True)
-        orgao  = source.get("orgaoJulgador") or {}
-        classe = source.get("classe") or {}
-        assuntos = source.get("assuntos") or []
+        orgao  = src.get("orgaoJulgador") or {}
+        classe = src.get("classe") or {}
+        asts   = src.get("assuntos") or []
+        partes_raw = src.get("partes") or []
+        pa, pp, advs = [], [], []
+        for p in partes_raw:
+            nome = p.get("nome") or p.get("nomeRepresentante") or ""
+            tipo = (p.get("tipoParte") or p.get("polo") or "").lower()
+            if "at" in tipo or "autor" in tipo or "reclamante" in tipo: pa.append(nome)
+            elif "pa" in tipo or "réu" in tipo or "reclamado" in tipo: pp.append(nome)
+            for adv in (p.get("advogados") or []):
+                n = adv.get("nome") or ""; (advs.append(n) if n else None)
         return {
-            "numero_processo":          source.get("numeroProcesso"),
-            "tribunal":                 source.get("tribunal"),
-            "grau":                     source.get("grau"),
-            "data_ajuizamento":         source.get("dataAjuizamento"),
-            "ultima_atualizacao":       source.get("dataHoraUltimaAtualizacao"),
-            "valor_causa":              source.get("valorCausa"),
-            "classe_nome":              classe.get("nome"),
-            "orgao_julgador":           orgao.get("nome"),
-            "assuntos":                 [a.get("nome") for a in assuntos if a.get("nome")],
-            "assuntos_codigos":         [a.get("codigo") for a in assuntos if a.get("codigo")],
-            "movimentos_total":         len(movs),
-            "magistrado":               extract_magistrado(movs_s),
+            "numero_processo":  src.get("numeroProcesso"),
+            "tribunal":         src.get("tribunal"),
+            "grau":             src.get("grau"),
+            "data_ajuizamento": src.get("dataAjuizamento"),
+            "ultima_atualizacao": src.get("dataHoraUltimaAtualizacao"),
+            "valor_causa":      src.get("valorCausa"),
+            "classe_nome":      classe.get("nome"),
+            "orgao_julgador":   orgao.get("nome"),
+            "orgao_codigo":     orgao.get("codigo"),
+            "assuntos":         [a.get("nome") for a in asts if a.get("nome")],
+            "assuntos_codigos": [a.get("codigo") for a in asts if a.get("codigo")],
+            "movimentos_total": len(movs),
+            "magistrado":       extract_mag_datajud(movs_s),
+            "polo_ativo":       pa,
+            "polo_passivo":     pp,
+            "advogados":        advs,
+            "movimentos_todos": movs_s,
+            "sentencas":        [m for m in movs_s if classif_mov(m)=="sentenca"],
+            "decisoes_interlocutorias": [m for m in movs_s if classif_mov(m)=="decisao_interlocutoria"],
+            "acordaos":         [m for m in movs_s if classif_mov(m)=="acordao"],
             "ultima_movimentacao_nome": (movs_s[0] if movs_s else {}).get("nome"),
-            "ultima_movimentacao_data": (movs_s[0] if movs_s else {}).get("dataHora", "")[:10],
-            "movimentos_todos":         movs_s,
-            "sentencas":                [m for m in movs_s if classify_movimento(m) == "sentenca"],
-            "decisoes_interlocutorias": [m for m in movs_s if classify_movimento(m) == "decisao_interlocutoria"],
-            "acordaos":                 [m for m in movs_s if classify_movimento(m) == "acordao"],
+            "ultima_movimentacao_data": (movs_s[0] if movs_s else {}).get("dataHora","")[:10],
         }
 
-DATAJUD = DataJudService()
+DJ = DataJudService()
 
-# ─────────────────────────────────────────────
-# Context builders
-# ─────────────────────────────────────────────
-def _fmt(mov: dict, tipo: bool = False) -> str:
+# ── Context builders ─────────────────────────────────────────────────
+def fmt_mov(mov: dict, tipo: bool = False) -> str:
     data = (mov.get("dataHora") or "")[:10]
-    nome = mov.get("nome") or "Movimentação"
-    t    = f" [{classify_movimento(mov).replace('_',' ').upper()}]" if tipo else ""
-    return f"  • {data}{t} — {nome}"
+    nome = mov.get("nome") or "Andamento"
+    t    = f" [{classif_mov(mov).replace('_',' ').upper()}]" if tipo else ""
+    mag  = mov.get("magistrado") or mov.get("magistradoProlator") or ""
+    ms   = f" | Juiz: {mag}" if mag and isinstance(mag,str) and len(mag) > 3 else ""
+    return f"  • {data}{t} — {nome}{ms}"
 
-def ctx_resumo(proc: dict, alias: str = "") -> str:
-    tribunal_nome = alias_para_nome(alias) if alias else proc.get("tribunal", "")
-    lines = [
-        f"PROCESSO: {proc['numero_processo']}",
-        f"Tribunal: {tribunal_nome} | Grau: {proc['grau']}",
-        f"Classe: {proc['classe_nome']} | Vara: {proc['orgao_julgador']}",
-        f"Assuntos: {', '.join(proc['assuntos']) or 'n/d'}",
-        f"Ajuizamento: {proc['data_ajuizamento'] or 'n/d'} | Última atualização: {proc['ultima_atualizacao'] or 'n/d'}",
-        f"Magistrado identificado: {proc['magistrado'] or 'não disponível via API'}",
-        f"Última movimentação: {proc['ultima_movimentacao_nome']} ({proc['ultima_movimentacao_data']})",
-        f"Total movimentações: {proc['movimentos_total']}",
-        "", "ÚLTIMAS 10 MOVIMENTAÇÕES:",
-    ] + [_fmt(m) for m in proc["movimentos_todos"][:10]]
+def partes_block(proc: dict) -> str:
+    lines = []
+    if proc.get("polo_ativo"):   lines.append(f"Polo Ativo (Reclamante): {', '.join(proc['polo_ativo'])}")
+    if proc.get("polo_passivo"): lines.append(f"Polo Passivo (Reclamado): {', '.join(proc['polo_passivo'])}")
+    if proc.get("advogados"):    lines.append(f"Advogados: {', '.join(proc['advogados'][:5])}")
+    if not lines:
+        st = proc.get("mni_status","disabled")
+        if st == "disabled":
+            lines += ["Partes: não disponíveis — MNI_ENABLED=false.",
+                      "Para nome das partes e juiz: solicite credenciais ao TRT e habilite MNI nas envs."]
+        elif st == "error":
+            lines.append(f"Partes: erro PJe/MNI — {proc.get('mni_error','')}")
+        else:
+            lines.append("Partes: não retornadas nesta consulta.")
     return "\n".join(lines)
 
-def ctx_completo(proc: dict, alias: str = "") -> str:
-    tribunal_nome = alias_para_nome(alias) if alias else proc.get("tribunal", "")
-    lines = [
-        f"ANDAMENTO COMPLETO — {proc['numero_processo']} | {tribunal_nome}",
-        f"Vara: {proc['orgao_julgador']} | Magistrado: {proc['magistrado'] or 'n/d'}",
-        f"Ajuizamento: {proc['data_ajuizamento'] or 'n/d'} | Total: {proc['movimentos_total']} movimentos",
-        "",
-        f"▶ SENTENÇAS ({len(proc['sentencas'])}):",
-    ] + ([_fmt(m) for m in proc["sentencas"]] or ["  (nenhuma)"]) + [
-        f"\n▶ ACÓRDÃOS ({len(proc['acordaos'])}):",
-    ] + ([_fmt(m) for m in proc["acordaos"]] or ["  (nenhum)"]) + [
-        f"\n▶ DECISÕES INTERLOCUTÓRIAS ({len(proc['decisoes_interlocutorias'])}):",
-    ] + ([_fmt(m) for m in proc["decisoes_interlocutorias"][:10]] or ["  (nenhuma)"]) + [
-        f"\n▶ HISTÓRICO CRONOLÓGICO COMPLETO:",
-    ] + [_fmt(m, True) for m in proc["movimentos_todos"]]
+def mni_movs_block(proc: dict) -> str:
+    movs = proc.get("movimentos_mni") or []
+    if not movs: return ""
+    lines = [f"\nMOVIMENTAÇÕES PJe/MNI COMPLETAS ({len(movs)} registros):"]
+    for m in movs[:30]:
+        data = (m.get("dataHora") or "")[:10]
+        nome = m.get("nome") or "Andamento"
+        mag  = m.get("magistrado") or ""
+        ms   = f" | Juiz: {mag}" if mag else ""
+        lines.append(f"  • {data} — {nome}{ms}")
     return "\n".join(lines)
 
-def ctx_magistrado(proc: dict) -> str:
-    detalhes = []
-    for m in proc["movimentos_todos"]:
-        mag = m.get("magistradoProlator") or m.get("responsavelMovimento")
-        if mag:
-            detalhes.append(f"  • {(m.get('dataHora') or '')[:10]} — {m.get('nome')} | {mag}")
-    return "\n".join([
-        f"MAGISTRADO — {proc['numero_processo']}",
-        f"Vara: {proc['orgao_julgador']}",
-        f"Campo magistradoProlator (API): {proc['magistrado'] or 'não disponível'}",
-        "",
-        "Movimentos com magistrado nos dados brutos:"
-        if detalhes else "Nenhum movimento retornou magistradoProlator nesta consulta.",
-    ] + detalhes[:20])
+def build_ctx(proc: dict, intent: str, alias: str = "") -> str:
+    trib  = alias_nome(alias) if alias else (proc.get("tribunal") or "")
+    mag   = proc.get("magistrado") or "não disponível via DataJud/MNI"
+    asts  = ", ".join(proc.get("assuntos") or []) or "não identificados"
+    val   = proc.get("valor_causa") or "não informado"
+    mni_s = proc.get("mni_status","disabled")
+    mni_info = {"ok":"✅ MNI ativo","error":f"⚠️ MNI erro: {proc.get('mni_error','')}","disabled":"ℹ️ MNI desabilitado (dados de partes/juiz limitados)"}.get(mni_s,"")
 
-def ctx_classificacao(proc: dict) -> str:
-    return "\n".join([
-        f"CLASSIFICAÇÃO — {proc['numero_processo']}",
-        f"Total movimentos: {proc['movimentos_total']}",
-        f"\nSENTENÇAS ({len(proc['sentencas'])}):",
-    ] + ([_fmt(m) for m in proc["sentencas"]] or ["  (nenhuma)"]) + [
-        f"\nACÓRDÃOS ({len(proc['acordaos'])}):",
-    ] + ([_fmt(m) for m in proc["acordaos"]] or ["  (nenhum)"]) + [
-        f"\nDECISÕES INTERLOCUTÓRIAS ({len(proc['decisoes_interlocutorias'])}):",
-    ] + ([_fmt(m) for m in proc["decisoes_interlocutorias"][:15]] or ["  (nenhuma)"]))
+    header = "\n".join([
+        f"PROCESSO: {proc.get('numero_processo')} | {trib} | Grau: {proc.get('grau','n/d')}",
+        f"Classe: {proc.get('classe_nome','n/d')} | Vara: {proc.get('orgao_julgador','n/d')}",
+        f"Assuntos: {asts}",
+        f"Ajuizamento: {proc.get('data_ajuizamento','n/d')} | Última atualização: {proc.get('ultima_atualizacao','n/d')}",
+        f"Valor da causa: {val}",
+        f"Magistrado/Juiz: {mag}",
+        partes_block(proc),
+        f"DataJud — movimentações: {proc.get('movimentos_total',0)} | {mni_info}",
+    ])
+
+    if intent in ("resumo","partes","magistrado"):
+        movs = "\n".join(["","ÚLTIMAS 15 MOVIMENTAÇÕES (DataJud):"] +
+                         [fmt_mov(m) for m in proc.get("movimentos_todos",[])[:15]])
+        return header + movs + mni_movs_block(proc)
+
+    if intent == "andamento_completo":
+        body = "\n".join([
+            "", f"SENTENÇAS ({len(proc.get('sentencas',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("sentencas",[])] or ["  (nenhuma)"]) + [
+            f"\nACÓRDÃOS ({len(proc.get('acordaos',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("acordaos",[])] or ["  (nenhum)"]) + [
+            f"\nDECISÕES INTERLOCUTÓRIAS ({len(proc.get('decisoes_interlocutorias',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("decisoes_interlocutorias",[])[:15]] or ["  (nenhuma)"]) + [
+            "\nHISTÓRICO COMPLETO DataJud:",
+        ] + [fmt_mov(m,True) for m in proc.get("movimentos_todos",[])])
+        return header + body + mni_movs_block(proc)
+
+    if intent == "classificar":
+        return header + "\n".join([
+            "", f"SENTENÇAS ({len(proc.get('sentencas',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("sentencas",[])] or ["  (nenhuma)"]) + [
+            f"\nACÓRDÃOS ({len(proc.get('acordaos',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("acordaos",[])] or ["  (nenhum)"]) + [
+            f"\nDECISÕES INTERLOCUTÓRIAS ({len(proc.get('decisoes_interlocutorias',[]))}):",
+        ] + ([fmt_mov(m) for m in proc.get("decisoes_interlocutorias",[])[:15]] or ["  (nenhuma)"]))
+
+    return header + "\n\nÚLTIMAS 5 MOVIMENTAÇÕES:\n" + \
+           "\n".join([fmt_mov(m) for m in proc.get("movimentos_todos",[])[:5]])
 
 def ctx_banco(processos: List[dict], orgao: str, assunto: str) -> str:
-    lines = [f"BANCO DE DECISÕES — {orgao} | Tema: {assunto}", f"Processos: {len(processos)}", ""]
-    for s in processos:
-        p = DATAJUD.normalize(s)
-        lines += [
-            f"── {p['numero_processo']} | Magistrado: {p['magistrado'] or 'n/d'}",
-            f"   Assuntos: {', '.join(p['assuntos'][:3])} | Sentenças: {len(p['sentencas'])}",
-            f"   Última mov.: {p['ultima_movimentacao_nome'] or 'n/d'}", "",
-        ]
+    lines = [f"\nBANCO DE DECISÕES — {orgao} | {assunto} | {len(processos)} processos",""]
+    for s in processos[:8]:
+        p = DJ.normalize(s)
+        lines += [f"── {p['numero_processo']} | Juiz: {p.get('magistrado','n/d')}",
+                  f"   Polo Ativo: {', '.join(p.get('polo_ativo',[]) or ['n/d'])}",
+                  f"   {', '.join(p.get('assuntos',[])[:3])} | Sentenças: {len(p.get('sentencas',[]))}",
+                  f"   Última: {p.get('ultima_movimentacao_nome','n/d')}",""]
     return "\n".join(lines)
 
 def ctx_tematico(processos: List[dict], tema: str) -> str:
-    t_sent = t_acord = t_proc = 0
-    lines = [f"ANÁLISE TEMÁTICA — {tema} | Processos: {len(processos)}", ""]
-    for s in processos:
-        p = DATAJUD.normalize(s)
-        t_sent  += len(p["sentencas"])
-        t_acord += len(p["acordaos"])
-        for sent in p["sentencas"]:
-            if "procedente" in (sent.get("nome") or "").lower() and "improcedente" not in (sent.get("nome") or "").lower():
-                t_proc += 1
-        lines += [
-            f"── {p['numero_processo']} | {p['orgao_julgador']} | Magistrado: {p['magistrado'] or 'n/d'}",
-            f"   {', '.join(p['assuntos'][:3])} | Sentenças: {len(p['sentencas'])}",
-            f"   Última: {p['ultima_movimentacao_nome'] or 'n/d'}", "",
-        ]
-    lines += ["── CONSOLIDADO:", f"   Sentenças: {t_sent} | Acórdãos: {t_acord} | Procedências estimadas: {t_proc}"]
+    ts = tp = 0
+    lines = [f"\nANÁLISE TEMÁTICA — {tema} | {len(processos)} processos",""]
+    for s in processos[:12]:
+        p = DJ.normalize(s)
+        ts += len(p.get("sentencas",[]))
+        for sent in p.get("sentencas",[]):
+            n = (sent.get("nome") or "").lower()
+            if "procedente" in n and "improcedente" not in n: tp += 1
+        lines += [f"── {p['numero_processo']} | {p.get('orgao_julgador','n/d')} | Juiz: {p.get('magistrado','n/d')}",
+                  f"   {', '.join(p.get('assuntos',[])[:3])} | Sentenças: {len(p.get('sentencas',[]))}",""]
+    lines += ["── CONSOLIDADO:", f"   Sentenças: {ts} | Procedências estimadas: {tp}"]
     return "\n".join(lines)
 
-INSTRUCAO: Dict[str, str] = {
-    "resumo":            "Realize análise jurídica completa conforme OS 6.1. Fase processual, riscos, próximos passos, alertas. Responda em português.",
-    "andamento_completo":"Apresente andamento completo em ordem cronológica. Organize por sentenças, acórdãos, decisões interlocutórias. Comente marcos processuais. Responda em português.",
-    "magistrado":        "Identifique o magistrado responsável. Se não disponível via API, informe a limitação e o órgão julgador. Analise padrão decisório inferível. Responda em português.",
-    "banco_decisoes":    "Analise os processos semelhantes da mesma vara. Identifique padrão decisório, taxa de procedência e tendências estratégicas. Responda em português.",
-    "tematico":          "Realize análise temática. Taxa de procedência, magistrados recorrentes, tendências da vara/tribunal no tema. Oriente estratégia. Responda em português.",
-    "classificar":       "Classifique e explique cada tipo de decisão. Impacto jurídico de cada uma e expectativas das próximas fases. Responda em português.",
+INSTRUCAO: Dict[str,str] = {
+    "resumo":          "Analise o processo. Destaque: juiz, partes, fase processual, última movimentação, riscos e próximos passos. Se dados indisponíveis, informe. Responda em português.",
+    "partes":          "Identifique as partes (polo ativo, polo passivo, advogados). Comente posição e implicações estratégicas. Responda em português.",
+    "magistrado":      "Identifique o magistrado. Se do PJe/MNI, indique a fonte. Analise padrão decisório inferível. Responda em português.",
+    "andamento_completo":"Apresente andamento cronológico completo. Organize por categoria. Integre DataJud e PJe quando disponíveis. Responda em português.",
+    "banco_decisoes":  "Analise os processos similares. Identifique padrão decisório e taxa de procedência. Oriente estratégia. Responda em português.",
+    "tematico":        "Análise temática: taxa de procedência, padrão dos magistrados, tendência do tribunal. Oriente estratégia. Responda em português.",
+    "classificar":     "Classifique cada tipo de decisão. Explique impacto jurídico e expectativas. Responda em português.",
 }
 
-# ─────────────────────────────────────────────
-# OpenAI
-# ─────────────────────────────────────────────
+# ── OpenAI ───────────────────────────────────────────────────────────
 def call_openai(messages: List[dict], temperature: float = 0.15) -> str:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY não configurado.")
+    if not OPENAI_API_KEY: raise RuntimeError("OPENAI_API_KEY não configurado.")
     r = requests.post(
         "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        json={"model": OPENAI_MODEL, "messages": messages, "temperature": temperature},
+        headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
+        json={"model":OPENAI_MODEL,"messages":messages,"temperature":temperature},
         timeout=90,
     )
-    try:
-        r.raise_for_status()
+    try: r.raise_for_status()
     except requests.HTTPError as e:
-        raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:600]}")
-    return (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip() or "Sem resposta."
+        raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:400]}")
+    return (r.json().get("choices") or [{}])[0].get("message",{}).get("content","").strip() or "Sem resposta."
 
-# ─────────────────────────────────────────────
-# Routes
-# ─────────────────────────────────────────────
+# ── FastAPI ───────────────────────────────────────────────────────────
+app = FastAPI(title="SM OS Chat", version="6.0.0")
+app.add_middleware(CORSMiddleware,
+    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+class SessionOut(BaseModel):
+    session_id: str; state: Dict[str,Any] = {}
+
+class ChatIn(BaseModel):
+    session_id: str; message: str; state: Optional[Dict[str,Any]] = None
+
+class ChatOut(BaseModel):
+    message: str; state: Dict[str,Any] = {}; prompt_level: Optional[str] = None
+
+def auth401(k): 
+    if DEMO_KEY and k != DEMO_KEY: raise HTTPException(status_code=401,detail="Não autorizado")
+
+def sess(sid: str) -> dict:
+    return SESSIONS.setdefault(sid,{"messages":[],"uploaded_contexts":[],
+        "last_process":None,"last_process_numero":None,"last_alias":None})
+
+def compact(t: str, lim: int = 6000) -> str: return (t or "").strip()[:lim]
+
+def extract_text(file: UploadFile, data: bytes) -> str:
+    fn = (file.filename or "").lower()
+    if fn.endswith((".txt",".md")): return data.decode("utf-8",errors="ignore")
+    if fn.endswith(".pdf") and PdfReader:
+        try: return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages[:40]).strip()
+        except: return ""
+    if fn.endswith(".docx") and DocxDocument:
+        try: return "\n".join(p.text for p in DocxDocument(io.BytesIO(data)).paragraphs if p.text).strip()
+        except: return ""
+    return ""
+
 @app.get("/ping")
-def ping():
-    return {"ok": True}
+def ping(): return {"ok":True}
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True, "version": "5.0.0", "model": OPENAI_MODEL,
-        "os_61_loaded": bool(OS_6_1_PROMPT),
-        "datajud": {"enabled": DATAJUD_ENABLED, "tribunais_suportados": len(ALIAS_MAP)},
-    }
+    return {"ok":True,"version":"6.0.0","model":OPENAI_MODEL,
+            "os_61_loaded":bool(OS_6_1_PROMPT),
+            "datajud":{"enabled":DATAJUD_ENABLED,"alias":DATAJUD_DEFAULT_ALIAS},
+            "mni":{"enabled":MNI_ENABLED,"url":MNI_BASE_URL if MNI_ENABLED else "desabilitado"},
+            "tribunais":len(ALIAS_MAP)}
 
 @app.get("/tribunais")
-def listar_tribunais():
-    """Lista todos os tribunais suportados."""
-    return {"tribunais": [
-        {"alias": v, "nome": alias_para_nome(v), "chave_cnj": k}
-        for k, v in sorted(ALIAS_MAP.items())
-    ]}
+def tribunais():
+    return {"tribunais":[{"alias":v,"nome":alias_nome(v),"chave_cnj":k} for k,v in sorted(ALIAS_MAP.items())]}
 
-@app.post("/session/new", response_model=SessionOut)
-def session_new(x_demo_key: Optional[str] = Header(default=None)):
-    auth_or_401(x_demo_key)
+@app.post("/session/new",response_model=SessionOut)
+def session_new(x_demo_key: Optional[str]=Header(default=None)):
+    auth401(x_demo_key)
     sid = str(uuid.uuid4())
-    SESSIONS[sid] = {"messages": [], "uploaded_contexts": [],
-                     "last_process": None, "last_process_numero": None, "last_alias": None}
-    return SessionOut(session_id=sid, state={})
+    SESSIONS[sid] = {"messages":[],"uploaded_contexts":[],"last_process":None,"last_process_numero":None,"last_alias":None}
+    return SessionOut(session_id=sid,state={})
 
 @app.post("/upload")
-async def upload(session_id: str = Form(...), file: UploadFile = File(...),
-                 x_demo_key: Optional[str] = Header(default=None)):
-    auth_or_401(x_demo_key)
-    session = get_session(session_id)
-    data = await file.read()
-    text = compact_text(extract_text_from_upload(file, data), 12000)
-    session["uploaded_contexts"].append({"filename": file.filename, "text": text})
-    return {"ok": True, "message": f"Arquivo '{file.filename}' anexado.", "filename": file.filename}
+async def upload(session_id: str=Form(...),file: UploadFile=File(...),x_demo_key: Optional[str]=Header(default=None)):
+    auth401(x_demo_key)
+    s = sess(session_id); data = await file.read()
+    s["uploaded_contexts"].append({"filename":file.filename,"text":compact(extract_text(file,data),12000)})
+    return {"ok":True,"message":f"Arquivo '{file.filename}' anexado.","filename":file.filename}
 
-@app.post("/chat", response_model=ChatOut)
-def chat_endpoint(payload: ChatIn, x_demo_key: Optional[str] = Header(default=None)):
-    auth_or_401(x_demo_key)
-    session = get_session(payload.session_id)
+@app.post("/chat",response_model=ChatOut)
+def chat(payload: ChatIn, x_demo_key: Optional[str]=Header(default=None)):
+    auth401(x_demo_key)
+    s       = sess(payload.session_id)
     message = (payload.message or "").strip()
     state   = payload.state or {}
 
-    session["messages"].append({"role": "user", "content": message})
-    session["messages"] = session["messages"][-20:]
+    s["messages"].append({"role":"user","content":message})
+    s["messages"] = s["messages"][-20:]
 
-    # ── 1. Detectar processo e tribunal ───────────────────────────────
-    numbers = detect_process_numbers(message)
+    numbers  = detect_numbers(message)
+    has_proc = bool(numbers) or bool(s.get("last_process_numero"))
+    plevel   = classify_prompt(message, has_proc)
 
-    if DATAJUD_ENABLED and (numbers or (
-        session.get("last_process_numero") and
-        any(k in message.lower() for k in
-            INTENT_MAGISTRADO + INTENT_BANCO_DECISOES + INTENT_TEMATICO +
-            INTENT_CLASSIFICAR + INTENT_PROCESS_FULL + ["processo","andamento"])
-    )):
-        # Resolver número e alias
-        numero = numbers[0] if numbers else session.get("last_process_numero")
+    # ── Rota processo ────────────────────────────────────────────────
+    if DATAJUD_ENABLED and (
+        numbers or (s.get("last_process_numero") and
+            any(k in message.lower() for k in
+                INT_FULL+INT_MAG+INT_PART+INT_BANCO+INT_TEM+INT_CL+["processo","andamento","resumo","partes"]))
+    ):
+        numero = numbers[0] if numbers else s.get("last_process_numero")
         intent = detect_intent(message)
-
-        # Prioridade: (1) inferido do número CNJ, (2) mencionado na mensagem, (3) sessão anterior, (4) default
-        alias = (
-            (infer_alias_from_cnj(numero) if numero else None)
-            or detect_tribunal_from_message(message)
-            or session.get("last_alias")
-            or DATAJUD_DEFAULT_ALIAS
-        )
+        alias  = (infer_alias(numero) if numero else None) or trib_from_msg(message) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS
 
         if numero:
             try:
-                raw   = DATAJUD.get_process(numero, alias)
-                items = DATAJUD.extract_sources(raw)
+                raw   = DJ.get_process(numero, alias)
+                items = DJ.sources(raw)
 
                 if not items:
-                    # Tenta inferir e informar o tribunal consultado
-                    tribunal_tentado = alias_para_nome(alias)
-                    reply = (
-                        f"Não encontrei o processo **{numero}** no **{tribunal_tentado}**.\n\n"
-                        f"Se o processo for de outro tribunal, informe qual. Por exemplo:\n"
-                        f'> *"Processo {numero} no TRT3"* ou *"no TJSP"*'
-                    )
-                    session["messages"].append({"role": "assistant", "content": reply})
-                    return ChatOut(message=reply, state=state)
+                    tn    = alias_nome(alias)
+                    reply = (f"Não encontrei o processo **{numero}** no **{tn}**.\n\n"
+                             f"Se for de outro tribunal, informe qual. "
+                             f'Exemplo: *"Processo {numero} no TRT3"*')
+                    s["messages"].append({"role":"assistant","content":reply})
+                    return ChatOut(message=reply,state=state,prompt_level="direto")
 
-                proc = DATAJUD.normalize(items[0])
-                session["last_process"]         = proc
-                session["last_process_numero"]  = numero
-                session["last_alias"]           = alias
+                proc = DJ.normalize(items[0])
+                proc = enrich_with_mni(proc, numero)
+                s["last_process"] = proc
+                s["last_process_numero"] = numero
+                s["last_alias"] = alias
 
-                # ── Montar contexto conforme intent ────────────────
+                extra = ""
                 if intent == "banco_decisoes":
-                    orgao   = proc["orgao_julgador"] or ""
-                    assunto = (proc["assuntos"] or [""])[0]
-                    assunto_cod = (proc["assuntos_codigos"] or [None])[0]
-                    must = [{"match": {"orgaoJulgador.nome": orgao}}]
-                    if assunto_cod:
-                        must.append({"match": {"assuntos.codigo": assunto_cod}})
+                    orgao = proc.get("orgao_julgador") or ""
+                    ast   = (proc.get("assuntos") or [""])[0]
+                    ac    = (proc.get("assuntos_codigos") or [None])[0]
+                    must  = [{"match":{"orgaoJulgador.nome":orgao}}]
+                    if ac: must.append({"match":{"assuntos.codigo":ac}})
                     try:
-                        r2  = DATAJUD.search(alias, {"bool": {"must": must}}, size=8)
-                        s2  = [f for f in DATAJUD.extract_sources(r2)
-                               if normalize_process_number(f.get("numeroProcesso","")) != normalize_process_number(numero)][:6]
-                        context = ctx_resumo(proc, alias) + "\n\n" + ctx_banco(s2, orgao, assunto)
-                    except Exception:
-                        context = ctx_resumo(proc, alias)
-
+                        r2 = DJ.search(alias,{"bool":{"must":must}},size=8)
+                        s2 = [f for f in DJ.sources(r2) if norm_num(f.get("numeroProcesso",""))!=norm_num(numero)][:6]
+                        extra = ctx_banco(s2, orgao, ast)
+                    except: pass
                 elif intent == "tematico":
                     ml = message.lower()
-                    if "periculosidade" in ml:
-                        codigos, tema = ASSUNTOS_PERICULOSIDADE, "Adicional de Periculosidade"
-                    elif "insalubridade" in ml:
-                        codigos, tema = ASSUNTOS_INSALUBRIDADE, "Adicional de Insalubridade"
-                    else:
-                        codigos, tema = ASSUNTOS_HORAS_EXTRAS, "Horas Extras"
+                    codigos,tema = ((ASS_PERI,"Adicional de Periculosidade") if "periculosidade" in ml else
+                                   (ASS_INS,"Adicional de Insalubridade") if "insalubridade" in ml else
+                                   (ASS_HE,"Horas Extras"))
                     try:
-                        should = [{"match": {"assuntos.codigo": c}} for c in codigos]
-                        r2  = DATAJUD.search(alias, {"bool": {"should": should, "minimum_should_match": 1}}, size=12)
-                        s2  = DATAJUD.extract_sources(r2)
-                        context = ctx_resumo(proc, alias) + "\n\n" + ctx_tematico(s2, tema)
-                    except Exception:
-                        context = ctx_resumo(proc, alias)
+                        sh = [{"match":{"assuntos.codigo":c}} for c in codigos]
+                        r2 = DJ.search(alias,{"bool":{"should":sh,"minimum_should_match":1}},size=12)
+                        extra = ctx_tematico(DJ.sources(r2), tema)
+                    except: pass
 
-                elif intent == "andamento_completo":
-                    context = ctx_completo(proc, alias)
-                elif intent == "magistrado":
-                    context = ctx_magistrado(proc)
-                elif intent == "classificar":
-                    context = ctx_classificacao(proc)
-                else:
-                    context = ctx_resumo(proc, alias)
+                ctx      = build_ctx(proc, intent, alias) + extra
+                eff_lvl  = "os61" if plevel=="os61" else "juridico"
+                instruc  = INSTRUCAO.get(intent, INSTRUCAO["resumo"])
+                sys_p    = build_system_prompt(eff_lvl, ctx)
+                msgs     = [{"role":"system","content":sys_p}]
+                for item in s["messages"][-6:]:
+                    if item["role"] in {"user","assistant"}: msgs.append(item)
+                msgs[-1] = {"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc}]"}
 
-                system_prompt = build_system_prompt(extra_context=context)
-                msgs = [{"role": "system", "content": system_prompt}]
-                for item in session["messages"][-6:]:
-                    if item["role"] in {"user", "assistant"}:
-                        msgs.append(item)
-                instrucao = INSTRUCAO.get(intent, INSTRUCAO["resumo"])
-                msgs[-1] = {"role": "user", "content": f"{message}\n\n[INSTRUÇÃO: {instrucao}]"}
-
-                reply = call_openai(msgs, temperature=0.15)
-                session["messages"].append({"role": "assistant", "content": reply})
-                return ChatOut(message=reply, state=state)
+                reply = call_openai(msgs, 0.15)
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level=eff_lvl)
 
             except DataJudError as e:
-                reply = f"Erro ao consultar o DataJud: {str(e)}"
-                session["messages"].append({"role": "assistant", "content": reply})
-                return ChatOut(message=reply, state=state)
+                reply = f"Erro DataJud: {str(e)}"
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level="erro")
 
-    # ── 2. Chat jurídico livre com OS 6.1 ────────────────────────────
-    uploaded_ctx = "\n\n".join(
-        f"[{x.get('filename')}]\n{compact_text(x.get('text') or '', 4000)}"
-        for x in session.get("uploaded_contexts", [])[-3:] if x.get("text")
+    # ── Chat livre ───────────────────────────────────────────────────
+    up_ctx = "\n\n".join(
+        f"[{x.get('filename')}]\n{compact(x.get('text') or '',4000)}"
+        for x in s.get("uploaded_contexts",[])[-3:] if x.get("text")
     ).strip()
 
-    system_prompt = build_system_prompt(extra_context=uploaded_ctx)
-    msgs = [{"role": "system", "content": system_prompt}]
-    for item in session["messages"][-12:]:
-        if item["role"] in {"user", "assistant"}:
-            msgs.append(item)
+    sys_p = build_system_prompt(plevel, up_ctx)
+    msgs  = [{"role":"system","content":sys_p}]
+    for item in s["messages"][-12:]:
+        if item["role"] in {"user","assistant"}: msgs.append(item)
+
+    temp = 0.15 if plevel=="os61" else (0.2 if plevel=="juridico" else 0.35)
     try:
-        reply = call_openai(msgs, temperature=0.2)
+        reply = call_openai(msgs, temp)
     except Exception as e:
         reply = f"Erro: {str(e)}"
 
-    session["messages"].append({"role": "assistant", "content": reply})
-    session["messages"] = session["messages"][-20:]
-    return ChatOut(message=reply, state=state)
+    s["messages"].append({"role":"assistant","content":reply})
+    s["messages"] = s["messages"][-20:]
+    return ChatOut(message=reply,state=state,prompt_level=plevel)
