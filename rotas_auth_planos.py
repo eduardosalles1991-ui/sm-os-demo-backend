@@ -42,7 +42,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import (
@@ -520,9 +520,8 @@ def registrar_rotas(app: FastAPI):
                 Assinatura.status == AssinaturaStatus.ativa,
             ).count()
             por_plano[plano] = count
-        tokens_total = db.query(UsoTokens).with_entities(
-            __import__('sqlalchemy').func.sum(UsoTokens.tokens_total)
-        ).scalar() or 0
+        from sqlalchemy import func as sa_func
+        tokens_total = db.query(sa_func.sum(UsoTokens.tokens_total)).scalar() or 0
         return {
             "ok":           True,
             "total_usuarios": total_users,
