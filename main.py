@@ -1,4 +1,4 @@
-"""
+    """
 SM OS Chat — Jurimetrix v8.0
 ════════════════════════════════════════════════════════
 Backend completo: DataJud + MNI/PJe + OS 6.1 + Auth + Asaas
@@ -54,6 +54,38 @@ MNI_BASE_URL  = _e("MNI_BASE_URL","https://pje.trt2.jus.br/pje/intercomunicacao"
 MNI_USERNAME  = _e("MNI_USERNAME")
 MNI_PASSWORD  = _e("MNI_PASSWORD")
 MNI_TIMEOUT_S = int(os.getenv("MNI_TIMEOUT_S","30"))
+
+# Supabase
+SUPABASE_URL         = _e("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = _e("SUPABASE_SERVICE_KEY")
+SUPABASE_JWT_SECRET  = _e("SUPABASE_JWT_SECRET")
+
+try:
+    import supabase_client as SB
+    SUPABASE_OK = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+    if SUPABASE_OK:
+        log.info("✅ Supabase configurado.")
+    else:
+        log.warning("⚠️  Supabase: SUPABASE_URL ou SUPABASE_SERVICE_KEY faltando.")
+except Exception as _se:
+    SB = None
+    SUPABASE_OK = False
+    log.warning(f"⚠️  supabase_client não carregado: {_se}")
+
+def get_user_id_from_token(token: str):
+    if not SUPABASE_OK or not token: return None
+    try:
+        import jwt as pyjwt
+        payload = pyjwt.decode(token.replace("Bearer ","").strip(),
+                               SUPABASE_JWT_SECRET, algorithms=["HS256"],
+                               options={"verify_aud":False})
+        return payload.get("sub")
+    except Exception as e:
+        log.debug(f"Token inválido: {e}"); return None
+
+def get_user_from_request(authorization):
+    if not authorization: return None
+    return get_user_id_from_token(authorization.replace("Bearer ","").strip())
 
 # ═══════════════════════════════════════════════════════
 # ALIAS MAP — todos os tribunais brasileiros
@@ -554,6 +586,8 @@ criar_tabelas()
 registrar_rotas(app)
 log.info("✅ Auth + planos + pagamentos carregados.")
 
+
+
 # ── Sessions (in-memory) ─────────────────────────────────────────────
 SESSIONS: Dict[str,Dict[str,Any]] = {}
 
@@ -566,11 +600,13 @@ class ChatIn(BaseModel):
     session_id: str
     message: str
     state: Optional[Dict[str,Any]] = None
+    conversa_id: Optional[str] = None  # Supabase conversa ID
 
 class ChatOut(BaseModel):
     message: str
     state: Dict[str,Any] = {}
     prompt_level: Optional[str] = None
+    conversa_id: Optional[str] = None  # Supabase conversa ID
 
 class RelatorioIn(BaseModel):
     session_id: str
@@ -581,6 +617,13 @@ class RelatorioIn(BaseModel):
 def auth401(k:Optional[str]):
     if DEMO_KEY and k != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Não autorizado")
+
+def get_supabase_user(authorization:Optional[str]=Header(default=None)):
+    """Extrai e valida usuario do Supabase JWT. Retorna None se nao autenticado."""
+    if not SUPABASE_OK: return None
+    if not authorization: return None
+    token = authorization.replace("Bearer ","").strip()
+    return verify_token(token) if token else None
 
 def sess(sid:str)->dict:
     return SESSIONS.setdefault(sid,{
@@ -604,6 +647,199 @@ def extract_text(file:UploadFile,data:bytes)->str:
 # ═══════════════════════════════════════════════════════
 # ROUTES
 # ═══════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════
+# SUPABASE ROUTES — Conversas & Mensagens
+# ═══════════════════════════════════════════════════════
+
+class ConversaIn(BaseModel):
+    titulo: str = "Nova conversa"
+    session_id: Optional[str] = None
+    tribunal: Optional[str] = None
+    processo_numero: Optional[str] = None
+
+class MensagemIn(BaseModel):
+    conversa_id: str
+    role: str
+    conteudo: str
+    tokens_input: int = 0
+    tokens_output: int = 0
+    prompt_level: Optional[str] = None
+
+@app.get("/conversas")
+def listar_conversas(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 50,
+):
+    """Lista conversas do usuário autenticado via Supabase Auth."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        return {"ok": False, "conversas": [], "error": "Não autenticado ou Supabase não configurado"}
+    try:
+        convs = SB.listar_conversas(user_id, limit=limit)
+        return {"ok": True, "conversas": convs}
+    except Exception as e:
+        return {"ok": False, "conversas": [], "error": str(e)}
+
+@app.post("/conversas")
+def criar_conversa(
+    payload: ConversaIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Cria nova conversa no Supabase."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        conv = SB.criar_conversa(
+            user_id=user_id,
+            titulo=payload.titulo,
+            session_id=payload.session_id,
+            tribunal=payload.tribunal,
+            processo=payload.processo_numero,
+        )
+        return {"ok": True, "conversa": conv}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/conversas/{conversa_id}/mensagens")
+def get_mensagens(
+    conversa_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Retorna mensagens de uma conversa."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        msgs = SB.listar_mensagens(conversa_id)
+        return {"ok": True, "mensagens": msgs}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/conversas/mensagem")
+def salvar_mensagem(
+    payload: MensagemIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Salva uma mensagem no Supabase."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        msg = SB.salvar_mensagem(
+            conversa_id=payload.conversa_id,
+            role=payload.role,
+            conteudo=payload.conteudo,
+            tokens_input=payload.tokens_input,
+            tokens_output=payload.tokens_output,
+            prompt_level=payload.prompt_level,
+        )
+        return {"ok": True, "mensagem": msg}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.delete("/conversas/{conversa_id}")
+def deletar_conversa(
+    conversa_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Deleta conversa e suas mensagens."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        SB.deletar_conversa(conversa_id, user_id)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/me")
+def get_me(authorization: Optional[str] = Header(default=None)):
+    """Retorna perfil + assinatura do usuário autenticado via Supabase."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        perfil    = SB.get_perfil(user_id) or {}
+        assinatura = SB.get_assinatura_ativa(user_id) or {}
+        return {"ok": True, "perfil": perfil, "assinatura": assinatura}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ─────────────────────────────────────────────────────────────────
+# ROTAS DE CONVERSAS (Supabase)
+# ─────────────────────────────────────────────────────────────────
+class ConvIn(BaseModel):
+    titulo: str
+    session_id: Optional[str] = None
+    numero_processo: Optional[str] = None
+    tribunal: Optional[str] = None
+
+class MsgIn(BaseModel):
+    role: str
+    content: str
+    tokens: int = 0
+
+@app.get("/conversas")
+def get_conversas(authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "items": [], "error": "Supabase nao configurado."}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    convs = listar_conversas(user["id"], limit=60)
+    return {"ok": True, "items": convs}
+
+@app.post("/conversas")
+def post_conversa(payload: ConvIn,
+                  authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "error": "Supabase nao configurado."}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    conv = criar_conversa(user["id"], payload.titulo,
+                          payload.session_id, payload.numero_processo, payload.tribunal)
+    return {"ok": True, "conversa": conv}
+
+@app.get("/conversas/{conv_id}/mensagens")
+def get_mensagens(conv_id: str,
+                  authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "items": []}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    msgs = listar_mensagens(conv_id)
+    return {"ok": True, "items": msgs}
+
+@app.delete("/conversas/{conv_id}")
+def del_conversa(conv_id: str,
+                 authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    deletar_conversa(conv_id, user["id"])
+    return {"ok": True}
+
+@app.get("/me")
+def get_me(authorization: Optional[str] = Header(default=None)):
+    """Retorna perfil + plano do usuario autenticado via Supabase."""
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase nao configurado.")
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token invalido.")
+    perfil = get_perfil(user["id"])
+    if not perfil:
+        raise HTTPException(404, "Perfil nao encontrado.")
+    update_ultimo_acesso(user["id"])
+    return {"ok": True, "usuario": perfil}
+
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
 
@@ -616,6 +852,12 @@ def health():
         "mni":{"enabled":MNI_ENABLED},
         "pdf":PDF_AVAILABLE,
         "tribunais":len(ALIAS_MAP),
+        "supabase":{
+            "ok": SUPABASE_OK,
+            "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
+            "service_key": "✅ configurado" if os.getenv("SUPABASE_SERVICE_KEY") else "❌ faltando",
+            "jwt_secret":  "✅ configurado" if os.getenv("SUPABASE_JWT_SECRET") else "❌ faltando",
+        },
     }
 
 @app.get("/tribunais")
@@ -784,3 +1026,5 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
     s["messages"].append({"role":"assistant","content":reply})
     s["messages"]=s["messages"][-20:]
     return ChatOut(message=reply,state=state,prompt_level=plevel)
+
+    
