@@ -747,14 +747,18 @@ def deletar_conversa(
 @app.get("/me")
 def get_me(authorization: Optional[str] = Header(default=None)):
     """Retorna perfil + assinatura do usuário autenticado via Supabase."""
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado.")
     user_id = get_user_from_request(authorization)
-    if not user_id or not SUPABASE_OK:
-        raise HTTPException(401, "Não autenticado")
+    if not user_id:
+        log.warning(f"[/me] Token inválido — auth header: {str(authorization)[:40] if authorization else 'None'}")
+        raise HTTPException(401, "Token inválido ou expirado.")
     try:
-        perfil    = SB.get_perfil(user_id) or {}
-        assinatura = SB.get_assinatura_ativa(user_id) or {}
+        perfil     = SB.DB.get_perfil(user_id) or {}
+        assinatura = SB.DB.get_assinatura_ativa(user_id) or {}
         return {"ok": True, "perfil": perfil, "assinatura": assinatura}
     except Exception as e:
+        log.error(f"[/me] erro: {e}")
         raise HTTPException(500, str(e))
 
 
@@ -816,19 +820,7 @@ def del_conversa(conv_id: str,
     deletar_conversa(conv_id, user["id"])
     return {"ok": True}
 
-@app.get("/me")
-def get_me(authorization: Optional[str] = Header(default=None)):
-    """Retorna perfil + plano do usuario autenticado via Supabase."""
-    if not SUPABASE_OK:
-        raise HTTPException(503, "Supabase nao configurado.")
-    user = get_supabase_user(authorization)
-    if not user:
-        raise HTTPException(401, "Token invalido.")
-    perfil = get_perfil(user["id"])
-    if not perfil:
-        raise HTTPException(404, "Perfil nao encontrado.")
-    update_ultimo_acesso(user["id"])
-    return {"ok": True, "usuario": perfil}
+# /me route — see implementation above
 
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
