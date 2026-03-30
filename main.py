@@ -1,4 +1,4 @@
-    """
+"""
 SM OS Chat — Jurimetrix v8.0
 ════════════════════════════════════════════════════════
 Backend completo: DataJud + MNI/PJe + OS 6.1 + Auth + Asaas
@@ -1026,5 +1026,3 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
     s["messages"].append({"role":"assistant","content":reply})
     s["messages"]=s["messages"][-20:]
     return ChatOut(message=reply,state=state,prompt_level=plevel)
-
-    
