@@ -548,14 +548,11 @@ app.add_middleware(CORSMiddleware,
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ── Integrar auth + planos + pagamentos ──────────────────────────────
-try:
-    from database import criar_tabelas
-    from rotas_auth_planos import registrar_rotas
-    criar_tabelas()
-    registrar_rotas(app)
-    log.info("✅ Auth + planos + pagamentos carregados.")
-except Exception as _e:
-    log.warning(f"⚠️  Auth/planos não carregados: {_e}")
+from database import criar_tabelas
+from rotas_auth_planos import registrar_rotas
+criar_tabelas()
+registrar_rotas(app)
+log.info("✅ Auth + planos + pagamentos carregados.")
 
 # ── Sessions (in-memory) ─────────────────────────────────────────────
 SESSIONS: Dict[str,Dict[str,Any]] = {}
