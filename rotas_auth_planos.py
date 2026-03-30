@@ -163,7 +163,7 @@ def registrar_rotas(app: FastAPI):
     # ─────────────────────────────────────────────────────────
     # PLANOS
     # ─────────────────────────────────────────────────────────
-    @app.get("https://jurimetrix.com/planos", tags=["planos"])
+    @app.get("/planos", tags=["planos"])
     def listar_planos():
         """Lista todos os planos disponíveis com preços e features."""
         result = []
