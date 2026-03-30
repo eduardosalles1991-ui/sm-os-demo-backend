@@ -62,7 +62,7 @@ SUPABASE_JWT_SECRET  = _e("SUPABASE_JWT_SECRET")
 
 try:
     import supabase_client as SB
-    SUPABASE_OK = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+    SUPABASE_OK = SB.is_configured()
     if SUPABASE_OK:
         log.info("✅ Supabase configurado.")
     else:
@@ -72,20 +72,10 @@ except Exception as _se:
     SUPABASE_OK = False
     log.warning(f"⚠️  supabase_client não carregado: {_se}")
 
-def get_user_id_from_token(token: str):
-    if not SUPABASE_OK or not token: return None
-    try:
-        import jwt as pyjwt
-        payload = pyjwt.decode(token.replace("Bearer ","").strip(),
-                               SUPABASE_JWT_SECRET, algorithms=["HS256"],
-                               options={"verify_aud":False})
-        return payload.get("sub")
-    except Exception as e:
-        log.debug(f"Token inválido: {e}"); return None
-
-def get_user_from_request(authorization):
-    if not authorization: return None
-    return get_user_id_from_token(authorization.replace("Bearer ","").strip())
+def get_user_from_request(authorization: Optional[str]) -> Optional[str]:
+    """Extrai user_id do Bearer token Supabase."""
+    if not SUPABASE_OK or not authorization: return None
+    return SB.get_user_id_from_token(authorization)
 
 # ═══════════════════════════════════════════════════════
 # ALIAS MAP — todos os tribunais brasileiros
