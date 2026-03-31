@@ -8,3 +8,6 @@ reportlab
 sqlalchemy
 passlib[bcrypt]
 python-jose[cryptography]
+PyJWT
+
+aiofiles
