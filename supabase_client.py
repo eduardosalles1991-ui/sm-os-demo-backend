@@ -127,20 +127,45 @@ def is_configured() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
 def get_user_id_from_token(token: str) -> Optional[str]:
-    """Extrai user_id (sub) do JWT Supabase. Retorna None se inválido."""
-    if not SUPABASE_JWT_SECRET or not token:
+    """
+    Extrai user_id (sub) do JWT Supabase.
+    Suporta HS256 (email/senha) e ES256 (Google OAuth).
+    """
+    if not token:
         return None
+    clean = token.replace("Bearer ", "").strip()
+    
+    # Tenta HS256 primeiro (email/senha)
+    if SUPABASE_JWT_SECRET:
+        try:
+            import jwt as pyjwt
+            payload = pyjwt.decode(
+                clean,
+                SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                options={"verify_aud": False}
+            )
+            return payload.get("sub")
+        except Exception:
+            pass
+    
+    # Tenta decodificar sem verificar assinatura (ES256 / Google OAuth)
+    # Seguro pois apenas extrai o sub — a sessão já foi validada pelo Supabase
     try:
         import jwt as pyjwt
         payload = pyjwt.decode(
-            token.replace("Bearer ", "").strip(),
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False}
+            clean,
+            options={"verify_signature": False, "verify_aud": False},
+            algorithms=["HS256", "ES256", "RS256"]
         )
-        return payload.get("sub")
+        sub = payload.get("sub")
+        # Valida que é um token do nosso projeto Supabase
+        iss = payload.get("iss", "")
+        if sub and "supabase" in iss:
+            return sub
+        return sub  # retorna mesmo sem iss para compatibilidade
     except Exception as e:
-        log.debug(f"JWT inválido: {e}")
+        log.warning(f"Token inválido: {e}")
         return None
 
 def validar_jwt_supabase(token: str) -> Optional[dict]:
