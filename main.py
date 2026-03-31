@@ -150,6 +150,58 @@ def trib_from_msg(msg:str)->Optional[str]:
 # ═══════════════════════════════════════════════════════
 # SMART PROMPT ROUTER — 5 níveis
 # ═══════════════════════════════════════════════════════
+# Escavador intent triggers
+ESC_PROC_TRIGGERS = [
+    "processos de","processos do","processos da",
+    "todos os processos","quantos processos",
+    "histórico processual de","listar processos de",
+]
+ESC_PESSOA_TRIGGERS = [
+    "dados de","informações sobre","quem é","cpf de",
+    "endereço de","telefone de","sócio de",
+    "enriquecer dados","dados cadastrais",
+]
+ESC_EMPRESA_TRIGGERS = [
+    "cnpj","empresa","razão social","sócios da empresa",
+    "dados da empresa","situação cadastral",
+]
+ESC_ADV_TRIGGERS = [
+    "advogado","oab","carteira oab","escritório de",
+    "processos do advogado","quem é o advogado",
+]
+
+def detect_escavador_intent(msg: str) -> Optional[str]:
+    """Detecta se a mensagem pede dados do Escavador. Retorna tipo ou None."""
+    if not ESCAVADOR_OK:
+        return None
+    m = msg.lower()
+    if any(t in m for t in ESC_ADV_TRIGGERS):   return "advogado"
+    if any(t in m for t in ESC_PROC_TRIGGERS):  return "processos"
+    if any(t in m for t in ESC_EMPRESA_TRIGGERS):return "empresa"
+    if any(t in m for t in ESC_PESSOA_TRIGGERS): return "pessoa"
+    return None
+
+def extract_escavador_query(msg: str, tipo: str) -> dict:
+    """Extrai nome/CPF/CNPJ/OAB da mensagem para busca no Escavador."""
+    import re
+    q = {"tipo": tipo}
+    # CPF pattern
+    cpf = re.search(r'\d{3}\.?\d{3}\.?\d{3}-?\d{2}', msg)
+    if cpf: q["cpf"] = cpf.group()
+    # CNPJ pattern
+    cnpj = re.search(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', msg)
+    if cnpj: q["cnpj"] = cnpj.group()
+    # OAB pattern
+    oab = re.search(r'OAB[/\s]*([A-Z]{2}[/\s]*)?\d+', msg, re.IGNORECASE)
+    if oab: q["oab"] = oab.group()
+    # Nome — texto entre aspas ou após preposição
+    nome_quotes = None  # busca por nome entre aspas simplificada
+    nome_prep   = re.search(r'(?:de|do|da|sobre|para)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+)+)', msg)
+    if nome_quotes: q["nome"] = nome_quotes.group(1)
+    elif nome_prep: q["nome"] = nome_prep.group(1)
+    return q
+
+
 TRIVIAL_EXACT = {
     "olá","oi","ola","bom dia","boa tarde","boa noite","tudo bem","tudo bom",
     "obrigado","obrigada","valeu","ok","certo","entendi","show","perfeito",
@@ -569,6 +621,16 @@ app.add_middleware(CORSMiddleware,
     allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# ── Escavador ────────────────────────────────────────────────────────
+try:
+    import escavador_client as ESC
+    ESCAVADOR_OK = ESC.is_configured()
+    log.info(f"{'✅' if ESCAVADOR_OK else '⚠️ '} Escavador {'configurado' if ESCAVADOR_OK else 'não configurado (ESCAVADOR_API_KEY faltando)'}")
+except Exception as _esc_e:
+    ESC = None
+    ESCAVADOR_OK = False
+    log.warning(f"⚠️  escavador_client não carregado: {_esc_e}")
+
 # ── Integrar auth + planos + pagamentos ──────────────────────────────
 from database import criar_tabelas
 from rotas_auth_planos import registrar_rotas
@@ -825,6 +887,16 @@ def del_conversa(conv_id: str,
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
 
+@app.get("/painel")
+def serve_painel():
+    """Serve o painel do cliente como página standalone."""
+    from fastapi.responses import FileResponse, HTMLResponse
+    import os
+    path = os.path.join(os.path.dirname(__file__), "static", "painel.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return HTMLResponse("<h1>painel.html não encontrado em /static/</h1>", status_code=404)
+
 @app.get("/health")
 def health():
     return {
@@ -834,6 +906,7 @@ def health():
         "mni":{"enabled":MNI_ENABLED},
         "pdf":PDF_AVAILABLE,
         "tribunais":len(ALIAS_MAP),
+        "escavador":{"ok":ESCAVADOR_OK,"configured":bool(ESCAVADOR_API_KEY)},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
@@ -918,6 +991,41 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
     numbers=detect_numbers(message)
     has_proc=bool(numbers) or bool(s.get("last_process_numero"))
     plevel=classify_prompt(message,has_proc)
+
+    # ── Escavador — busca por pessoa/empresa/advogado ───────────────
+    esc_tipo = detect_escavador_intent(message)
+    if esc_tipo and ESCAVADOR_OK:
+        try:
+            q = extract_escavador_query(message, esc_tipo)
+            esc_result = None
+            if esc_tipo == "processos":
+                esc_result = ESC.ESCAVADOR.processos_por_envolvido(
+                    nome=q.get("nome",""), cpf_cnpj=q.get("cpf") or q.get("cnpj")
+                )
+            elif esc_tipo == "pessoa":
+                esc_result = ESC.ESCAVADOR.buscar_pessoa(
+                    nome=q.get("nome"), cpf=q.get("cpf")
+                )
+            elif esc_tipo == "empresa":
+                esc_result = ESC.ESCAVADOR.buscar_empresa(
+                    nome=q.get("nome"), cnpj=q.get("cnpj")
+                )
+            elif esc_tipo == "advogado":
+                esc_result = ESC.ESCAVADOR.buscar_advogado(
+                    nome=q.get("nome"), oab=q.get("oab")
+                )
+            if esc_result:
+                esc_ctx = ESC.ESCAVADOR.build_context(esc_result, esc_tipo)
+                sys_p = build_system_prompt("juridico", esc_ctx)
+                msgs = [{"role":"system","content":sys_p}]
+                for item in s["messages"][-6:]:
+                    if item["role"] in {"user","assistant"}: msgs.append(item)
+                msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados do Escavador acima para responder com precisão. Responda em português.]"}
+                reply = call_openai(msgs, 0.15)
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level="juridico")
+        except Exception as _esc_err:
+            log.warning(f"Escavador erro: {_esc_err}")
 
     # ── Rota processo (DataJud + MNI) ────────────────────────────────
     if DATAJUD_ENABLED and (
