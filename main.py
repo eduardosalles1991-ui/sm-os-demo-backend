@@ -892,10 +892,25 @@ def serve_painel():
     """Serve o painel do cliente como página standalone."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
-    path = os.path.join(os.path.dirname(__file__), "static", "painel.html")
-    if os.path.exists(path):
-        return FileResponse(path, media_type="text/html")
-    return HTMLResponse("<h1>painel.html não encontrado em /static/</h1>", status_code=404)
+    # Tenta múltiplos caminhos possíveis no Render
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "painel.html"),
+        os.path.join(os.getcwd(), "static", "painel.html"),
+        "/opt/render/project/src/static/painel.html",
+        "static/painel.html",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            log.info(f"Serving painel from: {path}")
+            return FileResponse(path, media_type="text/html")
+    # Debug: show what we can find
+    cwd = os.getcwd()
+    files = []
+    for root, dirs, fs in os.walk(cwd):
+        for f in fs:
+            if f.endswith(".html"):
+                files.append(os.path.join(root, f))
+    return HTMLResponse(f"<h1>404</h1><p>cwd={cwd}</p><p>html files: {files}</p>", status_code=404)
 
 @app.get("/health")
 def health():
