@@ -618,8 +618,16 @@ def call_openai(messages:List[dict],temperature:float=0.15)->str:
 # ═══════════════════════════════════════════════════════
 app = FastAPI(title="Jurimetrix OS Chat", version="8.0.0")
 app.add_middleware(CORSMiddleware,
-    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost"],
+    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Serve static files
+import os as _os
+from fastapi.staticfiles import StaticFiles
+_static_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+    log.info(f"✅ Static files served from {_static_dir}")
 
 # ── Escavador ────────────────────────────────────────────────────────
 try:
@@ -892,25 +900,17 @@ def serve_painel():
     """Serve o painel do cliente como página standalone."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
-    # Tenta múltiplos caminhos possíveis no Render
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "painel.html"),
-        os.path.join(os.getcwd(), "static", "painel.html"),
-        "/opt/render/project/src/static/painel.html",
-        "static/painel.html",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            log.info(f"Serving painel from: {path}")
-            return FileResponse(path, media_type="text/html")
-    # Debug: show what we can find
-    cwd = os.getcwd()
-    files = []
-    for root, dirs, fs in os.walk(cwd):
-        for f in fs:
-            if f.endswith(".html"):
-                files.append(os.path.join(root, f))
-    return HTMLResponse(f"<h1>404</h1><p>cwd={cwd}</p><p>html files: {files}</p>", status_code=404)
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "static", "painel.html")
+    log.info(f"[/painel] looking for: {path}, exists: {os.path.exists(path)}, cwd: {os.getcwd()}")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    # List all files for debug
+    all_files = []
+    for root, dirs, files in os.walk(base):
+        for f in files:
+            all_files.append(os.path.relpath(os.path.join(root, f), base))
+    return HTMLResponse(f"<pre>base={base}\nfiles={all_files}</pre>", status_code=404)
 
 @app.get("/health")
 def health():
