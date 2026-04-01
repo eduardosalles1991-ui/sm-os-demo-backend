@@ -60,6 +60,10 @@ SUPABASE_URL         = _e("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = _e("SUPABASE_SERVICE_KEY")
 SUPABASE_JWT_SECRET  = _e("SUPABASE_JWT_SECRET")
 
+# Mercado Pago
+MP_ACCESS_TOKEN = _e("MP_ACCESS_TOKEN")
+MP_PUBLIC_KEY   = _e("MP_PUBLIC_KEY")
+
 try:
     import supabase_client as SB
     SUPABASE_OK = SB.is_configured()
@@ -645,6 +649,86 @@ from rotas_auth_planos import registrar_rotas
 criar_tabelas()
 registrar_rotas(app)
 log.info("✅ Auth + planos + pagamentos carregados.")
+
+# ── Mercado Pago ──────────────────────────────────────────────────────
+try:
+    import mp_client as MP
+    MP_OK = MP.is_configured()
+    if MP_OK:
+        log.info("✅ Mercado Pago configurado.")
+    else:
+        log.warning("⚠️  Mercado Pago: MP_ACCESS_TOKEN não configurado.")
+except Exception as _mp_e:
+    MP = None
+    MP_OK = False
+    log.warning(f"⚠️  mp_client não carregado: {_mp_e}")
+
+class MPPreferenciaIn(BaseModel):
+    plano: str
+    email: str
+
+class MPWebhookIn(BaseModel):
+    type: Optional[str] = None
+    action: Optional[str] = None
+    data: Optional[Dict[str,Any]] = None
+
+@app.post("/mp/preferencia")
+async def mp_criar_preferencia(body: MPPreferenciaIn, authorization: Optional[str] = Header(default=None)):
+    """Cria preferência de pagamento Mercado Pago."""
+    if not MP_OK:
+        raise HTTPException(503, "Mercado Pago não configurado")
+    user_id = get_user_from_request(authorization) if authorization else None
+    uid = user_id or "anon"
+    try:
+        result = MP.criar_preferencia(
+            plano_slug=body.plano,
+            user_id=uid,
+            user_email=body.email,
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        log.error(f"[MP] Erro criar preferência: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/mp/public-key")
+def mp_public_key():
+    """Retorna a public key do Mercado Pago."""
+    return {"public_key": MP_PUBLIC_KEY or ""}
+
+@app.post("/mp/webhook")
+async def mp_webhook(body: dict):
+    """Recebe notificações do Mercado Pago e atualiza plano do usuário."""
+    log.info(f"[MP Webhook] {body}")
+    try:
+        tipo = body.get("type") or body.get("topic", "")
+        data = body.get("data", {})
+        payment_id = data.get("id") if isinstance(data, dict) else body.get("id")
+
+        if tipo == "payment" and payment_id and MP_OK:
+            pagamento = MP.verificar_pagamento(str(payment_id))
+            status = pagamento.get("status")
+            ext_ref = pagamento.get("external_reference", "")
+            
+            log.info(f"[MP Webhook] payment_id={payment_id} status={status} ext_ref={ext_ref}")
+            
+            if status == "approved" and ext_ref and "|" in ext_ref and SUPABASE_OK:
+                user_id, plano_slug = ext_ref.split("|", 1)
+                plano_info = MP.PLANOS.get(plano_slug, {})
+                tokens = plano_info.get("tokens")
+                
+                # Atualiza plano no Supabase
+                SB.atualizar_plano_usuario(
+                    user_id=user_id,
+                    plano_slug=plano_slug,
+                    tokens_mes=tokens,
+                    payment_id=str(payment_id),
+                )
+                log.info(f"[MP Webhook] ✅ Plano {plano_slug} ativado para user {user_id}")
+        
+        return {"ok": True}
+    except Exception as e:
+        log.error(f"[MP Webhook] Erro: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 
