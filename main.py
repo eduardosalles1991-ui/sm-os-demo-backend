@@ -1,187 +1,1133 @@
 """
-supabase_client.py — Cliente Supabase para o backend Render
-Usa REST API com service_role (bypassa RLS)
-
-Envs no Render:
-  SUPABASE_URL         = https://xxxx.supabase.co
-  SUPABASE_SERVICE_KEY = eyJ... (service_role key)
-  SUPABASE_JWT_SECRET  = seu_jwt_secret
+SM OS Chat — Jurimetrix v8.0
+════════════════════════════════════════════════════════
+Backend completo: DataJud + MNI/PJe + OS 6.1 + Auth + Asaas
+Domínio: https://jurimetrix.com
+════════════════════════════════════════════════════════
 """
-import os, logging
-from typing import Optional, Any
+import os, re, io, uuid, json, base64, textwrap, logging
+from typing import Any, Dict, List, Optional
 import requests
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-log = logging.getLogger("supabase")
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("smos")
 
-SUPABASE_URL         = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-SUPABASE_SERVICE_KEY = (os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
-SUPABASE_JWT_SECRET  = (os.getenv("SUPABASE_JWT_SECRET") or "").strip()
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+try:
+    from docx import Document as DocxDocument
+except Exception:
+    DocxDocument = None
+try:
+    from relatorio_pdf import build_relatorio_pdf, parse_analise_gpt
+    PDF_AVAILABLE = True
+except Exception:
+    PDF_AVAILABLE = False
 
-class SupabaseError(Exception): pass
+# ═══════════════════════════════════════════════════════
+# ENVIRONMENT
+# ═══════════════════════════════════════════════════════
+def _e(k, d=""): return (os.getenv(k) or d).strip()
 
-class SupabaseClient:
-    def _h(self, prefer=""):
-        h = {"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"}
-        if prefer: h["Prefer"] = prefer
+OPENAI_API_KEY        = _e("OPENAI_API_KEY")
+OPENAI_MODEL          = _e("OPENAI_MODEL", "gpt-4o")
+DEMO_KEY              = _e("DEMO_KEY")
+ALLOWED_ORIGIN        = _e("ALLOWED_ORIGIN", "https://jurimetrix.com")
+OS_6_1_PROMPT         = _e("OS_6_1_PROMPT")
+MANDATARIA_NOME       = _e("MANDATARIA_NOME")
+MANDATARIA_OAB        = _e("MANDATARIA_OAB")
+
+DATAJUD_ENABLED       = os.getenv("DATAJUD_ENABLED","false").lower() == "true"
+DATAJUD_BASE_URL      = _e("DATAJUD_BASE_URL","https://api-publica.datajud.cnj.jus.br").rstrip("/")
+DATAJUD_API_KEY       = _e("DATAJUD_API_KEY")
+DATAJUD_TIMEOUT_S     = int(os.getenv("DATAJUD_TIMEOUT_S","25"))
+DATAJUD_DEFAULT_ALIAS = _e("DATAJUD_DEFAULT_ALIAS","api_publica_trt2")
+DATAJUD_SORT_FIELD    = _e("DATAJUD_SORT_FIELD","dataHoraUltimaAtualizacao")
+
+MNI_ENABLED   = os.getenv("MNI_ENABLED","false").lower() == "true"
+MNI_BASE_URL  = _e("MNI_BASE_URL","https://pje.trt2.jus.br/pje/intercomunicacao")
+MNI_USERNAME  = _e("MNI_USERNAME")
+MNI_PASSWORD  = _e("MNI_PASSWORD")
+MNI_TIMEOUT_S = int(os.getenv("MNI_TIMEOUT_S","30"))
+
+# Supabase
+SUPABASE_URL         = _e("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = _e("SUPABASE_SERVICE_KEY")
+SUPABASE_JWT_SECRET  = _e("SUPABASE_JWT_SECRET")
+
+try:
+    import supabase_client as SB
+    SUPABASE_OK = SB.is_configured()
+    if SUPABASE_OK:
+        log.info("✅ Supabase configurado.")
+    else:
+        log.warning("⚠️  Supabase: SUPABASE_URL ou SUPABASE_SERVICE_KEY faltando.")
+except Exception as _se:
+    SB = None
+    SUPABASE_OK = False
+    log.warning(f"⚠️  supabase_client não carregado: {_se}")
+
+def get_user_from_request(authorization: Optional[str]) -> Optional[str]:
+    """Extrai user_id do Bearer token Supabase."""
+    if not SUPABASE_OK or not authorization: return None
+    return SB.get_user_id_from_token(authorization)
+
+# ═══════════════════════════════════════════════════════
+# ALIAS MAP — todos os tribunais brasileiros
+# ═══════════════════════════════════════════════════════
+ALIAS_MAP: Dict[str,str] = {
+    "5.00":"api_publica_tst",
+    **{f"5.{i:02d}":f"api_publica_trt{i}" for i in range(1,25)},
+    **{f"4.{i:02d}":f"api_publica_trf{i}" for i in range(1,7)},
+    "8.01":"api_publica_tjac","8.02":"api_publica_tjal","8.03":"api_publica_tjam",
+    "8.04":"api_publica_tjap","8.05":"api_publica_tjba","8.06":"api_publica_tjce",
+    "8.07":"api_publica_tjdft","8.08":"api_publica_tjes","8.09":"api_publica_tjgo",
+    "8.10":"api_publica_tjma","8.11":"api_publica_tjmg","8.12":"api_publica_tjms",
+    "8.13":"api_publica_tjmt","8.14":"api_publica_tjpa","8.15":"api_publica_tjpb",
+    "8.16":"api_publica_tjpe","8.17":"api_publica_tjpi","8.18":"api_publica_tjpr",
+    "8.19":"api_publica_tjrj","8.20":"api_publica_tjrn","8.21":"api_publica_tjro",
+    "8.22":"api_publica_tjrr","8.23":"api_publica_tjrs","8.24":"api_publica_tjsc",
+    "8.25":"api_publica_tjse","8.26":"api_publica_tjsp","8.27":"api_publica_tjto",
+    "3.00":"api_publica_tse","1.00":"api_publica_stj","1.01":"api_publica_stf",
+    "9.00":"api_publica_stm",
+}
+ALIAS_NOME: Dict[str,str] = {
+    "api_publica_trt1":"TRT1 (RJ)","api_publica_trt2":"TRT2 (SP)",
+    "api_publica_trt3":"TRT3 (MG)","api_publica_trt4":"TRT4 (RS)",
+    "api_publica_trt5":"TRT5 (BA)","api_publica_trt6":"TRT6 (PE)",
+    "api_publica_trt7":"TRT7 (CE)","api_publica_trt9":"TRT9 (PR)",
+    "api_publica_trt10":"TRT10 (DF/TO)","api_publica_trt15":"TRT15 (Campinas)",
+    "api_publica_tst":"TST","api_publica_trf1":"TRF1","api_publica_trf2":"TRF2",
+    "api_publica_trf3":"TRF3","api_publica_trf4":"TRF4","api_publica_trf5":"TRF5",
+    "api_publica_tjsp":"TJSP","api_publica_tjrj":"TJRJ","api_publica_tjmg":"TJMG",
+    "api_publica_tjrs":"TJRS","api_publica_tjpr":"TJPR","api_publica_stj":"STJ",
+    "api_publica_stf":"STF",
+}
+TRIBUNAL_KW: Dict[str,str] = {
+    "trt1":"api_publica_trt1","trt2":"api_publica_trt2","trt3":"api_publica_trt3",
+    "trt4":"api_publica_trt4","trt5":"api_publica_trt5","trt6":"api_publica_trt6",
+    "trt7":"api_publica_trt7","trt9":"api_publica_trt9","trt15":"api_publica_trt15",
+    "tst":"api_publica_tst","trf1":"api_publica_trf1","trf2":"api_publica_trf2",
+    "trf3":"api_publica_trf3","trf4":"api_publica_trf4",
+    "tjsp":"api_publica_tjsp","tjrj":"api_publica_tjrj","tjmg":"api_publica_tjmg",
+    "tjrs":"api_publica_tjrs","stj":"api_publica_stj","stf":"api_publica_stf",
+    "sao paulo":"api_publica_trt2","minas gerais":"api_publica_trt3",
+    "rio de janeiro":"api_publica_trt1","parana":"api_publica_trt9",
+    "campinas":"api_publica_trt15",
+}
+def alias_nome(a:str)->str: return ALIAS_NOME.get(a,a)
+
+# ═══════════════════════════════════════════════════════
+# CNJ UTILS
+# ═══════════════════════════════════════════════════════
+PROC_RE = re.compile(r"\b(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})\b")
+
+def detect_numbers(text:str)->List[str]:
+    out,seen=[],set()
+    for g in PROC_RE.findall(text or ""):
+        n=f"{g[0]}-{g[1]}.{g[2]}.{g[3]}.{g[4]}.{g[5]}"
+        if n not in seen: seen.add(n); out.append(n)
+    return out
+
+def norm_num(n:str)->str: return re.sub(r"\D","",n or "")
+
+def infer_alias(numero:str)->Optional[str]:
+    m=PROC_RE.search(numero or "")
+    if not m: return None
+    return ALIAS_MAP.get(f"{m.group(4)}.{int(m.group(5)):02d}")
+
+def trib_from_msg(msg:str)->Optional[str]:
+    low=msg.lower()
+    for k,v in TRIBUNAL_KW.items():
+        if k in low: return v
+    return None
+
+# ═══════════════════════════════════════════════════════
+# SMART PROMPT ROUTER — 5 níveis
+# ═══════════════════════════════════════════════════════
+# Escavador intent triggers
+ESC_PROC_TRIGGERS = [
+    "processos de","processos do","processos da",
+    "todos os processos","quantos processos",
+    "histórico processual de","listar processos de",
+]
+ESC_PESSOA_TRIGGERS = [
+    "dados de","informações sobre","quem é","cpf de",
+    "endereço de","telefone de","sócio de",
+    "enriquecer dados","dados cadastrais",
+]
+ESC_EMPRESA_TRIGGERS = [
+    "cnpj","empresa","razão social","sócios da empresa",
+    "dados da empresa","situação cadastral",
+]
+ESC_ADV_TRIGGERS = [
+    "advogado","oab","carteira oab","escritório de",
+    "processos do advogado","quem é o advogado",
+]
+
+def detect_escavador_intent(msg: str) -> Optional[str]:
+    """Detecta se a mensagem pede dados do Escavador. Retorna tipo ou None."""
+    if not ESCAVADOR_OK:
+        return None
+    m = msg.lower()
+    if any(t in m for t in ESC_ADV_TRIGGERS):   return "advogado"
+    if any(t in m for t in ESC_PROC_TRIGGERS):  return "processos"
+    if any(t in m for t in ESC_EMPRESA_TRIGGERS):return "empresa"
+    if any(t in m for t in ESC_PESSOA_TRIGGERS): return "pessoa"
+    return None
+
+def extract_escavador_query(msg: str, tipo: str) -> dict:
+    """Extrai nome/CPF/CNPJ/OAB da mensagem para busca no Escavador."""
+    import re
+    q = {"tipo": tipo}
+    # CPF pattern
+    cpf = re.search(r'\d{3}\.?\d{3}\.?\d{3}-?\d{2}', msg)
+    if cpf: q["cpf"] = cpf.group()
+    # CNPJ pattern
+    cnpj = re.search(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', msg)
+    if cnpj: q["cnpj"] = cnpj.group()
+    # OAB pattern
+    oab = re.search(r'OAB[/\s]*([A-Z]{2}[/\s]*)?\d+', msg, re.IGNORECASE)
+    if oab: q["oab"] = oab.group()
+    # Nome — texto entre aspas ou após preposição
+    nome_quotes = None  # busca por nome entre aspas simplificada
+    nome_prep   = re.search(r'(?:de|do|da|sobre|para)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+)+)', msg)
+    if nome_quotes: q["nome"] = nome_quotes.group(1)
+    elif nome_prep: q["nome"] = nome_prep.group(1)
+    return q
+
+
+TRIVIAL_EXACT = {
+    "olá","oi","ola","bom dia","boa tarde","boa noite","tudo bem","tudo bom",
+    "obrigado","obrigada","valeu","ok","certo","entendi","show","perfeito",
+    "ótimo","otimo","pode","sim","não","nao","hello","hi","thanks","thank you",
+}
+OS61_TRIGGERS = [
+    "análise completa","analise completa","full analysis",
+    "red team","força da tese","forca da tese","estratégia completa",
+    "score","matriz de score","rentabilidade do caso",
+    "viabilidade do caso","viabilidade jurídica","risco jurídico",
+    "elabore","redija","minuta","petição","peticao","contestação","contestacao",
+    "tenho um caso","novo caso","quero abrir processo",
+    "fui demitido","fui dispensado","rescisão indevida",
+    "verbas trabalhistas","análise de risco completa",
+]
+DOC_MEDIO_TRIGGERS = [
+    "analise","análise","analyze","pontos principais","principais pontos",
+    "o que é importante","riscos desse documento","riscos do documento",
+    "o que devo saber","avalie","avalia","avaliação",
+    "implicações","consequências","posso usar","serve para","pertinente",
+]
+DOC_RESUMO_TRIGGERS = [
+    "resume","resumo","resumir","summarize","summary",
+    "explica","explain","o que diz","me conta",
+    "do que se trata","do que trata","sobre o que","qual o assunto",
+    "me fala sobre","me diga","síntese","sintese",
+]
+PROC_TRIGGERS = [
+    "andamento","movimentações","movimentacoes","magistrado","juiz","juíza",
+    "partes","banco de decisões","timeline","histórico do processo",
+]
+
+def classify_prompt(message:str, has_proc:bool)->str:
+    msg=message.lower().strip()
+    words=set(msg.split())
+    if words & TRIVIAL_EXACT and len(message.split())<=6: return "simples"
+    if any(t in msg for t in OS61_TRIGGERS):             return "os61"
+    if any(t in msg for t in DOC_RESUMO_TRIGGERS):       return "doc_resumo"
+    if any(t in msg for t in DOC_MEDIO_TRIGGERS):        return "doc_medio"
+    if has_proc or any(t in msg for t in PROC_TRIGGERS): return "juridico"
+    jur=["direito","lei","clt","tst","trt","prazo","processo","trabalhista",
+         "jurisprudência","jurisprudencia","súmula","sumula","artigo",
+         "indenização","indenizacao","multa","rescisão","rescisao","fgts","verbas","contrato"]
+    if any(t in msg for t in jur): return "juridico"
+    return "simples"
+
+PROMPT_CONV = (
+    "Você é um assistente do escritório Salles & Mendes / Jurimetrix. "
+    "Responda em português, de forma direta e cordial. Seja breve."
+)
+PROMPT_JUR = (
+    "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
+    "Responda em português, de forma técnica, clara e objetiva. "
+    "Nunca prometa resultados. Separe fato de hipótese. "
+    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante."
+)
+_FMT: Dict[str,str] = {
+    "simples":    "Responda de forma breve e cordial, em no máximo 2-3 frases.",
+    "doc_resumo": "Responda com resumo direto em no máximo 4 parágrafos. NÃO use scores, red team nem seções OS 6.1.",
+    "doc_medio":  "Responda com: 1) Síntese, 2) Pontos principais, 3) Riscos/alertas. Sem 18 seções. Seja objetivo.",
+    "juridico":   "Responda tecnicamente. Foco em: fase processual, última movimentação, riscos e próximos passos. Sem OS 6.1 completo.",
+    "os61":       "Execute análise OS 6.1 completa: Classificação, Síntese, Análise Técnica, Força da Tese, Confiabilidade, Provas, Riscos, Cenários, Análise Econômica, Scores, Red Team, Estratégia, Ações Prioritárias, Pendências, Alertas, Reflexão Final.",
+}
+
+def build_system_prompt(level:str, ctx:str="")->str:
+    base = (OS_6_1_PROMPT if OS_6_1_PROMPT else PROMPT_JUR) if level=="os61" else \
+           (PROMPT_JUR if level in ("juridico","doc_medio") else PROMPT_CONV)
+    mandate = (f"\n\nEste sistema opera para: {MANDATARIA_NOME} — {MANDATARIA_OAB}. "
+               "Análises são assistivas, sujeitas à revisão do advogado responsável."
+               if MANDATARIA_NOME or MANDATARIA_OAB else "")
+    context = f"\n\n===CONTEXTO===\n{ctx}\n===FIM===" if ctx else ""
+    return base + mandate + context
+
+# ═══════════════════════════════════════════════════════
+# INTENT DETECTION
+# ═══════════════════════════════════════════════════════
+INT_FULL  = ["andamento completo","histórico completo","timeline","todas as movimentações"]
+INT_MAG   = ["magistrado","juiz","juíza","quem sentenciou","quem julgou","nome do juiz","prolator"]
+INT_PART  = ["partes","quem são as partes","autor","reclamante","reclamado","réu","advogado"]
+INT_BANCO = ["banco de decisões","processos similares","decisões do juiz","padrão decisório","outros casos"]
+INT_TEM   = ["horas extras","hora extra","periculosidade","insalubridade","análise temática"]
+INT_CL    = ["sentença","acórdão","decisão interlocutória","tipos de decisão","separar decisões"]
+
+def detect_intent(msg:str)->str:
+    m=msg.lower()
+    if any(k in m for k in INT_BANCO): return "banco_decisoes"
+    if any(k in m for k in INT_PART):  return "partes"
+    if any(k in m for k in INT_MAG):   return "magistrado"
+    if any(k in m for k in INT_TEM):   return "tematico"
+    if any(k in m for k in INT_CL):    return "classificar"
+    if any(k in m for k in INT_FULL):  return "andamento_completo"
+    return "resumo"
+
+# ═══════════════════════════════════════════════════════
+# MNI / PJe CLIENT
+# ═══════════════════════════════════════════════════════
+class MNIError(Exception): pass
+
+class MNIClient:
+    def _envelope(self, numero:str)->str:
+        return textwrap.dedent(f"""<?xml version="1.0" encoding="UTF-8"?>
+        <soapenv:Envelope
+          xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+          xmlns:mni="http://www.cnj.jus.br/servicos/sistemas/intercomunicacao/1.0">
+          <soapenv:Header/>
+          <soapenv:Body>
+            <mni:consultarProcesso>
+              <numeroProcesso>{numero}</numeroProcesso>
+              <idConsultante>{MNI_USERNAME}</idConsultante>
+              <senhaConsultante>{MNI_PASSWORD}</senhaConsultante>
+              <movimentos>true</movimentos>
+              <incluirDocumentos>false</incluirDocumentos>
+            </mni:consultarProcesso>
+          </soapenv:Body>
+        </soapenv:Envelope>""")
+
+    def consultar(self, numero:str)->Dict[str,Any]:
+        if not MNI_ENABLED:         raise MNIError("MNI desabilitado.")
+        if not MNI_USERNAME:        raise MNIError("MNI_USERNAME não configurado.")
+        if not MNI_PASSWORD:        raise MNIError("MNI_PASSWORD não configurado.")
+        try:
+            r = requests.post(
+                MNI_BASE_URL,
+                data=self._envelope(numero).encode("utf-8"),
+                headers={"Content-Type":"text/xml; charset=utf-8","SOAPAction":'"consultarProcesso"'},
+                timeout=MNI_TIMEOUT_S,
+            )
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            raise MNIError(f"HTTP {getattr(e.response,'status_code','?')}: {(e.response.text if e.response else '')[:300]}")
+        except requests.RequestException as e:
+            raise MNIError(f"Conexão MNI: {e}")
+        return self._parse(r.text)
+
+    def _parse(self, xml:str)->Dict[str,Any]:
+        def first(tag:str)->Optional[str]:
+            m=re.search(rf"<(?:[^:>]+:)?{re.escape(tag)}[^>]*>(.*?)</(?:[^:>]+:)?{re.escape(tag)}>",xml,re.DOTALL|re.IGNORECASE)
+            return m.group(1).strip() if m else None
+        result:Dict[str,Any]={"juiz":None,"polo_ativo":[],"polo_passivo":[],"advogados":[],"movimentos_mni":[],"valor_causa":None}
+        result["juiz"]=first("magistrado") or first("nomeMagistrado")
+        result["valor_causa"]=first("valorCausa")
+        for bloco in re.findall(r"<(?:[^:>]+:)?polo[^>]*>(.*?)</(?:[^:>]+:)?polo>",xml,re.DOTALL|re.IGNORECASE):
+            tipo=re.search(r'tipo["\s]*[=:]["\s]*([^"<>\s]+)',bloco,re.IGNORECASE)
+            nomes=re.findall(r"<(?:[^:>]+:)?nome[^>]*>(.*?)</(?:[^:>]+:)?nome>",bloco,re.DOTALL|re.IGNORECASE)
+            advs=re.findall(r"<(?:[^:>]+:)?advogado[^>]*>(.*?)</(?:[^:>]+:)?advogado>",bloco,re.DOTALL|re.IGNORECASE)
+            pt=(tipo.group(1) if tipo else "").lower()
+            ns=[n.strip() for n in nomes if n.strip()]
+            if "at" in pt or "ativo" in pt or "reclamante" in pt: result["polo_ativo"].extend(ns)
+            else: result["polo_passivo"].extend(ns)
+            result["advogados"].extend([re.sub(r"<[^>]+>","",a).strip() for a in advs if a.strip()])
+        for bloco in re.findall(r"<(?:[^:>]+:)?movimento[^>]*>(.*?)</(?:[^:>]+:)?movimento>",xml,re.DOTALL|re.IGNORECASE):
+            dh=re.search(r"<(?:[^:>]+:)?dataHora[^>]*>(.*?)</",bloco,re.DOTALL|re.IGNORECASE)
+            nd=re.search(r"<(?:[^:>]+:)?descricao[^>]*>(.*?)</",bloco,re.DOTALL|re.IGNORECASE)
+            nd2=re.search(r"<(?:[^:>]+:)?nome[^>]*>(.*?)</",bloco,re.DOTALL|re.IGNORECASE)
+            mag=re.search(r"<(?:[^:>]+:)?magistrado[^>]*>(.*?)</",bloco,re.DOTALL|re.IGNORECASE)
+            result["movimentos_mni"].append({
+                "dataHora":(dh.group(1) if dh else "").strip()[:19],
+                "nome":(nd.group(1) if nd else (nd2.group(1) if nd2 else "")).strip(),
+                "magistrado":(mag.group(1) if mag else "").strip() or None,
+            })
+        if not result["juiz"]:
+            for m in result["movimentos_mni"]:
+                if m.get("magistrado"): result["juiz"]=m["magistrado"]; break
+        return result
+
+MNI = MNIClient()
+
+def enrich_with_mni(proc:dict, numero:str)->dict:
+    proc["mni_status"]="disabled"; proc["mni_error"]=None; proc["movimentos_mni"]=[]; proc["movimentos_mni_total"]="N/A"
+    if not MNI_ENABLED: return proc
+    try:
+        d=MNI.consultar(numero)
+        proc["mni_status"]="ok"
+        if d.get("juiz"):         proc["magistrado"]=d["juiz"]
+        if d.get("polo_ativo"):   proc["polo_ativo"]=d["polo_ativo"]
+        if d.get("polo_passivo"): proc["polo_passivo"]=d["polo_passivo"]
+        if d.get("advogados"):    proc["advogados"]=d["advogados"]
+        if d.get("valor_causa") and not proc.get("valor_causa"): proc["valor_causa"]=d["valor_causa"]
+        proc["movimentos_mni"]=d.get("movimentos_mni") or []
+        proc["movimentos_mni_total"]=len(proc["movimentos_mni"])
+    except MNIError as e:
+        proc["mni_status"]="error"; proc["mni_error"]=str(e)
+    return proc
+
+# ═══════════════════════════════════════════════════════
+# DATAJUD
+# ═══════════════════════════════════════════════════════
+COD_SENT={11,193,198,199,17,14,15,16}
+COD_INT={85,26,51,60,61,87,1038}
+COD_AC={941,237,196,7,8,9}
+ASS_HE={1723,14548,14549,14550,14551}
+ASS_PERI={1856,14552,14553}
+ASS_INS={1855,14554}
+
+def classif_mov(mov:dict)->str:
+    cod=mov.get("codigoNacional")
+    if not cod and isinstance(mov.get("movimentoNacional"),dict): cod=mov["movimentoNacional"].get("codigo")
+    if cod:
+        if cod in COD_SENT: return "sentenca"
+        if cod in COD_INT:  return "decisao_interlocutoria"
+        if cod in COD_AC:   return "acordao"
+    n=(mov.get("nome") or "").lower()
+    if any(w in n for w in ["sentença","procedente","improcedente","julgament"]): return "sentenca"
+    if any(w in n for w in ["acórdão","recurso provido","recurso improvido"]):   return "acordao"
+    if any(w in n for w in ["decisão","despacho","liminar","tutela"]):           return "decisao_interlocutoria"
+    return "outro"
+
+def extract_mag_datajud(movs:list)->Optional[str]:
+    for m in movs:
+        mag=m.get("magistradoProlator") or m.get("responsavelMovimento")
+        if mag:
+            nome=(mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag,dict) else str(mag)
+            if nome and len(str(nome))>3: return str(nome)
+    return None
+
+class DataJudError(Exception): pass
+
+class DataJudService:
+    def _h(self):
+        h={"Content-Type":"application/json"}
+        if DATAJUD_API_KEY: h["Authorization"]=f"APIKey {DATAJUD_API_KEY}"
         return h
 
-    def _url(self, table): return f"{SUPABASE_URL}/rest/v1/{table}"
-
-    def _rpc(self, fn, params):
-        r = requests.post(f"{SUPABASE_URL}/rest/v1/rpc/{fn}", headers=self._h(), json=params, timeout=15)
-        if not r.ok: raise SupabaseError(f"RPC {fn}: {r.status_code} {r.text[:300]}")
-        return r.json()
-
-    def select(self, table, query="*", filters=None):
-        params = {"select": query}
-        if filters: params.update(filters)
-        r = requests.get(self._url(table), headers=self._h(), params=params, timeout=15)
-        if not r.ok: raise SupabaseError(f"SELECT {table}: {r.status_code} {r.text[:300]}")
-        return r.json()
-
-    def insert(self, table, data, returning="representation"):
-        r = requests.post(self._url(table), headers=self._h(f"return={returning}"), json=data, timeout=15)
-        if not r.ok: raise SupabaseError(f"INSERT {table}: {r.status_code} {r.text[:300]}")
-        result = r.json()
-        return result[0] if isinstance(result, list) else result
-
-    def update(self, table, data, filters):
-        r = requests.patch(self._url(table), headers=self._h("return=representation"), params=filters, json=data, timeout=15)
-        if not r.ok: raise SupabaseError(f"UPDATE {table}: {r.status_code} {r.text[:300]}")
-        return r.json()
-
-    def delete(self, table, filters):
-        r = requests.delete(self._url(table), headers=self._h("return=representation"), params=filters, timeout=15)
-        if not r.ok: raise SupabaseError(f"DELETE {table}: {r.status_code} {r.text[:300]}")
-        return r.json()
-
-    # ── Perfil ──────────────────────────────────────────────────
-    def get_perfil(self, user_id):
-        rows = self.select("perfis", filters={"id": f"eq.{user_id}"})
-        return rows[0] if rows else None
-
-    def update_perfil(self, user_id, data):
-        rows = self.update("perfis", data, {"id": f"eq.{user_id}"})
-        return rows[0] if rows else {}
-
-    # ── Assinatura ──────────────────────────────────────────────
-    def get_assinatura(self, user_id):
-        rows = self.select("assinaturas", filters={"usuario_id": f"eq.{user_id}", "status": "eq.ativa", "limit": "1"})
-        return rows[0] if rows else None
-
-    def debitar_tokens(self, user_id, tokens):
-        return self._rpc("incrementar_tokens", {"p_usuario_id": user_id, "p_tokens": tokens})
-
-    # ── Conversas ───────────────────────────────────────────────
-    def criar_conversa(self, user_id, titulo="Nova conversa", session_id=None, tribunal=None, numero_processo=None):
-        data = {"usuario_id": user_id, "titulo": titulo[:80]}
-        if session_id:      data["session_id"]      = session_id
-        if tribunal:        data["tribunal"]         = tribunal
-        if numero_processo: data["numero_processo"]  = numero_processo
-        return self.insert("conversas", data)
-
-    def listar_conversas(self, user_id, limit=50):
-        return self.select("conversas",
-            query="id,titulo,preview,tribunal,numero_processo,criado_em,atualizado_em",
-            filters={"usuario_id": f"eq.{user_id}", "arquivada": "eq.false", "order": "atualizado_em.desc", "limit": str(limit)})
-
-    def atualizar_conversa(self, conversa_id, data):
-        rows = self.update("conversas", data, {"id": f"eq.{conversa_id}"})
-        return rows[0] if rows else {}
-
-    def deletar_conversa(self, conversa_id, user_id):
-        self.delete("conversas", {"id": f"eq.{conversa_id}", "usuario_id": f"eq.{user_id}"})
-
-    # ── Mensagens ───────────────────────────────────────────────
-    def salvar_mensagem(self, conversa_id, role, conteudo, prompt_level=None, tokens_usados=0):
-        data = {"conversa_id": conversa_id, "role": role, "conteudo": conteudo, "tokens_usados": tokens_usados}
-        if prompt_level: data["prompt_level"] = prompt_level
-        return self.insert("mensagens", data)
-
-    def listar_mensagens(self, conversa_id, limit=50):
-        return self.select("mensagens",
-            query="id,role,conteudo,prompt_level,tokens_usados,criado_em",
-            filters={"conversa_id": f"eq.{conversa_id}", "order": "criado_em.asc", "limit": str(limit)})
-
-    # ── Uso tokens ──────────────────────────────────────────────
-    def registrar_uso(self, user_id, tokens_input, tokens_output, conversa_id=None, modelo=None, endpoint="chat"):
-        data = {"usuario_id": user_id, "tokens_input": tokens_input, "tokens_output": tokens_output, "tokens_total": tokens_input+tokens_output, "modelo": modelo, "endpoint": endpoint}
-        if conversa_id: data["conversa_id"] = conversa_id
-        try: self.insert("uso_tokens", data, returning="minimal")
-        except SupabaseError as e: log.warning(f"registrar_uso: {e}")
-
-    # ── Admin ───────────────────────────────────────────────────
-    def get_stats(self):
-        rows = self.select("v_stats")
-        return rows[0] if rows else {}
-
-    def listar_clientes(self, limit=100, offset=0):
-        return self.select("v_clientes", filters={"order": "criado_em.desc", "limit": str(limit), "offset": str(offset)})
-
-    def is_configured(self):
-        return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
-
-
-def is_configured() -> bool:
-    """Verifica se Supabase está configurado (module-level)."""
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
-
-def get_user_id_from_token(token: str) -> Optional[str]:
-    """
-    Extrai user_id (sub) do JWT Supabase.
-    Suporta HS256 (email/senha) e ES256 (Google OAuth).
-    """
-    if not token:
-        return None
-    clean = token.replace("Bearer ", "").strip()
-    
-    # Tenta HS256 primeiro (email/senha)
-    if SUPABASE_JWT_SECRET:
+    def _post(self,alias:str,payload:dict)->dict:
+        if not DATAJUD_ENABLED: raise DataJudError("DataJud desabilitado.")
+        if not DATAJUD_API_KEY: raise DataJudError("DATAJUD_API_KEY não configurado.")
         try:
-            import jwt as pyjwt
-            payload = pyjwt.decode(
-                clean,
-                SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                options={"verify_aud": False}
-            )
-            return payload.get("sub")
-        except Exception:
-            pass
-    
-    # Tenta decodificar sem verificar assinatura (ES256 / Google OAuth)
-    # Seguro pois apenas extrai o sub — a sessão já foi validada pelo Supabase
-    try:
-        import jwt as pyjwt
-        payload = pyjwt.decode(
-            clean,
-            options={"verify_signature": False, "verify_aud": False},
-            algorithms=["HS256", "ES256", "RS256"]
-        )
-        sub = payload.get("sub")
-        # Valida que é um token do nosso projeto Supabase
-        iss = payload.get("iss", "")
-        if sub and "supabase" in iss:
-            return sub
-        return sub  # retorna mesmo sem iss para compatibilidade
-    except Exception as e:
-        log.warning(f"Token inválido: {e}")
-        return None
+            r=requests.post(f"{DATAJUD_BASE_URL}/{alias}/_search",headers=self._h(),json=payload,timeout=DATAJUD_TIMEOUT_S)
+            r.raise_for_status(); return r.json()
+        except requests.HTTPError as e:
+            raise DataJudError(f"HTTP {getattr(e.response,'status_code','?')}: {(e.response.text if e.response else '')[:300]}")
+        except requests.RequestException as e:
+            raise DataJudError(f"Conexão DataJud: {e}")
 
-def validar_jwt_supabase(token: str) -> Optional[dict]:
-    """Valida JWT do Supabase Auth. Retorna payload completo ou None."""
-    if not SUPABASE_JWT_SECRET or not token:
-        return None
-    try:
-        import jwt as pyjwt
-        return pyjwt.decode(
-            token.replace("Bearer ", "").strip(),
-            SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False}
-        )
-    except Exception as e:
-        log.debug(f"JWT inválido: {e}")
-        return None
+    def search(self,alias:str,query:dict,size:int=10,sort:list=None)->dict:
+        return self._post((alias or DATAJUD_DEFAULT_ALIAS).strip(),{
+            "size":min(size,50),"query":query,
+            "sort":sort or [{DATAJUD_SORT_FIELD:"desc"}],
+        })
 
-DB = SupabaseClient()
+    def get_process(self,numero:str,alias:str)->dict:
+        return self.search(alias,{"match":{"numeroProcesso":norm_num(numero)}},size=1)
+
+    def sources(self,raw:dict)->List[dict]:
+        return [h.get("_source") or {} for h in ((raw or {}).get("hits") or {}).get("hits") or []]
+
+    def normalize(self,src:dict)->dict:
+        movs=src.get("movimentos") or []
+        movs_s=sorted(movs,key=lambda x:x.get("dataHora") or "",reverse=True)
+        orgao=src.get("orgaoJulgador") or {}
+        classe=src.get("classe") or {}
+        asts=src.get("assuntos") or []
+        partes_raw=src.get("partes") or []
+        pa,pp,advs=[],[],[]
+        for p in partes_raw:
+            nome=p.get("nome") or p.get("nomeRepresentante") or ""
+            tipo=(p.get("tipoParte") or p.get("polo") or "").lower()
+            if "at" in tipo or "autor" in tipo or "reclamante" in tipo: pa.append(nome)
+            elif "pa" in tipo or "réu" in tipo or "reclamado" in tipo: pp.append(nome)
+            for adv in (p.get("advogados") or []):
+                n=adv.get("nome") or ""
+                if n: advs.append(n)
+        return {
+            "numero_processo":  src.get("numeroProcesso"),
+            "tribunal":         src.get("tribunal"),
+            "grau":             src.get("grau"),
+            "data_ajuizamento": src.get("dataAjuizamento"),
+            "ultima_atualizacao": src.get("dataHoraUltimaAtualizacao"),
+            "valor_causa":      src.get("valorCausa"),
+            "classe_nome":      classe.get("nome"),
+            "orgao_julgador":   orgao.get("nome"),
+            "orgao_codigo":     orgao.get("codigo"),
+            "assuntos":         [a.get("nome") for a in asts if a.get("nome")],
+            "assuntos_codigos": [a.get("codigo") for a in asts if a.get("codigo")],
+            "movimentos_total": len(movs),
+            "magistrado":       extract_mag_datajud(movs_s),
+            "polo_ativo":       pa,
+            "polo_passivo":     pp,
+            "advogados":        advs,
+            "movimentos_todos": movs_s,
+            "sentencas":        [m for m in movs_s if classif_mov(m)=="sentenca"],
+            "decisoes_interlocutorias":[m for m in movs_s if classif_mov(m)=="decisao_interlocutoria"],
+            "acordaos":         [m for m in movs_s if classif_mov(m)=="acordao"],
+            "ultima_movimentacao_nome":(movs_s[0] if movs_s else {}).get("nome"),
+            "ultima_movimentacao_data":(movs_s[0] if movs_s else {}).get("dataHora","")[:10],
+        }
+
+DJ = DataJudService()
+
+# ═══════════════════════════════════════════════════════
+# CONTEXT BUILDERS
+# ═══════════════════════════════════════════════════════
+def fmt_mov(mov:dict,tipo:bool=False)->str:
+    data=(mov.get("dataHora") or "")[:10]
+    nome=mov.get("nome") or "Andamento"
+    t=f" [{classif_mov(mov).replace('_',' ').upper()}]" if tipo else ""
+    mag=mov.get("magistrado") or mov.get("magistradoProlator") or ""
+    ms=f" | Juiz: {mag}" if mag and isinstance(mag,str) and len(mag)>3 else ""
+    return f"  • {data}{t} — {nome}{ms}"
+
+def partes_block(proc:dict)->str:
+    lines=[]
+    if proc.get("polo_ativo"):   lines.append(f"Polo Ativo (Reclamante): {', '.join(proc['polo_ativo'])}")
+    if proc.get("polo_passivo"): lines.append(f"Polo Passivo (Reclamado): {', '.join(proc['polo_passivo'])}")
+    if proc.get("advogados"):    lines.append(f"Advogados: {', '.join(proc['advogados'][:5])}")
+    if not lines:
+        st=proc.get("mni_status","disabled")
+        if st=="disabled": lines+=["Partes: disponíveis via MNI/PJe (habilitar nas envs)."]
+        elif st=="error":  lines.append(f"Partes: erro MNI — {proc.get('mni_error','')}")
+        else:              lines.append("Partes: não retornadas nesta consulta.")
+    return "\n".join(lines)
+
+def mni_movs_block(proc:dict)->str:
+    movs=proc.get("movimentos_mni") or []
+    if not movs: return ""
+    lines=[f"\nMOVIMENTAÇÕES PJe/MNI ({len(movs)} registros):"]
+    for m in movs[:30]:
+        data=(m.get("dataHora") or "")[:10]; nome=m.get("nome") or "Andamento"
+        mag=m.get("magistrado") or ""; ms=f" | Juiz: {mag}" if mag else ""
+        lines.append(f"  • {data} — {nome}{ms}")
+    return "\n".join(lines)
+
+def build_ctx(proc:dict,intent:str,alias:str="")->str:
+    trib=alias_nome(alias) if alias else (proc.get("tribunal") or "")
+    mag=proc.get("magistrado") or "não disponível via DataJud/MNI"
+    asts=", ".join(proc.get("assuntos") or []) or "não identificados"
+    mni_s=proc.get("mni_status","disabled")
+    mni_info={"ok":"✅ MNI ativo","error":f"⚠️ MNI erro: {proc.get('mni_error','')}","disabled":"ℹ️ MNI desabilitado"}.get(mni_s,"")
+    header="\n".join([
+        f"PROCESSO: {proc.get('numero_processo')} | {trib} | Grau: {proc.get('grau','n/d')}",
+        f"Classe: {proc.get('classe_nome','n/d')} | Vara: {proc.get('orgao_julgador','n/d')}",
+        f"Assuntos: {asts}",
+        f"Ajuizamento: {proc.get('data_ajuizamento','n/d')} | Atualização: {proc.get('ultima_atualizacao','n/d')}",
+        f"Valor da causa: {proc.get('valor_causa','n/d')}",
+        f"Magistrado/Juiz: {mag}",
+        partes_block(proc),
+        f"DataJud: {proc.get('movimentos_total',0)} movimentações | {mni_info}",
+    ])
+    if intent in ("resumo","partes","magistrado"):
+        movs="\n".join(["","ÚLTIMAS 15 MOVIMENTAÇÕES (DataJud):"]+[fmt_mov(m) for m in proc.get("movimentos_todos",[])[:15]])
+        return header+movs+mni_movs_block(proc)
+    if intent=="andamento_completo":
+        body="\n".join([
+            "",f"SENTENÇAS ({len(proc.get('sentencas',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("sentencas",[])] or ["  (nenhuma)"])+[
+            f"\nACÓRDÃOS ({len(proc.get('acordaos',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("acordaos",[])] or ["  (nenhum)"])+[
+            f"\nDECISÕES INTERLOCUTÓRIAS ({len(proc.get('decisoes_interlocutorias',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("decisoes_interlocutorias",[])[:15]] or ["  (nenhuma)"])+[
+            "\nHISTÓRICO COMPLETO:",
+        ]+[fmt_mov(m,True) for m in proc.get("movimentos_todos",[])])
+        return header+body+mni_movs_block(proc)
+    if intent=="classificar":
+        return header+"\n".join([
+            "",f"SENTENÇAS ({len(proc.get('sentencas',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("sentencas",[])] or ["  (nenhuma)"])+[
+            f"\nACÓRDÃOS ({len(proc.get('acordaos',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("acordaos",[])] or ["  (nenhum)"])+[
+            f"\nDECISÕES INTERLOCUTÓRIAS ({len(proc.get('decisoes_interlocutorias',[]))}):",
+        ]+([fmt_mov(m) for m in proc.get("decisoes_interlocutorias",[])[:15]] or ["  (nenhuma)"]))
+    return header+"\n\nÚLTIMAS 5 MOVIMENTAÇÕES:\n"+"\n".join([fmt_mov(m) for m in proc.get("movimentos_todos",[])[:5]])
+
+def ctx_banco(processos:List[dict],orgao:str,assunto:str)->str:
+    lines=[f"\nBANCO DE DECISÕES — {orgao} | {assunto} | {len(processos)} processos",""]
+    for s in processos[:8]:
+        p=DJ.normalize(s)
+        lines+=[f"── {p['numero_processo']} | Juiz: {p.get('magistrado','n/d')}",
+                f"   Polo Ativo: {', '.join(p.get('polo_ativo',[]) or ['n/d'])}",
+                f"   {', '.join(p.get('assuntos',[])[:3])} | Sentenças: {len(p.get('sentencas',[]))}",
+                f"   Última: {p.get('ultima_movimentacao_nome','n/d')}",""]
+    return "\n".join(lines)
+
+def ctx_tematico(processos:List[dict],tema:str)->str:
+    ts=tp=0
+    lines=[f"\nANÁLISE TEMÁTICA — {tema} | {len(processos)} processos",""]
+    for s in processos[:12]:
+        p=DJ.normalize(s); ts+=len(p.get("sentencas",[]))
+        for sent in p.get("sentencas",[]):
+            n=(sent.get("nome") or "").lower()
+            if "procedente" in n and "improcedente" not in n: tp+=1
+        lines+=[f"── {p['numero_processo']} | {p.get('orgao_julgador','n/d')} | Juiz: {p.get('magistrado','n/d')}",
+                f"   {', '.join(p.get('assuntos',[])[:3])} | Sentenças: {len(p.get('sentencas',[]))}",""]
+    lines+=["── CONSOLIDADO:",f"   Sentenças: {ts} | Procedências estimadas: {tp}"]
+    return "\n".join(lines)
+
+INSTRUCAO:Dict[str,str]={
+    "resumo":           "Analise o processo. Destaque: juiz, partes, fase processual, última movimentação, riscos e próximos passos. Responda em português.",
+    "partes":           "Identifique as partes (polo ativo, polo passivo, advogados). Comente posição e implicações estratégicas. Responda em português.",
+    "magistrado":       "Identifique o magistrado. Analise padrão decisório inferível. Responda em português.",
+    "andamento_completo":"Apresente andamento cronológico completo. Organize por categoria. Responda em português.",
+    "banco_decisoes":   "Analise processos similares. Identifique padrão decisório e taxa de procedência. Responda em português.",
+    "tematico":         "Análise temática: taxa de procedência, padrão dos magistrados, tendência do tribunal. Responda em português.",
+    "classificar":      "Classifique cada tipo de decisão. Explique impacto jurídico e expectativas. Responda em português.",
+}
+
+# ═══════════════════════════════════════════════════════
+# OPENAI
+# ═══════════════════════════════════════════════════════
+def call_openai(messages:List[dict],temperature:float=0.15)->str:
+    if not OPENAI_API_KEY: raise RuntimeError("OPENAI_API_KEY não configurado.")
+    r=requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
+        json={"model":OPENAI_MODEL,"messages":messages,"temperature":temperature},
+        timeout=90,
+    )
+    try: r.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:400]}")
+    return (r.json().get("choices") or [{}])[0].get("message",{}).get("content","").strip() or "Sem resposta."
+
+# ═══════════════════════════════════════════════════════
+# FASTAPI APP
+# ═══════════════════════════════════════════════════════
+app = FastAPI(title="Jurimetrix OS Chat", version="8.0.0")
+app.add_middleware(CORSMiddleware,
+    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com"],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+# Serve static files
+import os as _os
+from fastapi.staticfiles import StaticFiles
+_static_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "static")
+if _os.path.isdir(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+    log.info(f"✅ Static files served from {_static_dir}")
+
+# ── Escavador ────────────────────────────────────────────────────────
+try:
+    import escavador_client as ESC
+    ESCAVADOR_OK = ESC.is_configured()
+    log.info(f"{'✅' if ESCAVADOR_OK else '⚠️ '} Escavador {'configurado' if ESCAVADOR_OK else 'não configurado (ESCAVADOR_API_KEY faltando)'}")
+except Exception as _esc_e:
+    ESC = None
+    ESCAVADOR_OK = False
+    log.warning(f"⚠️  escavador_client não carregado: {_esc_e}")
+
+# ── Integrar auth + planos + pagamentos ──────────────────────────────
+from database import criar_tabelas
+from rotas_auth_planos import registrar_rotas
+criar_tabelas()
+registrar_rotas(app)
+log.info("✅ Auth + planos + pagamentos carregados.")
+
+
+
+# ── Sessions (in-memory) ─────────────────────────────────────────────
+SESSIONS: Dict[str,Dict[str,Any]] = {}
+
+# ── Models ───────────────────────────────────────────────────────────
+class SessionOut(BaseModel):
+    session_id: str
+    state: Dict[str,Any] = {}
+
+class ChatIn(BaseModel):
+    session_id: str
+    message: str
+    state: Optional[Dict[str,Any]] = None
+    conversa_id: Optional[str] = None  # Supabase conversa ID
+
+class ChatOut(BaseModel):
+    message: str
+    state: Dict[str,Any] = {}
+    prompt_level: Optional[str] = None
+    conversa_id: Optional[str] = None  # Supabase conversa ID
+
+class RelatorioIn(BaseModel):
+    session_id: str
+    numero_processo: Optional[str] = None
+    alias: Optional[str] = None
+
+# ── Helpers ───────────────────────────────────────────────────────────
+def auth401(k:Optional[str]):
+    if DEMO_KEY and k != DEMO_KEY:
+        raise HTTPException(status_code=401, detail="Não autorizado")
+
+def get_supabase_user(authorization:Optional[str]=Header(default=None)):
+    """Extrai e valida usuario do Supabase JWT. Retorna None se nao autenticado."""
+    if not SUPABASE_OK: return None
+    if not authorization: return None
+    token = authorization.replace("Bearer ","").strip()
+    return verify_token(token) if token else None
+
+def sess(sid:str)->dict:
+    return SESSIONS.setdefault(sid,{
+        "messages":[],"uploaded_contexts":[],
+        "last_process":None,"last_process_numero":None,"last_alias":None,
+    })
+
+def compact(t:str,lim:int=6000)->str: return (t or "").strip()[:lim]
+
+def extract_text(file:UploadFile,data:bytes)->str:
+    fn=(file.filename or "").lower()
+    if fn.endswith((".txt",".md")): return data.decode("utf-8",errors="ignore")
+    if fn.endswith(".pdf") and PdfReader:
+        try: return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages[:40]).strip()
+        except: return ""
+    if fn.endswith(".docx") and DocxDocument:
+        try: return "\n".join(p.text for p in DocxDocument(io.BytesIO(data)).paragraphs if p.text).strip()
+        except: return ""
+    return ""
+
+# ═══════════════════════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════
+# SUPABASE ROUTES — Conversas & Mensagens
+# ═══════════════════════════════════════════════════════
+
+class ConversaIn(BaseModel):
+    titulo: str = "Nova conversa"
+    session_id: Optional[str] = None
+    tribunal: Optional[str] = None
+    processo_numero: Optional[str] = None
+
+class MensagemIn(BaseModel):
+    conversa_id: str
+    role: str
+    conteudo: str
+    tokens_input: int = 0
+    tokens_output: int = 0
+    prompt_level: Optional[str] = None
+
+@app.get("/conversas")
+def listar_conversas(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 50,
+):
+    """Lista conversas do usuário autenticado via Supabase Auth."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        return {"ok": False, "conversas": [], "error": "Não autenticado ou Supabase não configurado"}
+    try:
+        convs = SB.listar_conversas(user_id, limit=limit)
+        return {"ok": True, "conversas": convs}
+    except Exception as e:
+        return {"ok": False, "conversas": [], "error": str(e)}
+
+@app.post("/conversas")
+def criar_conversa(
+    payload: ConversaIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Cria nova conversa no Supabase."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        conv = SB.criar_conversa(
+            user_id=user_id,
+            titulo=payload.titulo,
+            session_id=payload.session_id,
+            tribunal=payload.tribunal,
+            processo=payload.processo_numero,
+        )
+        return {"ok": True, "conversa": conv}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/conversas/{conversa_id}/mensagens")
+def get_mensagens(
+    conversa_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Retorna mensagens de uma conversa."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        msgs = SB.listar_mensagens(conversa_id)
+        return {"ok": True, "mensagens": msgs}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/conversas/mensagem")
+def salvar_mensagem(
+    payload: MensagemIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Salva uma mensagem no Supabase."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        msg = SB.salvar_mensagem(
+            conversa_id=payload.conversa_id,
+            role=payload.role,
+            conteudo=payload.conteudo,
+            tokens_input=payload.tokens_input,
+            tokens_output=payload.tokens_output,
+            prompt_level=payload.prompt_level,
+        )
+        return {"ok": True, "mensagem": msg}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.delete("/conversas/{conversa_id}")
+def deletar_conversa(
+    conversa_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Deleta conversa e suas mensagens."""
+    user_id = get_user_from_request(authorization)
+    if not user_id or not SUPABASE_OK:
+        raise HTTPException(401, "Não autenticado")
+    try:
+        SB.deletar_conversa(conversa_id, user_id)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/me")
+def get_me(authorization: Optional[str] = Header(default=None)):
+    """Retorna perfil + assinatura do usuário autenticado via Supabase."""
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado.")
+    user_id = get_user_from_request(authorization)
+    if not user_id:
+        log.warning(f"[/me] Token inválido — auth header: {str(authorization)[:40] if authorization else 'None'}")
+        raise HTTPException(401, "Token inválido ou expirado.")
+    try:
+        perfil     = SB.DB.get_perfil(user_id) or {}
+        assinatura = SB.DB.get_assinatura_ativa(user_id) or {}
+        return {"ok": True, "perfil": perfil, "assinatura": assinatura}
+    except Exception as e:
+        log.error(f"[/me] erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ─────────────────────────────────────────────────────────────────
+# ROTAS DE CONVERSAS (Supabase)
+# ─────────────────────────────────────────────────────────────────
+class ConvIn(BaseModel):
+    titulo: str
+    session_id: Optional[str] = None
+    numero_processo: Optional[str] = None
+    tribunal: Optional[str] = None
+
+class MsgIn(BaseModel):
+    role: str
+    content: str
+    tokens: int = 0
+
+@app.get("/conversas")
+def get_conversas(authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "items": [], "error": "Supabase nao configurado."}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    convs = listar_conversas(user["id"], limit=60)
+    return {"ok": True, "items": convs}
+
+@app.post("/conversas")
+def post_conversa(payload: ConvIn,
+                  authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "error": "Supabase nao configurado."}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    conv = criar_conversa(user["id"], payload.titulo,
+                          payload.session_id, payload.numero_processo, payload.tribunal)
+    return {"ok": True, "conversa": conv}
+
+@app.get("/conversas/{conv_id}/mensagens")
+def get_mensagens(conv_id: str,
+                  authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False, "items": []}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    msgs = listar_mensagens(conv_id)
+    return {"ok": True, "items": msgs}
+
+@app.delete("/conversas/{conv_id}")
+def del_conversa(conv_id: str,
+                 authorization: Optional[str] = Header(default=None)):
+    if not SUPABASE_OK:
+        return {"ok": False}
+    user = get_supabase_user(authorization)
+    if not user:
+        raise HTTPException(401, "Token Supabase invalido.")
+    deletar_conversa(conv_id, user["id"])
+    return {"ok": True}
+
+# /me route — see implementation above
+
+@app.get("/ping")
+def ping(): return {"ok":True,"version":"8.0.0"}
+
+@app.get("/painel")
+def serve_painel():
+    """Serve o painel do cliente como página standalone."""
+    from fastapi.responses import FileResponse, HTMLResponse
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "static", "painel.html")
+    log.info(f"[/painel] looking for: {path}, exists: {os.path.exists(path)}, cwd: {os.getcwd()}")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    # List all files for debug
+    all_files = []
+    for root, dirs, files in os.walk(base):
+        for f in files:
+            all_files.append(os.path.relpath(os.path.join(root, f), base))
+    return HTMLResponse(f"<pre>base={base}\nfiles={all_files}</pre>", status_code=404)
+
+@app.get("/health")
+def health():
+    return {
+        "ok":True,"version":"8.0.0","model":OPENAI_MODEL,
+        "os_61_loaded":bool(OS_6_1_PROMPT),
+        "datajud":{"enabled":DATAJUD_ENABLED,"alias":DATAJUD_DEFAULT_ALIAS},
+        "mni":{"enabled":MNI_ENABLED},
+        "pdf":PDF_AVAILABLE,
+        "tribunais":len(ALIAS_MAP),
+        "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
+        "supabase":{
+            "ok": SUPABASE_OK,
+            "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
+            "service_key": "✅ configurado" if os.getenv("SUPABASE_SERVICE_KEY") else "❌ faltando",
+            "jwt_secret":  "✅ configurado" if os.getenv("SUPABASE_JWT_SECRET") else "❌ faltando",
+        },
+    }
+
+@app.get("/tribunais")
+def tribunais():
+    return {"tribunais":[{"alias":v,"nome":alias_nome(v),"chave_cnj":k} for k,v in sorted(ALIAS_MAP.items())]}
+
+@app.post("/session/new", response_model=SessionOut)
+def session_new(x_demo_key:Optional[str]=Header(default=None)):
+    auth401(x_demo_key)
+    sid=str(uuid.uuid4())
+    SESSIONS[sid]={"messages":[],"uploaded_contexts":[],"last_process":None,"last_process_numero":None,"last_alias":None}
+    return SessionOut(session_id=sid,state={})
+
+@app.post("/upload")
+async def upload(
+    session_id:str=Form(...),
+    file:UploadFile=File(...),
+    x_demo_key:Optional[str]=Header(default=None),
+):
+    auth401(x_demo_key)
+    s=sess(session_id); data=await file.read()
+    s["uploaded_contexts"].append({"filename":file.filename,"text":compact(extract_text(file,data),12000)})
+    return {"ok":True,"message":f"Arquivo '{file.filename}' anexado.","filename":file.filename}
+
+@app.post("/relatorio")
+def gerar_relatorio(
+    payload:RelatorioIn,
+    x_demo_key:Optional[str]=Header(default=None),
+):
+    from fastapi.responses import Response
+    auth401(x_demo_key)
+    if not PDF_AVAILABLE:
+        raise HTTPException(501,"relatorio_pdf.py não encontrado no repositório.")
+    s=sess(payload.session_id)
+    numero=payload.numero_processo or s.get("last_process_numero")
+    if not numero:
+        raise HTTPException(400,"Nenhum processo identificado na sessão.")
+    alias=(payload.alias or infer_alias(numero) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS)
+    try:
+        raw=DJ.get_process(numero,alias); items=DJ.sources(raw)
+        if not items:
+            raise HTTPException(404,f"Processo {numero} não encontrado no {alias_nome(alias)}.")
+        proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
+        context=build_ctx(proc,"resumo",alias)
+        instrucao=(
+            "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
+            "SÍNTESE\nANÁLISE TÉCNICA\nQUESTÃO JURÍDICA\nFORÇA DA TESE\nCONFIABILIDADE\n"
+            "SCORES (Viabilidade: XX, Risco: XX, Rentabilidade: XX, Urgência: XX, Prioridade: XX, Composto: XX)\n"
+            "RISCOS (com nível: CRÍTICO/ALTO/MÉDIO/BAIXO)\n"
+            "RED TEAM\nATAQUES\nPONTO MAIS VULNERÁVEL\nMEDIDAS PREVENTIVAS\n"
+            "ESTRATÉGIA\nLINHA PRINCIPAL\nLINHAS SUBSIDIÁRIAS\nAÇÕES PRIORITÁRIAS\n"
+            "PENDÊNCIAS\nALERTAS\nResposta em português formal."
+        )
+        sys_p=build_system_prompt("os61",context)
+        analise_texto=call_openai([{"role":"system","content":sys_p},{"role":"user","content":instrucao}],temperature=0.1)
+        analise_dict=parse_analise_gpt(analise_texto)
+        pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
+        s["last_analise"]=analise_dict; s["last_analise_texto"]=analise_texto
+        numero_safe=re.sub(r"[^\w\-]","_",numero)
+        return Response(content=pdf_bytes,media_type="application/pdf",
+                        headers={"Content-Disposition":f'attachment; filename="relatorio_{numero_safe}.pdf"'})
+    except HTTPException: raise
+    except DataJudError as e: raise HTTPException(502,f"Erro DataJud: {e}")
+    except Exception as e: log.exception("Erro relatório"); raise HTTPException(500,f"Erro interno: {e}")
+
+@app.post("/chat", response_model=ChatOut)
+def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
+    auth401(x_demo_key)
+    s=sess(payload.session_id)
+    message=(payload.message or "").strip()
+    state=payload.state or {}
+
+    s["messages"].append({"role":"user","content":message})
+    s["messages"]=s["messages"][-20:]
+
+    numbers=detect_numbers(message)
+    has_proc=bool(numbers) or bool(s.get("last_process_numero"))
+    plevel=classify_prompt(message,has_proc)
+
+    # ── Escavador — busca por pessoa/empresa/advogado ───────────────
+    esc_tipo = detect_escavador_intent(message)
+    if esc_tipo and ESCAVADOR_OK:
+        try:
+            q = extract_escavador_query(message, esc_tipo)
+            esc_result = None
+            if esc_tipo == "processos":
+                esc_result = ESC.ESCAVADOR.processos_por_envolvido(
+                    nome=q.get("nome",""), cpf_cnpj=q.get("cpf") or q.get("cnpj")
+                )
+            elif esc_tipo == "pessoa":
+                esc_result = ESC.ESCAVADOR.buscar_pessoa(
+                    nome=q.get("nome"), cpf=q.get("cpf")
+                )
+            elif esc_tipo == "empresa":
+                esc_result = ESC.ESCAVADOR.buscar_empresa(
+                    nome=q.get("nome"), cnpj=q.get("cnpj")
+                )
+            elif esc_tipo == "advogado":
+                esc_result = ESC.ESCAVADOR.buscar_advogado(
+                    nome=q.get("nome"), oab=q.get("oab")
+                )
+            if esc_result:
+                esc_ctx = ESC.ESCAVADOR.build_context(esc_result, esc_tipo)
+                sys_p = build_system_prompt("juridico", esc_ctx)
+                msgs = [{"role":"system","content":sys_p}]
+                for item in s["messages"][-6:]:
+                    if item["role"] in {"user","assistant"}: msgs.append(item)
+                msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados do Escavador acima para responder com precisão. Responda em português.]"}
+                reply = call_openai(msgs, 0.15)
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level="juridico")
+        except Exception as _esc_err:
+            log.warning(f"Escavador erro: {_esc_err}")
+
+    # ── Rota processo (DataJud + MNI) ────────────────────────────────
+    if DATAJUD_ENABLED and (
+        numbers or (s.get("last_process_numero") and
+            any(k in message.lower() for k in
+                INT_FULL+INT_MAG+INT_PART+INT_BANCO+INT_TEM+INT_CL+
+                ["processo","andamento","resumo","partes","magistrado"]))
+    ):
+        numero=numbers[0] if numbers else s.get("last_process_numero")
+        intent=detect_intent(message)
+        alias=(infer_alias(numero) if numero else None) or trib_from_msg(message) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS
+
+        if numero:
+            try:
+                raw=DJ.get_process(numero,alias); items=DJ.sources(raw)
+                if not items:
+                    tn=alias_nome(alias)
+                    reply=(f"Não encontrei o processo **{numero}** no **{tn}**.\n\n"
+                           f"Se for de outro tribunal, informe qual. "
+                           f'Exemplo: *"Processo {numero} no TRT3"*')
+                    s["messages"].append({"role":"assistant","content":reply})
+                    return ChatOut(message=reply,state=state,prompt_level="direto")
+
+                proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
+                s["last_process"]=proc; s["last_process_numero"]=numero; s["last_alias"]=alias
+
+                extra=""
+                if intent=="banco_decisoes":
+                    orgao=proc.get("orgao_julgador") or ""; ast=(proc.get("assuntos") or [""])[0]
+                    ac=(proc.get("assuntos_codigos") or [None])[0]
+                    must=[{"match":{"orgaoJulgador.nome":orgao}}]
+                    if ac: must.append({"match":{"assuntos.codigo":ac}})
+                    try:
+                        r2=DJ.search(alias,{"bool":{"must":must}},size=8)
+                        s2=[f for f in DJ.sources(r2) if norm_num(f.get("numeroProcesso",""))!=norm_num(numero)][:6]
+                        extra=ctx_banco(s2,orgao,ast)
+                    except: pass
+                elif intent=="tematico":
+                    ml=message.lower()
+                    codigos,tema=((ASS_PERI,"Adicional de Periculosidade") if "periculosidade" in ml else
+                                  (ASS_INS,"Adicional de Insalubridade") if "insalubridade" in ml else
+                                  (ASS_HE,"Horas Extras"))
+                    try:
+                        sh=[{"match":{"assuntos.codigo":c}} for c in codigos]
+                        r2=DJ.search(alias,{"bool":{"should":sh,"minimum_should_match":1}},size=12)
+                        extra=ctx_tematico(DJ.sources(r2),tema)
+                    except: pass
+
+                ctx=build_ctx(proc,intent,alias)+extra
+                eff_lvl="os61" if plevel=="os61" else "juridico"
+                instruc=INSTRUCAO.get(intent,INSTRUCAO["resumo"])
+                fmt_hint=_FMT.get(plevel,_FMT["juridico"])
+                sys_p=build_system_prompt(eff_lvl,ctx)
+                msgs=[{"role":"system","content":sys_p}]
+                for item in s["messages"][-6:]:
+                    if item["role"] in {"user","assistant"}: msgs.append(item)
+                msgs[-1]={"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
+                reply=call_openai(msgs,0.15)
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level=eff_lvl)
+
+            except DataJudError as e:
+                reply=f"Erro DataJud: {str(e)}"
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply,state=state,prompt_level="erro")
+
+    # ── Chat livre ────────────────────────────────────────────────────
+    up_ctx="\n\n".join(
+        f"[{x.get('filename')}]\n{compact(x.get('text') or '',4000)}"
+        for x in s.get("uploaded_contexts",[])[-3:] if x.get("text")
+    ).strip()
+
+    sys_p=build_system_prompt(plevel,up_ctx)
+    msgs=[{"role":"system","content":sys_p}]
+    for item in s["messages"][-12:]:
+        if item["role"] in {"user","assistant"}: msgs.append(item)
+
+    fmt_hint=_FMT.get(plevel,"")
+    if fmt_hint and msgs and msgs[-1]["role"]=="user":
+        msgs[-1]={"role":"user","content":f"{msgs[-1]['content']}\n\n[FORMATO: {fmt_hint}]"}
+
+    temp=0.1 if plevel=="os61" else (0.2 if plevel in ("juridico","doc_medio") else 0.35)
+    try:
+        reply=call_openai(msgs,temp)
+    except Exception as e:
+        reply=f"Erro: {str(e)}"
+
+    s["messages"].append({"role":"assistant","content":reply})
+    s["messages"]=s["messages"][-20:]
+    return ChatOut(message=reply,state=state,prompt_level=plevel)
