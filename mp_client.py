@@ -1,6 +1,6 @@
 """
 Mercado Pago — Integração Jurimetrix
-PIX + Cartão via Checkout Bricks + Assinaturas recorrentes
+PIX + Cartão via Checkout Bricks + Assinaturas
 """
 import os, requests, logging
 log = logging.getLogger("mp")
@@ -10,9 +10,14 @@ MP_PUBLIC_KEY   = (os.getenv("MP_PUBLIC_KEY") or "").strip()
 MP_BASE         = "https://api.mercadopago.com"
 
 PLANOS = {
-    "plus":      {"nome": "Plus",      "valor": 109.99, "tokens": 3_000_000,  "periodo": "monthly"},
-    "pro":       {"nome": "Pro",       "valor": 549.99, "tokens": 15_000_000, "periodo": "monthly"},
-    "unlimited": {"nome": "Unlimited", "valor": 999.99, "tokens": None,       "periodo": "monthly"},
+    "plus":      {"nome": "Plus",      "tokens": 3_000_000},
+    "pro":       {"nome": "Pro",       "tokens": 15_000_000},
+    "unlimited": {"nome": "Unlimited", "tokens": None},
+}
+
+PRECOS = {
+    "mensal": {"plus": 109.99, "pro": 549.99, "unlimited": 999.99},
+    "anual":  {"plus": 999.99, "pro": 4999.99, "unlimited": 9999.99},
 }
 
 def is_configured():
@@ -25,93 +30,53 @@ def _headers():
         "X-Idempotency-Key": os.urandom(16).hex(),
     }
 
-def criar_preferencia(plano_slug: str, user_id: str, user_email: str, back_url: str = "https://jurimetrix.com") -> dict:
+def criar_preferencia(plano_slug: str, user_id: str, user_email: str, periodo: str = "mensal") -> dict:
     """Cria preferência de pagamento no Mercado Pago."""
     plano = PLANOS.get(plano_slug)
     if not plano:
         raise ValueError(f"Plano inválido: {plano_slug}")
 
+    periodo = periodo if periodo in ("mensal", "anual") else "mensal"
+    valor = PRECOS[periodo][plano_slug]
+    titulo = f"Jurimetrix {plano['nome']} — {'Anual' if periodo == 'anual' else 'Mensal'}"
+
     payload = {
         "items": [{
-            "id": plano_slug,
-            "title": f"Jurimetrix {plano['nome']} — Mensal",
-            "description": f"Plano {plano['nome']} — acesso mensal à plataforma Jurimetrix",
+            "id": f"{plano_slug}_{periodo}",
+            "title": titulo,
+            "description": f"Plano {plano['nome']} — acesso {'anual' if periodo == 'anual' else 'mensal'} à plataforma Jurimetrix",
             "quantity": 1,
             "currency_id": "BRL",
-            "unit_price": plano["valor"],
+            "unit_price": valor,
         }],
         "payer": {"email": user_email},
-        "external_reference": f"{user_id}|{plano_slug}",
+        "external_reference": f"{user_id}|{plano_slug}|{periodo}",
         "back_urls": {
-            "success": f"{back_url}/painel-do-cliente/?pagamento=sucesso&plano={plano_slug}",
-            "failure": f"{back_url}/pricing/?pagamento=erro",
-            "pending": f"{back_url}/painel-do-cliente/?pagamento=pendente",
+            "success": f"https://jurimetrix.com/pricing/?pagamento=sucesso&plano={plano_slug}",
+            "failure": f"https://jurimetrix.com/pricing/?pagamento=erro",
+            "pending": f"https://jurimetrix.com/pricing/?pagamento=pendente",
         },
         "auto_return": "approved",
         "notification_url": "https://sm-os-demo-backend.onrender.com/mp/webhook",
         "statement_descriptor": "JURIMETRIX",
-        "expires": False,
-        "payment_methods": {
-            "excluded_payment_types": [],
-            "installments": 12,
-        },
+        "payment_methods": {"installments": 1 if periodo == "anual" else 12},
     }
 
     r = requests.post(f"{MP_BASE}/checkout/preferences", json=payload, headers=_headers(), timeout=15)
     r.raise_for_status()
     data = r.json()
-    log.info(f"[MP] Preferência criada: {data.get('id')} para {user_email} plano={plano_slug}")
+    log.info(f"[MP] Preferência criada: {data.get('id')} user={user_email} plano={plano_slug} periodo={periodo} valor=R${valor}")
     return {
         "preference_id": data["id"],
         "init_point": data["init_point"],
         "sandbox_init_point": data.get("sandbox_init_point"),
         "plano": plano,
-    }
-
-def criar_assinatura(plano_slug: str, user_email: str, user_id: str, card_token: str = None) -> dict:
-    """Cria plano de assinatura recorrente."""
-    plano = PLANOS.get(plano_slug)
-    if not plano:
-        raise ValueError(f"Plano inválido: {plano_slug}")
-
-    # Primeiro cria o plano de assinatura
-    plan_payload = {
-        "reason": f"Jurimetrix {plano['nome']}",
-        "auto_recurring": {
-            "frequency": 1,
-            "frequency_type": "months",
-            "transaction_amount": plano["valor"],
-            "currency_id": "BRL",
-        },
-        "payment_methods_allowed": {
-            "payment_types": [{"id": "credit_card"}, {"id": "debit_card"}],
-        },
-        "back_url": "https://jurimetrix.com/painel-do-cliente/",
-    }
-
-    r = requests.post(f"{MP_BASE}/preapproval_plan", json=plan_payload, headers=_headers(), timeout=15)
-    r.raise_for_status()
-    plan_data = r.json()
-
-    return {
-        "plan_id": plan_data["id"],
-        "init_point": plan_data["init_point"],
-        "plano": plano,
+        "valor": valor,
+        "periodo": periodo,
     }
 
 def verificar_pagamento(payment_id: str) -> dict:
     """Verifica status de um pagamento."""
     r = requests.get(f"{MP_BASE}/v1/payments/{payment_id}", headers=_headers(), timeout=15)
-    r.raise_for_status()
-    return r.json()
-
-def verificar_preferencia(preference_id: str) -> dict:
-    """Busca pagamentos de uma preferência."""
-    r = requests.get(
-        f"{MP_BASE}/v1/payments/search",
-        params={"preference_id": preference_id},
-        headers=_headers(),
-        timeout=15
-    )
     r.raise_for_status()
     return r.json()
