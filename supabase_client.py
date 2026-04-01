@@ -184,4 +184,52 @@ def validar_jwt_supabase(token: str) -> Optional[dict]:
         log.debug(f"JWT inválido: {e}")
         return None
 
+def atualizar_plano_usuario(user_id: str, plano_slug: str, tokens_mes: int = None, payment_id: str = None):
+    """Atualiza plano do usuário após pagamento aprovado."""
+    try:
+        # Busca o plano_id pelo slug
+        planos = {
+            "plus":      {"tokens": 3_000_000},
+            "pro":       {"tokens": 15_000_000},
+            "unlimited": {"tokens": 999_999_999},
+        }
+        tokens = tokens_mes or planos.get(plano_slug, {}).get("tokens", 1_000_000)
+
+        # Busca plano_id na tabela planos
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/planos",
+            params={"slug": f"eq.{plano_slug}", "select": "id"},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+            timeout=10
+        )
+        planos_data = r.json() if r.ok else []
+        plano_id = planos_data[0]["id"] if planos_data else None
+
+        if not plano_id:
+            log.warning(f"Plano {plano_slug} não encontrado na tabela planos")
+            return False
+
+        # Atualiza assinatura
+        payload = {
+            "plano_id": plano_id,
+            "status": "ativa",
+            "tokens_mes": tokens,
+            "tokens_usados_mes": 0,
+        }
+        if payment_id:
+            payload["mp_payment_id"] = payment_id
+
+        r2 = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/assinaturas",
+            params={"user_id": f"eq.{user_id}"},
+            json=payload,
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"},
+            timeout=10
+        )
+        log.info(f"[SB] Plano atualizado: user={user_id} plano={plano_slug} status={r2.status_code}")
+        return r2.ok
+    except Exception as e:
+        log.error(f"[SB] Erro atualizar_plano_usuario: {e}")
+        return False
+
 DB = SupabaseClient()
