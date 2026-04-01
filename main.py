@@ -921,7 +921,7 @@ def health():
         "mni":{"enabled":MNI_ENABLED},
         "pdf":PDF_AVAILABLE,
         "tribunais":len(ALIAS_MAP),
-        "escavador":{"ok":ESCAVADOR_OK,"configured":bool(ESCAVADOR_API_KEY)},
+        "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
