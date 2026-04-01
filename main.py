@@ -666,6 +666,7 @@ except Exception as _mp_e:
 class MPPreferenciaIn(BaseModel):
     plano: str
     email: str
+    periodo: str = "mensal"
 
 class MPWebhookIn(BaseModel):
     type: Optional[str] = None
@@ -684,6 +685,7 @@ async def mp_criar_preferencia(body: MPPreferenciaIn, authorization: Optional[st
             plano_slug=body.plano,
             user_id=uid,
             user_email=body.email,
+            periodo=body.periodo,
         )
         return {"ok": True, **result}
     except Exception as e:
@@ -712,7 +714,9 @@ async def mp_webhook(body: dict):
             log.info(f"[MP Webhook] payment_id={payment_id} status={status} ext_ref={ext_ref}")
             
             if status == "approved" and ext_ref and "|" in ext_ref and SUPABASE_OK:
-                user_id, plano_slug = ext_ref.split("|", 1)
+                parts = ext_ref.split("|")
+                user_id = parts[0]
+                plano_slug = parts[1] if len(parts) > 1 else "free"
                 plano_info = MP.PLANOS.get(plano_slug, {})
                 tokens = plano_info.get("tokens")
                 
