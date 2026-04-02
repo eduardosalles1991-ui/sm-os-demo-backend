@@ -1,49 +1,41 @@
-<!-- v2 -->
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Jurimetrix — Painel</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
 <style>
-/* Reset WordPress */
-.juri-wrap{all:initial;display:block;font-family:'Lato',sans-serif;}
-.juri-wrap *{box-sizing:border-box;margin:0;padding:0;}
-.juri-wrap a{text-decoration:none;}
+:root{--navy:#1B2B4B;--teal:#2A7A8C;--gold:#C8A84B;--muted:#64748B;--danger:#DC2626;--success:#16A34A;--glass:rgba(255,255,255,0.85);--blur:blur(24px) saturate(1.4);}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
 
-/* Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@700&family=Lato:wght@400;700&display=swap');
-
-/* Variables */
-.juri-wrap{
-  --navy:#1B2B4B;--teal:#2A7A8C;--gold:#C8A84B;
-  --bg:#F4F6F9;--white:#fff;--border:#E2E8F0;
-  --muted:#64748B;--danger:#DC2626;--success:#16A34A;
-  --glass:rgba(255,255,255,0.85);
-  --blur:blur(24px) saturate(1.4);
+/* Loading screen profissional */
+#juri-loading{
+  position:fixed;inset:0;z-index:99999;
+  background:linear-gradient(135deg,#1B2B4B 0%,#2A7A8C 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;
+  transition:opacity .5s ease;
 }
+#juri-loading.hide{opacity:0;pointer-events:none;}
+.loading-logo{width:64px;height:64px;animation:pulse-logo 2s ease-in-out infinite;}
+@keyframes pulse-logo{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.7;transform:scale(.95);}}
+.loading-name{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:24px;letter-spacing:.12em;color:#fff;}
+.loading-sub{font-size:13px;color:rgba(255,255,255,.6);font-style:italic;}
+.loading-bar{width:200px;height:3px;background:rgba(255,255,255,.15);border-radius:999px;overflow:hidden;}
+.loading-bar-fill{height:100%;width:0%;background:linear-gradient(90deg,#C8A84B,#fff);border-radius:999px;animation:load-progress 2s ease forwards;}
+@keyframes load-progress{0%{width:0%}60%{width:70%}100%{width:95%}}
 
 /* Layout */
 .juri-wrap{
-  position:fixed;inset:0;z-index:99999;
-  background:
-    radial-gradient(ellipse 70% 50% at 15% 15%,rgba(42,122,140,.12) 0%,transparent 55%),
-    radial-gradient(ellipse 50% 70% at 85% 85%,rgba(27,43,75,.10) 0%,transparent 55%),
-    linear-gradient(135deg,#EAF0F8 0%,#DCE8F5 100%);
-  display:flex;
+  position:fixed;inset:0;z-index:9999;
+  background:radial-gradient(ellipse 70% 50% at 15% 15%,rgba(42,122,140,.12) 0%,transparent 55%),radial-gradient(ellipse 50% 70% at 85% 85%,rgba(27,43,75,.10) 0%,transparent 55%),linear-gradient(135deg,#EAF0F8 0%,#DCE8F5 100%);
+  display:none;
 }
-
-/* Debug bar */
-.juri-debug{
-  position:fixed;top:0;left:0;right:0;
-  background:#1B2B4B;color:#fff;
-  font-family:monospace;font-size:12px;
-  padding:8px 16px;z-index:100000;
-  display:flex;align-items:center;gap:16px;
-}
+.juri-wrap.show{display:flex;}
 
 /* Sidebar */
-.juri-sidebar{
-  width:240px;flex-shrink:0;
-  background:rgba(27,43,75,0.92);
-  display:flex;flex-direction:column;
-  padding:20px 14px;
-  border-right:1px solid rgba(255,255,255,.08);
-}
+.juri-sidebar{width:240px;flex-shrink:0;background:rgba(27,43,75,0.92);display:flex;flex-direction:column;padding:20px 14px;border-right:1px solid rgba(255,255,255,.08);}
 .juri-logo{display:flex;align-items:center;gap:9px;padding-bottom:16px;border-bottom:1px solid rgba(255,255,255,.1);margin-bottom:12px;}
 .juri-logo-icon{width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,.15);display:grid;place-items:center;}
 .juri-logo-name{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:15px;letter-spacing:.09em;color:#fff;}
@@ -65,46 +57,70 @@
 
 /* Cards */
 .juri-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:22px;}
-.juri-card{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:14px;padding:18px 20px;backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);box-shadow:0 2px 12px rgba(27,43,75,.07);}
+.juri-card{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:14px;padding:18px 20px;backdrop-filter:var(--blur);box-shadow:0 2px 12px rgba(27,43,75,.07);}
 .juri-card-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#64748B;margin-bottom:8px;}
 .juri-card-val{font-family:'Rajdhani',sans-serif;font-size:26px;font-weight:700;color:#1B2B4B;}
 .juri-card-sub{font-size:11px;color:#64748B;margin-top:3px;}
 
 /* Token bar */
-.juri-bar-wrap{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:14px;padding:20px 22px;margin-bottom:22px;backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);}
+.juri-bar-wrap{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:14px;padding:20px 22px;margin-bottom:22px;backdrop-filter:var(--blur);}
 .juri-bar-header{display:flex;justify-content:space-between;margin-bottom:12px;}
 .juri-bar-title{font-size:13px;font-weight:700;color:#1B2B4B;}
 .juri-bar{height:8px;background:rgba(27,43,75,.08);border-radius:4px;overflow:hidden;}
-.juri-bar-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#2A7A8C,#3A9AAC);transition:width .5s;}
+.juri-bar-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#2A7A8C,#3A9AAC);transition:width .6s cubic-bezier(.4,0,.2,1);}
 .juri-bar-details{display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#64748B;}
 
 /* Plano */
-.juri-plano-card{background:var(--glass);border:1.5px solid rgba(27,43,75,.2);border-radius:14px;padding:22px;margin-bottom:22px;backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);}
+.juri-plano-card{background:var(--glass);border:1.5px solid rgba(27,43,75,.15);border-radius:14px;padding:22px;margin-bottom:16px;backdrop-filter:var(--blur);}
 .juri-plano-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
 .juri-plano-nome{font-family:'Rajdhani',sans-serif;font-size:20px;font-weight:700;color:#1B2B4B;}
 .juri-plano-badge{background:#1B2B4B;color:#fff;font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;padding:4px 12px;border-radius:999px;}
-.juri-btn{padding:10px 22px;border-radius:10px;border:none;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);color:#fff;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.05em;box-shadow:0 2px 10px rgba(27,43,75,.18);}
+.juri-btn{padding:10px 22px;border-radius:10px;border:none;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);color:#fff;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.05em;box-shadow:0 2px 10px rgba(27,43,75,.18);transition:all .2s;}
+.juri-btn:hover{opacity:.9;transform:translateY(-1px);}
 
-/* Loading state */
-.juri-loading{display:flex;align-items:center;justify-content:center;height:100%;font-size:14px;color:#64748B;}
+/* Error screen */
+#juri-error{display:none;position:fixed;inset:0;z-index:99998;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);align-items:center;justify-content:center;flex-direction:column;gap:16px;font-family:'Lato',sans-serif;}
+#juri-error.show{display:flex;}
+#juri-error p{color:rgba(255,255,255,.7);font-size:14px;}
+#juri-error a{color:#C8A84B;font-weight:700;text-decoration:none;}
 </style>
+</head>
+<body>
 
-<!-- Debug bar -->
-<div class="juri-debug" id="juri-debug">
-  <span id="juri-status">⏳ HTML carregado — aguardando JS...</span>
-  <span id="juri-info" style="opacity:.7;font-size:11px;"></span>
+<!-- Loading screen profissional -->
+<div id="juri-loading">
+  <svg class="loading-logo" viewBox="0 0 80 80" fill="none">
+    <rect x="16" y="60" width="48" height="4" rx="1.5" fill="white" opacity=".8"/>
+    <rect x="18" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="30" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="44" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="56" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <path d="M10 30 L40 8 L70 30 Z" fill="white" opacity=".8"/>
+    <line x1="40" y1="14" x2="40" y2="20" stroke="#C8A84B" stroke-width="2" stroke-linecap="round"/>
+    <line x1="34" y1="20" x2="46" y2="20" stroke="#C8A84B" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <div class="loading-name">JURIMETRIX</div>
+  <div class="loading-sub">Carregando seu painel...</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
 </div>
-<!-- Emergency fallback — shows if JS never runs -->
-<div id="juri-fallback" style="position:fixed;inset:0;z-index:99998;background:#EAF0F8;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;font-family:Lato,sans-serif;">
-  <div style="font-size:48px;">⏳</div>
-  <div style="font-size:18px;color:#1B2B4B;font-weight:700;">Carregando painel...</div>
-  <div id="juri-fallback-msg" style="font-size:13px;color:#64748B;">Verificando autenticação</div>
+
+<!-- Error screen -->
+<div id="juri-error">
+  <svg width="48" height="48" viewBox="0 0 80 80" fill="none">
+    <rect x="16" y="60" width="48" height="4" rx="1.5" fill="white" opacity=".5"/>
+    <rect x="18" y="30" width="6" height="30" rx="2" fill="white" opacity=".5"/>
+    <rect x="30" y="30" width="6" height="30" rx="2" fill="white" opacity=".5"/>
+    <rect x="44" y="30" width="6" height="30" rx="2" fill="white" opacity=".5"/>
+    <rect x="56" y="30" width="6" height="30" rx="2" fill="white" opacity=".5"/>
+    <path d="M10 30 L40 8 L70 30 Z" fill="white" opacity=".5"/>
+  </svg>
+  <div style="font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;color:#fff;letter-spacing:.06em;">Sessão expirada</div>
+  <p>Faça login novamente para acessar o painel.</p>
+  <a href="https://jurimetrix.com/login-cadastro/">← Ir para o login</a>
 </div>
 
-<!-- Main wrap — position:fixed to escape WordPress layout -->
-<div class="juri-wrap" id="juri-wrap" style="display:none;padding-top:32px;">
-
-  <!-- Sidebar -->
+<!-- Painel -->
+<div class="juri-wrap" id="juri-wrap">
   <div class="juri-sidebar">
     <div class="juri-logo">
       <div class="juri-logo-icon">
@@ -136,8 +152,8 @@
     </div>
   </div>
 
-  <!-- Main -->
   <div class="juri-main">
+    <!-- Visão geral -->
     <div class="juri-page active" id="juri-overview">
       <div class="juri-title">Visão Geral</div>
       <div class="juri-cards">
@@ -155,6 +171,7 @@
       </div>
     </div>
 
+    <!-- Meu plano -->
     <div class="juri-page" id="juri-plano-page">
       <div class="juri-title">Meu Plano</div>
       <div class="juri-plano-card">
@@ -162,6 +179,7 @@
           <div class="juri-plano-nome" id="juri-p-nome">—</div>
           <span class="juri-plano-badge" id="juri-p-badge">ATIVO</span>
         </div>
+        <p style="font-size:13px;color:#64748B;margin-bottom:16px;" id="juri-p-desc">—</p>
         <button class="juri-btn" onclick="window.open('https://jurimetrix.com/pricing/','_blank')">Ver outros planos</button>
       </div>
     </div>
@@ -175,18 +193,22 @@
   var SKEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxd29qenhiZ3V6emx3ZWVid3lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4OTQwODcsImV4cCI6MjA5MDQ3MDA4N30.m1OEcUla2TS2BAVgaoRiZKQXp1ujsPvv5mDDMH-_y00";
   var BACK = "https://sm-os-demo-backend.onrender.com";
 
-  function setStatus(txt, color){
-    var el = document.getElementById('juri-status');
-    var bar = document.getElementById('juri-debug');
-    if(el) el.textContent = txt;
-    if(bar && color) bar.style.background = color;
+  function showError(){
+    document.getElementById('juri-loading').style.display='none';
+    document.getElementById('juri-error').classList.add('show');
   }
-  function setInfo(txt){
-    var el = document.getElementById('juri-info');
-    if(el) el.textContent = txt;
+
+  function showPanel(){
+    var ld = document.getElementById('juri-loading');
+    ld.classList.add('hide');
+    setTimeout(function(){
+      ld.style.display='none';
+      document.getElementById('juri-wrap').classList.add('show');
+    }, 500);
   }
+
   function fmtN(n){
-    if(!n) return "0";
+    if(!n && n!==0) return "—";
     if(n>=999000000) return "Ilimitados";
     if(n>=1000000) return (n/1000000).toFixed(1).replace(".0","")+"M";
     if(n>=1000) return (n/1000).toFixed(0)+"K";
@@ -198,6 +220,10 @@
     document.querySelectorAll('.juri-nav').forEach(function(n){n.classList.remove('active');});
     var pg = document.getElementById('juri-'+id) || document.getElementById('juri-'+id+'-page');
     if(pg) pg.classList.add('active');
+    // Mark nav active
+    document.querySelectorAll('.juri-nav').forEach(function(n){
+      if(n.getAttribute('onclick') && n.getAttribute('onclick').includes("'"+id+"'")){n.classList.add('active');}
+    });
   }
   window.juriPage = juriPage;
 
@@ -207,7 +233,9 @@
     var tokens_mes = (assin && assin.tokens_mes) || 1000000;
     var tokens_usados = (assin && assin.tokens_usados_mes) || 0;
     var disp = Math.max(0, tokens_mes - tokens_usados);
-    var pct = tokens_mes ? Math.round(tokens_usados/tokens_mes*100) : 0;
+    var pct = tokens_mes >= 999000000 ? 0 : Math.round(tokens_usados/tokens_mes*100);
+
+    var set = function(id,val){ var el=document.getElementById(id); if(el) el.textContent=val; };
 
     var av = document.getElementById('juri-av');
     var nm = document.getElementById('juri-nm');
@@ -216,43 +244,35 @@
     if(nm) nm.textContent = nome;
     if(pl) pl.textContent = plano.toUpperCase();
 
-    var set = function(id,val){ var el=document.getElementById(id); if(el) el.textContent=val; };
     set('juri-s-plano', plano.charAt(0).toUpperCase()+plano.slice(1));
     set('juri-s-status', (assin&&assin.status==='ativa')?'Ativo':'—');
-    set('juri-s-disp', fmtN(disp));
+    set('juri-s-disp', fmtN(tokens_mes>=999000000 ? 999000000 : disp));
     set('juri-s-total', 'de '+fmtN(tokens_mes)+' / mês');
-    set('juri-s-pct', pct+'%');
+    set('juri-s-pct', tokens_mes>=999000000 ? '∞' : pct+'%');
     set('juri-s-usado', fmtN(tokens_usados)+' usados');
-    set('juri-bar-pct', pct+'%');
+    set('juri-bar-pct', tokens_mes>=999000000 ? '∞' : pct+'%');
     set('juri-bar-usado', fmtN(tokens_usados)+' usados');
-    set('juri-bar-disp', fmtN(disp)+' disponíveis');
+    set('juri-bar-disp', fmtN(tokens_mes>=999000000 ? 999000000 : disp)+' disponíveis');
     set('juri-p-nome', plano.toUpperCase());
+
+    var precos = {free:'Gratuito',plus:'R$109,99/mês',pro:'R$549,99/mês',unlimited:'R$999,99/mês'};
+    set('juri-p-desc', precos[plano] || '—');
 
     var fill = document.getElementById('juri-bar-fill');
     if(fill) fill.style.width = Math.min(pct,100)+'%';
 
-    // Show panel
-    var wrap = document.getElementById('juri-wrap');
-    if(wrap) wrap.style.display = 'flex';
-  var fb = document.getElementById('juri-fallback');
-  if(fb) fb.style.display = 'none';
-
-    // Hide debug after 3s
-    setTimeout(function(){
-      var dbg = document.getElementById('juri-debug');
-      if(dbg) dbg.style.display = 'none';
-    }, 3000);
+    showPanel();
   }
 
   window.juriLogout = async function(){
     if(typeof window._juriSB !== 'undefined') await window._juriSB.auth.signOut();
     localStorage.removeItem('juri_token');
     localStorage.removeItem('juri_refresh');
+    localStorage.removeItem('juri_user');
     window.location.href = "https://jurimetrix.com/login-cadastro/";
   };
 
   async function loadAndRender(session){
-    setStatus('⏳ Carregando dados...', '#1B2B4B');
     var user = null, assin = null;
     try{
       var r = await fetch(BACK+"/me", {headers:{"Authorization":"Bearer "+session.access_token}});
@@ -261,7 +281,7 @@
         user  = d.perfil  || {};
         assin = d.assinatura || {};
       }
-    }catch(e){ setInfo('backend: '+e.message); }
+    }catch(e){ console.warn('loadAndRender:', e); }
 
     if(!user || !user.email){
       var u = session.user;
@@ -269,31 +289,24 @@
       assin = {plano_slug:'free',status:'ativa',tokens_mes:1000000,tokens_usados_mes:0};
     }
 
-    setStatus('✅ '+user.email, '#16A34A');
     render(user, assin);
   }
 
   async function init(){
-    setStatus('⏳ Verificando Supabase...', '#1B2B4B');
-
     if(typeof supabase === 'undefined'){
-      setStatus('❌ Supabase não carregou', '#DC2626');
-      return;
+      showError(); return;
     }
 
     var sb = supabase.createClient(SURL, SKEY);
     window._juriSB = sb;
 
-    // Try hash params first
+    // Try hash token
     var hash = window.location.hash.replace('#','');
     var hp   = new URLSearchParams(hash);
     var tk   = hp.get('tk');
     var rf   = hp.get('rf');
 
-    setInfo('hash tk: '+(tk?'SIM':'NÃO')+' | ls tk: '+(localStorage.getItem('juri_token')?'SIM':'NÃO'));
-
     if(tk && rf){
-      setStatus('⏳ Restaurando sessão...', '#92400E');
       try{
         var res = await sb.auth.setSession({
           access_token:  decodeURIComponent(tk),
@@ -305,43 +318,31 @@
           localStorage.setItem('juri_refresh', res.data.session.refresh_token);
           await loadAndRender(res.data.session);
           return;
-        } else {
-          setInfo('setSession error: '+(res.error&&res.error.message));
         }
-      }catch(e){ setInfo('setSession exception: '+e.message); }
+      }catch(e){ console.warn('setSession:', e); }
     }
 
     // Try existing session
-    setStatus('⏳ Verificando sessão...', '#1B2B4B');
-    await new Promise(function(r){setTimeout(r,500);});
-    var {data, error} = await sb.auth.getSession();
+    var {data} = await sb.auth.getSession();
     var s = data && data.session;
 
-    // Try refresh from localStorage
+    // Try localStorage
     if(!s){
       var storedTk = localStorage.getItem('juri_token');
       var storedRf = localStorage.getItem('juri_refresh');
       if(storedTk && storedRf){
-        setStatus('⏳ Refresh session...', '#1B2B4B');
         try{
           var res2 = await sb.auth.setSession({access_token:storedTk, refresh_token:storedRf});
           s = res2.data && res2.data.session;
-        }catch(e){ setInfo('refresh error: '+e.message); }
+        }catch(e){ console.warn('refresh:', e); }
       }
     }
 
-    if(!s){
-      setStatus('🔄 Sem sessão → login', '#92400E');
-      setTimeout(function(){
-        window.location.href = "https://jurimetrix.com/login-cadastro/";
-      }, 2000);
-      return;
-    }
+    if(!s){ showError(); return; }
 
     await loadAndRender(s);
   }
 
-  // Run after DOM ready
   if(document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', init);
   } else {
@@ -349,3 +350,5 @@
   }
 })();
 </script>
+</body>
+</html>
