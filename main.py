@@ -844,7 +844,7 @@ def criar_conversa(
             titulo=payload.titulo,
             session_id=payload.session_id,
             tribunal=payload.tribunal,
-            processo=payload.processo_numero,
+            numero_processo=payload.processo_numero,
         )
         return {"ok": True, "conversa": conv}
     except Exception as e:
