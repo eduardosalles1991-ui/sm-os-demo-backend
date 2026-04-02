@@ -921,65 +921,7 @@ def get_me(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(500, str(e))
 
 
-# ─────────────────────────────────────────────────────────────────
-# ROTAS DE CONVERSAS (Supabase)
-# ─────────────────────────────────────────────────────────────────
-class ConvIn(BaseModel):
-    titulo: str
-    session_id: Optional[str] = None
-    numero_processo: Optional[str] = None
-    tribunal: Optional[str] = None
-
-class MsgIn(BaseModel):
-    role: str
-    content: str
-    tokens: int = 0
-
-@app.get("/conversas")
-def get_conversas(authorization: Optional[str] = Header(default=None)):
-    if not SUPABASE_OK:
-        return {"ok": False, "items": [], "error": "Supabase nao configurado."}
-    user = get_supabase_user(authorization)
-    if not user:
-        raise HTTPException(401, "Token Supabase invalido.")
-    convs = listar_conversas(user["id"], limit=60)
-    return {"ok": True, "items": convs}
-
-@app.post("/conversas")
-def post_conversa(payload: ConvIn,
-                  authorization: Optional[str] = Header(default=None)):
-    if not SUPABASE_OK:
-        return {"ok": False, "error": "Supabase nao configurado."}
-    user = get_supabase_user(authorization)
-    if not user:
-        raise HTTPException(401, "Token Supabase invalido.")
-    conv = criar_conversa(user["id"], payload.titulo,
-                          payload.session_id, payload.numero_processo, payload.tribunal)
-    return {"ok": True, "conversa": conv}
-
-@app.get("/conversas/{conv_id}/mensagens")
-def get_mensagens(conv_id: str,
-                  authorization: Optional[str] = Header(default=None)):
-    if not SUPABASE_OK:
-        return {"ok": False, "items": []}
-    user = get_supabase_user(authorization)
-    if not user:
-        raise HTTPException(401, "Token Supabase invalido.")
-    msgs = listar_mensagens(conv_id)
-    return {"ok": True, "items": msgs}
-
-@app.delete("/conversas/{conv_id}")
-def del_conversa(conv_id: str,
-                 authorization: Optional[str] = Header(default=None)):
-    if not SUPABASE_OK:
-        return {"ok": False}
-    user = get_supabase_user(authorization)
-    if not user:
-        raise HTTPException(401, "Token Supabase invalido.")
-    deletar_conversa(conv_id, user["id"])
-    return {"ok": True}
-
-# /me route — see implementation above
+# Rotas de conversas implementadas acima
 
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
