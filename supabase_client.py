@@ -184,6 +184,71 @@ def validar_jwt_supabase(token: str) -> Optional[dict]:
         log.debug(f"JWT inválido: {e}")
         return None
 
+def verificar_e_decrementar_tokens(user_id: str, tokens_entrada: int = 0) -> dict:
+    """Verifica se usuario tem tokens e decrementa o uso da entrada."""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/assinaturas",
+            params={"user_id": f"eq.{user_id}", "select": "tokens_mes,tokens_usados_mes,status,planos(slug)"},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+            timeout=10
+        )
+        data = r.json() if r.ok else []
+        if not data:
+            return {"ok": True}  # sem assinatura = free, permite usar
+
+        assin = data[0]
+        tokens_mes = assin.get("tokens_mes") or 1_000_000
+        tokens_usados = assin.get("tokens_usados_mes") or 0
+
+        # Ilimitado (999_999_999)
+        if tokens_mes >= 999_999_999:
+            return {"ok": True}
+
+        if tokens_usados >= tokens_mes:
+            return {"ok": False, "motivo": "limite_atingido", "tokens_mes": tokens_mes, "tokens_usados": tokens_usados}
+
+        # Decrementa tokens de entrada
+        novo_usado = tokens_usados + max(tokens_entrada // 4, 100)  # ~1 token = 4 chars
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/assinaturas",
+            params={"user_id": f"eq.{user_id}"},
+            json={"tokens_usados_mes": novo_usado},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"},
+            timeout=10
+        )
+        return {"ok": True, "tokens_restantes": tokens_mes - novo_usado}
+    except Exception as e:
+        log.warning(f"[SB] verificar_tokens erro: {e}")
+        return {"ok": True}  # em caso de erro, permite continuar
+
+def registrar_tokens_resposta(user_id: str, chars_resposta: int = 0):
+    """Adiciona tokens da resposta ao consumo do usuario."""
+    try:
+        tokens_resposta = max(chars_resposta // 4, 50)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/assinaturas",
+            params={"user_id": f"eq.{user_id}", "select": "tokens_usados_mes,tokens_mes"},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
+            timeout=10
+        )
+        data = r.json() if r.ok else []
+        if not data:
+            return
+        tokens_mes = data[0].get("tokens_mes") or 1_000_000
+        if tokens_mes >= 999_999_999:
+            return
+        tokens_usados = data[0].get("tokens_usados_mes") or 0
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/assinaturas",
+            params={"user_id": f"eq.{user_id}"},
+            json={"tokens_usados_mes": tokens_usados + tokens_resposta},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"},
+            timeout=10
+        )
+    except Exception as e:
+        log.warning(f"[SB] registrar_tokens_resposta erro: {e}")
+
 def atualizar_plano_usuario(user_id: str, plano_slug: str, tokens_mes: int = None, payment_id: str = None):
     """Atualiza plano do usuário após pagamento aprovado."""
     try:
