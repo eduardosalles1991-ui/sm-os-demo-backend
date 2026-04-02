@@ -1082,11 +1082,19 @@ def gerar_relatorio(
     except Exception as e: log.exception("Erro relatório"); raise HTTPException(500,f"Erro interno: {e}")
 
 @app.post("/chat", response_model=ChatOut)
-def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
+def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authorization:Optional[str]=Header(default=None)):
     auth401(x_demo_key)
     s=sess(payload.session_id)
     message=(payload.message or "").strip()
     state=payload.state or {}
+
+    # ── Verificar e decrementar tokens ────────────────────────────────
+    user_id = get_user_from_request(authorization) if authorization else None
+    if user_id and SUPABASE_OK:
+        tokens_reply = SB.verificar_e_decrementar_tokens(user_id, len(message))
+        if tokens_reply and not tokens_reply.get("ok"):
+            limite_msg = "Limite de tokens atingido! Faca upgrade em jurimetrix.com/pricing"
+            return ChatOut(message=limite_msg, state=state, prompt_level="limite")
 
     s["messages"].append({"role":"user","content":message})
     s["messages"]=s["messages"][-20:]
@@ -1188,6 +1196,8 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
                 msgs[-1]={"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
                 reply=call_openai(msgs,0.15)
                 s["messages"].append({"role":"assistant","content":reply})
+                if user_id and SUPABASE_OK:
+                    SB.registrar_tokens_resposta(user_id, len(reply))
                 return ChatOut(message=reply,state=state,prompt_level=eff_lvl)
 
             except DataJudError as e:
@@ -1218,4 +1228,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None)):
 
     s["messages"].append({"role":"assistant","content":reply})
     s["messages"]=s["messages"][-20:]
+    if user_id and SUPABASE_OK:
+        SB.registrar_tokens_resposta(user_id, len(reply))
     return ChatOut(message=reply,state=state,prompt_level=plevel)
