@@ -315,9 +315,6 @@ def salvar_mensagem(conversa_id, role, conteudo, prompt_level=None, tokens_usado
 def deletar_conversa(conversa_id, user_id):
     return DB.deletar_conversa(conversa_id, user_id)
 
-def get_user_id_from_token(token):
-    return DB.get_user_id_from_token(token)
-
 def get_stats():
     return DB.get_stats()
 
