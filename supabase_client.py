@@ -298,3 +298,28 @@ def atualizar_plano_usuario(user_id: str, plano_slug: str, tokens_mes: int = Non
         return False
 
 DB = SupabaseClient()
+
+# ── Funções de conveniência no nível do módulo ──────────────────────
+def listar_conversas(user_id, limit=50):
+    return DB.listar_conversas(user_id, limit)
+
+def criar_conversa(user_id, titulo="Nova conversa", session_id=None, tribunal=None, numero_processo=None):
+    return DB.criar_conversa(user_id, titulo, session_id, tribunal, numero_processo)
+
+def listar_mensagens(conversa_id, limit=50):
+    return DB.listar_mensagens(conversa_id, limit)
+
+def salvar_mensagem(conversa_id, role, conteudo, prompt_level=None, tokens_usados=0):
+    return DB.salvar_mensagem(conversa_id, role, conteudo, prompt_level, tokens_usados)
+
+def deletar_conversa(conversa_id, user_id):
+    return DB.deletar_conversa(conversa_id, user_id)
+
+def get_user_id_from_token(token):
+    return DB.get_user_id_from_token(token)
+
+def get_stats():
+    return DB.get_stats()
+
+def is_configured():
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
