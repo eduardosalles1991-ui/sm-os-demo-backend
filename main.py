@@ -766,12 +766,7 @@ def auth401(k:Optional[str]):
     if DEMO_KEY and k != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Não autorizado")
 
-def get_supabase_user(authorization:Optional[str]=Header(default=None)):
-    """Extrai e valida usuario do Supabase JWT. Retorna None se nao autenticado."""
-    if not SUPABASE_OK: return None
-    if not authorization: return None
-    token = authorization.replace("Bearer ","").strip()
-    return verify_token(token) if token else None
+
 
 def sess(sid:str)->dict:
     return SESSIONS.setdefault(sid,{
@@ -959,6 +954,7 @@ def health():
             "service_key": "✅ configurado" if os.getenv("SUPABASE_SERVICE_KEY") else "❌ faltando",
             "jwt_secret":  "✅ configurado" if os.getenv("SUPABASE_JWT_SECRET") else "❌ faltando",
         },
+        "mercadopago":{"ok": MP_OK if 'MP_OK' in dir() else False, "configured": bool(os.getenv("MP_ACCESS_TOKEN"))},
     }
 
 @app.get("/tribunais")
