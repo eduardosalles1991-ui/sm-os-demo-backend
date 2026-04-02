@@ -848,6 +848,7 @@ def criar_conversa(
         )
         return {"ok": True, "conversa": conv}
     except Exception as e:
+        log.error(f"[/conversas POST] erro: {e}")
         raise HTTPException(500, str(e))
 
 @app.get("/conversas/{conversa_id}/mensagens")
@@ -875,13 +876,13 @@ def salvar_mensagem(
     if not user_id or not SUPABASE_OK:
         raise HTTPException(401, "Não autenticado")
     try:
+        tokens_total = (payload.tokens_input or 0) + (payload.tokens_output or 0)
         msg = SB.salvar_mensagem(
             conversa_id=payload.conversa_id,
             role=payload.role,
             conteudo=payload.conteudo,
-            tokens_input=payload.tokens_input,
-            tokens_output=payload.tokens_output,
             prompt_level=payload.prompt_level,
+            tokens_usados=tokens_total,
         )
         return {"ok": True, "mensagem": msg}
     except Exception as e:
@@ -913,7 +914,7 @@ def get_me(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(401, "Token inválido ou expirado.")
     try:
         perfil     = SB.DB.get_perfil(user_id) or {}
-        assinatura = SB.DB.get_assinatura_ativa(user_id) or {}
+        assinatura = SB.DB.get_assinatura(user_id) or {}
         return {"ok": True, "perfil": perfil, "assinatura": assinatura}
     except Exception as e:
         log.error(f"[/me] erro: {e}")
