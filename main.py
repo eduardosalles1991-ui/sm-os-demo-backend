@@ -918,6 +918,67 @@ def get_me(authorization: Optional[str] = Header(default=None)):
 
 # Rotas de conversas implementadas acima
 
+# ═══════════════════════════════════════════════════════
+# ADMIN ROUTES
+# ═══════════════════════════════════════════════════════
+ADMIN_EMAILS = {"eduardo.salles1991@gmail.com", "Inteligenciajuridica@jurimetrix.com"}
+
+def is_admin(authorization: Optional[str]) -> bool:
+    if not SUPABASE_OK or not authorization: return False
+    user_id = get_user_from_request(authorization)
+    if not user_id: return False
+    try:
+        perfil = SB.DB.get_perfil(user_id) or {}
+        return perfil.get("email","") in ADMIN_EMAILS or perfil.get("is_admin", False)
+    except: return False
+
+@app.get("/admin/stats")
+def admin_stats(authorization: Optional[str] = Header(default=None)):
+    if not is_admin(authorization):
+        raise HTTPException(403, "Acesso negado")
+    try:
+        stats = SB.DB.get_stats() or {}
+        return {"ok": True, **stats}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.get("/admin/usuarios")
+def admin_usuarios(
+    limit: int = 100,
+    offset: int = 0,
+    authorization: Optional[str] = Header(default=None)
+):
+    if not is_admin(authorization):
+        raise HTTPException(403, "Acesso negado")
+    try:
+        usuarios = SB.DB.listar_clientes(limit=limit, offset=offset) or []
+        return {"ok": True, "usuarios": usuarios, "total": len(usuarios)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+class AtualizarPlanoIn(BaseModel):
+    user_id: str
+    plano_slug: str
+    status: str = "ativa"
+    tokens_mes: Optional[int] = None
+
+@app.post("/admin/atualizar-plano")
+def admin_atualizar_plano(
+    body: AtualizarPlanoIn,
+    authorization: Optional[str] = Header(default=None)
+):
+    if not is_admin(authorization):
+        raise HTTPException(403, "Acesso negado")
+    try:
+        ok = SB.atualizar_plano_usuario(
+            user_id=body.user_id,
+            plano_slug=body.plano_slug,
+            tokens_mes=body.tokens_mes,
+        )
+        return {"ok": ok}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
 
