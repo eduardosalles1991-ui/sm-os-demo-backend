@@ -94,13 +94,21 @@ class SupabaseClient:
 
     # ── Mensagens ───────────────────────────────────────────────
     def salvar_mensagem(self, conversa_id, role, conteudo, prompt_level=None, tokens_usados=0):
-        data = {"conversa_id": conversa_id, "role": role, "conteudo": conteudo, "tokens_usados": tokens_usados}
+        tokens_input = tokens_usados // 2 if tokens_usados else 0
+        tokens_output = tokens_usados - tokens_input
+        data = {
+            "conversa_id": conversa_id,
+            "role": role,
+            "conteudo": conteudo,
+            "tokens_input": tokens_input,
+            "tokens_output": tokens_output,
+        }
         if prompt_level: data["prompt_level"] = prompt_level
         return self.insert("mensagens", data)
 
     def listar_mensagens(self, conversa_id, limit=50):
         return self.select("mensagens",
-            query="id,role,conteudo,prompt_level,tokens_usados,criado_em",
+            query="id,role,conteudo,prompt_level,tokens_input,tokens_output,criado_em",
             filters={"conversa_id": f"eq.{conversa_id}", "order": "criado_em.asc", "limit": str(limit)})
 
     # ── Uso tokens ──────────────────────────────────────────────
