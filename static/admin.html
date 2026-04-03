@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Jurimetrix — Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#1B2B4B;--teal:#2A7A8C;--gold:#C8A84B;--muted:#64748B;--danger:#DC2626;--success:#16A34A;--glass:rgba(255,255,255,0.85);--blur:blur(24px) saturate(1.4);}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;font-family:'Lato',sans-serif;}
+
+/* Loading */
+#loading{position:fixed;inset:0;z-index:9999;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;}
+#loading.hide{display:none;}
+.ld-logo{width:56px;height:56px;animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.6;transform:scale(.92);}}
+.ld-name{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:22px;letter-spacing:.12em;color:#fff;}
+.ld-sub{font-size:12px;color:rgba(255,255,255,.5);}
+
+/* Layout */
+.wrap{position:fixed;inset:0;display:none;background:radial-gradient(ellipse 70% 50% at 15% 15%,rgba(42,122,140,.12) 0%,transparent 55%),radial-gradient(ellipse 50% 70% at 85% 85%,rgba(27,43,75,.10) 0%,transparent 55%),linear-gradient(135deg,#EAF0F8 0%,#DCE8F5 100%);}
+.wrap.show{display:flex;}
+
+/* Sidebar */
+.sidebar{width:220px;flex-shrink:0;background:rgba(27,43,75,.93);display:flex;flex-direction:column;padding:18px 12px;}
+.logo{display:flex;align-items:center;gap:8px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.1);margin-bottom:12px;}
+.logo-icon{width:28px;height:28px;border-radius:6px;background:rgba(255,255,255,.15);display:grid;place-items:center;}
+.logo-name{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:14px;letter-spacing:.09em;color:#fff;}
+.logo-badge{font-size:9px;background:#C8A84B;color:#1B2B4B;padding:2px 6px;border-radius:4px;font-weight:700;letter-spacing:.06em;}
+.nav{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:9px;font-size:12.5px;color:rgba(255,255,255,.6);cursor:pointer;border:none;background:transparent;width:100%;text-align:left;font-weight:700;transition:all .2s;margin-bottom:2px;}
+.nav:hover,.nav.active{background:rgba(255,255,255,.12);color:#fff;}
+.nav.active{border-left:3px solid #C8A84B;}
+.sidebar-footer{margin-top:auto;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);}
+.admin-info{padding:8px 10px;font-size:11px;color:rgba(255,255,255,.4);}
+.btn-logout{width:100%;padding:7px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:transparent;color:rgba(255,255,255,.4);font-size:11px;cursor:pointer;transition:all .2s;}
+.btn-logout:hover{border-color:rgba(220,38,38,.4);color:#f87171;}
+
+/* Main */
+.main{flex:1;overflow-y:auto;padding:28px;}
+.page{display:none;}.page.active{display:block;}
+.page-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:24px;letter-spacing:.04em;color:var(--navy);margin-bottom:20px;}
+
+/* Stats cards */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:24px;}
+.stat-card{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:12px;padding:16px 18px;backdrop-filter:var(--blur);box-shadow:0 2px 10px rgba(27,43,75,.07);}
+.stat-label{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
+.stat-val{font-family:'Rajdhani',sans-serif;font-size:28px;font-weight:700;color:var(--navy);}
+.stat-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+
+/* Table */
+.table-wrap{background:var(--glass);border:1px solid rgba(255,255,255,.7);border-radius:14px;backdrop-filter:var(--blur);box-shadow:0 2px 10px rgba(27,43,75,.07);overflow:hidden;}
+.table-header{padding:16px 20px;border-bottom:1px solid rgba(27,43,75,.08);display:flex;align-items:center;justify-content:space-between;}
+.table-title{font-size:14px;font-weight:700;color:var(--navy);}
+.search-input{padding:7px 12px;border-radius:8px;border:1px solid rgba(180,200,230,.4);background:rgba(255,255,255,.7);font-size:12px;font-family:'Lato',sans-serif;outline:none;width:200px;}
+.search-input:focus{border-color:rgba(42,122,140,.4);}
+table{width:100%;border-collapse:collapse;}
+th{padding:10px 16px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid rgba(27,43,75,.08);background:rgba(27,43,75,.02);}
+td{padding:12px 16px;font-size:12.5px;color:var(--navy);border-bottom:1px solid rgba(27,43,75,.05);}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(42,122,140,.03);}
+
+/* Badges */
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.05em;}
+.badge-free{background:rgba(100,116,139,.1);color:var(--muted);}
+.badge-plus{background:rgba(42,122,140,.12);color:var(--teal);}
+.badge-pro{background:rgba(200,168,75,.12);color:#B8940A;}
+.badge-unlimited{background:rgba(27,43,75,.12);color:var(--navy);}
+.badge-ativa{background:rgba(22,163,74,.1);color:var(--success);}
+.badge-inativa{background:rgba(220,38,38,.1);color:var(--danger);}
+
+/* Actions */
+.btn-sm{padding:5px 12px;border-radius:7px;border:none;font-size:11px;font-weight:700;cursor:pointer;transition:all .2s;font-family:'Rajdhani',sans-serif;letter-spacing:.04em;}
+.btn-edit{background:rgba(42,122,140,.1);color:var(--teal);}
+.btn-edit:hover{background:rgba(42,122,140,.2);}
+.btn-danger{background:rgba(220,38,38,.1);color:var(--danger);}
+.btn-danger:hover{background:rgba(220,38,38,.2);}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(27,43,75,.5);backdrop-filter:blur(8px);z-index:1000;align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:#fff;border-radius:16px;padding:28px;width:100%;max-width:440px;box-shadow:0 20px 60px rgba(27,43,75,.2);}
+.modal h3{font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--navy);margin-bottom:16px;}
+.modal-close{float:right;background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);margin-top:-4px;}
+.form-group{margin-bottom:14px;}
+.form-group label{display:block;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:5px;}
+.form-group select,.form-group input{width:100%;padding:9px 12px;border-radius:9px;border:1.5px solid rgba(180,200,230,.5);background:#fff;font-size:13px;font-family:'Lato',sans-serif;outline:none;}
+.form-group select:focus,.form-group input:focus{border-color:#2A7A8C;}
+.btn-primary{padding:10px 20px;border-radius:9px;border:none;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);color:#fff;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;cursor:pointer;width:100%;}
+
+/* Alert */
+.alert{padding:10px 14px;border-radius:9px;font-size:12px;margin-bottom:14px;display:none;}
+.alert.success{background:#F0FDF4;border:1px solid #BBF7D0;color:#16A34A;display:block;}
+.alert.error{background:#FEF2F2;border:1px solid #FECACA;color:#DC2626;display:block;}
+
+/* Pagination */
+.pagination{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-top:1px solid rgba(27,43,75,.08);}
+.page-info{font-size:12px;color:var(--muted);}
+.page-btns{display:flex;gap:6px;}
+.page-btn{padding:6px 12px;border-radius:7px;border:1px solid rgba(180,200,230,.4);background:rgba(255,255,255,.7);font-size:12px;cursor:pointer;transition:all .2s;}
+.page-btn:hover:not(:disabled){background:rgba(42,122,140,.08);border-color:rgba(42,122,140,.3);}
+.page-btn:disabled{opacity:.4;cursor:not-allowed;}
+
+/* Access denied */
+#access-denied{display:none;position:fixed;inset:0;z-index:9998;background:linear-gradient(135deg,#1B2B4B,#2A7A8C);align-items:center;justify-content:center;flex-direction:column;gap:16px;}
+#access-denied.show{display:flex;}
+#access-denied p{color:rgba(255,255,255,.6);font-size:14px;}
+#access-denied a{color:#C8A84B;font-weight:700;text-decoration:none;}
+</style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading">
+  <svg class="ld-logo" viewBox="0 0 80 80" fill="none">
+    <rect x="16" y="60" width="48" height="4" rx="1.5" fill="white" opacity=".8"/>
+    <rect x="18" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="30" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="44" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <rect x="56" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+    <path d="M10 30 L40 8 L70 30 Z" fill="white" opacity=".8"/>
+    <line x1="40" y1="14" x2="40" y2="20" stroke="#C8A84B" stroke-width="2" stroke-linecap="round"/>
+    <line x1="34" y1="20" x2="46" y2="20" stroke="#C8A84B" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <div class="ld-name">JURIMETRIX</div>
+  <div class="ld-sub">Carregando painel admin...</div>
+</div>
+
+<!-- Access denied -->
+<div id="access-denied">
+  <div style="font-family:'Rajdhani',sans-serif;font-size:22px;font-weight:700;color:#fff;">Acesso negado</div>
+  <p>Você não tem permissão para acessar esta página.</p>
+  <a href="https://jurimetrix.com/login-cadastro/">← Voltar ao login</a>
+</div>
+
+<!-- Main -->
+<div class="wrap" id="wrap">
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="14" height="14" viewBox="0 0 80 80" fill="none">
+          <rect x="16" y="60" width="48" height="4" rx="1.5" fill="white" opacity=".8"/>
+          <rect x="18" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+          <rect x="30" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+          <rect x="44" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+          <rect x="56" y="30" width="6" height="30" rx="2" fill="white" opacity=".7"/>
+          <path d="M10 30 L40 8 L70 30 Z" fill="white" opacity=".8"/>
+        </svg>
+      </div>
+      <span class="logo-name">JURIMETRIX</span>
+      <span class="logo-badge">ADMIN</span>
+    </div>
+    <button class="nav active" onclick="showPage('dashboard')">📊 Dashboard</button>
+    <button class="nav" onclick="showPage('usuarios')">👥 Usuários</button>
+    <button class="nav" onclick="showPage('assinaturas')">💳 Assinaturas</button>
+    <div class="sidebar-footer">
+      <div class="admin-info" id="admin-email">—</div>
+      <button class="btn-logout" onclick="logout()">Sair</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- Dashboard -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-title">Dashboard</div>
+      <div class="stats" id="stats-grid">
+        <div class="stat-card"><div class="stat-label">Total usuários</div><div class="stat-val" id="s-total">—</div></div>
+        <div class="stat-card"><div class="stat-label">Ativos (30d)</div><div class="stat-val" id="s-ativos">—</div></div>
+        <div class="stat-card"><div class="stat-label">Plano Plus</div><div class="stat-val" id="s-plus">—</div></div>
+        <div class="stat-card"><div class="stat-label">Plano Pro</div><div class="stat-val" id="s-pro">—</div></div>
+        <div class="stat-card"><div class="stat-label">Unlimited</div><div class="stat-val" id="s-unlimited">—</div></div>
+        <div class="stat-card"><div class="stat-label">Tokens usados</div><div class="stat-val" id="s-tokens">—</div><div class="stat-sub">este mês</div></div>
+      </div>
+    </div>
+
+    <!-- Usuários -->
+    <div class="page" id="page-usuarios">
+      <div class="page-title">Usuários</div>
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-title">Todos os usuários</span>
+          <input class="search-input" type="text" placeholder="Buscar por email..." oninput="filtrarUsuarios(this.value)">
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Nome</th>
+              <th>Plano</th>
+              <th>Status</th>
+              <th>Tokens usados</th>
+              <th>Cadastro</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-usuarios">
+            <tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted);">Carregando...</td></tr>
+          </tbody>
+        </table>
+        <div class="pagination">
+          <span class="page-info" id="page-info">—</span>
+          <div class="page-btns">
+            <button class="page-btn" id="btn-prev" onclick="mudarPagina(-1)" disabled>← Anterior</button>
+            <button class="page-btn" id="btn-next" onclick="mudarPagina(1)">Próxima →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Assinaturas -->
+    <div class="page" id="page-assinaturas">
+      <div class="page-title">Assinaturas</div>
+      <div class="table-wrap">
+        <div class="table-header">
+          <span class="table-title">Todas as assinaturas</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Plano</th>
+              <th>Status</th>
+              <th>Tokens mês</th>
+              <th>Tokens usados</th>
+              <th>% Uso</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-assinaturas">
+            <tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted);">Carregando...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Modal editar plano -->
+<div class="modal-overlay" id="modal" onclick="fecharModal(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="fecharModal()">×</button>
+    <h3>Editar Plano do Usuário</h3>
+    <div class="alert" id="modal-alert"></div>
+    <input type="hidden" id="edit-user-id">
+    <div class="form-group">
+      <label>Email</label>
+      <input type="text" id="edit-email" readonly style="background:#f8fafc;color:var(--muted);">
+    </div>
+    <div class="form-group">
+      <label>Plano</label>
+      <select id="edit-plano">
+        <option value="free">Free — Gratuito</option>
+        <option value="plus">Plus — R$109,99/mês</option>
+        <option value="pro">Pro — R$549,99/mês</option>
+        <option value="unlimited">Unlimited — R$999,99/mês</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Status</label>
+      <select id="edit-status">
+        <option value="ativa">Ativa</option>
+        <option value="inativa">Inativa</option>
+        <option value="suspensa">Suspensa</option>
+      </select>
+    </div>
+    <button class="btn-primary" onclick="salvarPlano()">Salvar alterações</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+const SURL  = "https://jqwojzxbguzzlweebwyj.supabase.co";
+const SKEY  = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxd29qenhiZ3V6emx3ZWVid3lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4OTQwODcsImV4cCI6MjA5MDQ3MDA4N30.m1OEcUla2TS2BAVgaoRiZKQXp1ujsPvv5mDDMH-_y00";
+const BACK  = "https://sm-os-demo-backend.onrender.com";
+const DEMO  = "SMOS-DEMO-9f3a8c2b-2026";
+
+// ADMIN EMAILS — adicione aqui os emails com acesso admin
+const ADMIN_EMAILS = [
+  "eduardo.salles1991@gmail.com",
+  "paxelbr177@gmail.com"
+];
+
+let _sb = null, _session = null, _token = null;
+let _usuarios = [], _filtrados = [], _pagina = 0;
+const PER_PAGE = 20;
+
+function getSB(){ if(!_sb) _sb = supabase.createClient(SURL,SKEY); return _sb; }
+
+async function init(){
+  const sb = getSB();
+  const tk = localStorage.getItem('juri_token');
+  const rf = localStorage.getItem('juri_refresh');
+
+  if(!tk || !rf){ mostrarAcessoNegado(); return; }
+
+  try{
+    const {data} = await sb.auth.setSession({access_token:tk, refresh_token:rf});
+    if(!data?.session){ mostrarAcessoNegado(); return; }
+    _session = data.session;
+    _token = data.session.access_token;
+
+    const email = data.session.user?.email || '';
+    if(!ADMIN_EMAILS.includes(email)){ mostrarAcessoNegado(); return; }
+
+    document.getElementById('admin-email').textContent = email;
+    document.getElementById('loading').classList.add('hide');
+    document.getElementById('wrap').classList.add('show');
+
+    carregarDashboard();
+    carregarUsuarios();
+    carregarAssinaturas();
+  }catch(e){
+    console.error(e);
+    mostrarAcessoNegado();
+  }
+}
+
+function mostrarAcessoNegado(){
+  document.getElementById('loading').classList.add('hide');
+  document.getElementById('access-denied').classList.add('show');
+}
+
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function fmtN(n){
+  if(n==null) return '—';
+  if(n>=999000000) return '∞';
+  if(n>=1000000) return (n/1000000).toFixed(1)+'M';
+  if(n>=1000) return (n/1000).toFixed(0)+'K';
+  return String(n);
+}
+
+function badgePlano(p){
+  const cls = {free:'badge-free',plus:'badge-plus',pro:'badge-pro',unlimited:'badge-unlimited'}[p]||'badge-free';
+  return `<span class="badge ${cls}">${(p||'free').toUpperCase()}</span>`;
+}
+
+function badgeStatus(s){
+  const cls = s==='ativa'?'badge-ativa':'badge-inativa';
+  return `<span class="badge ${cls}">${s||'—'}</span>`;
+}
+
+async function carregarDashboard(){
+  try{
+    const r = await fetch(BACK+'/admin/stats', {headers:{'x-demo-key':DEMO,'Authorization':'Bearer '+_token}});
+    if(r.ok){
+      const d = await r.json();
+      document.getElementById('s-total').textContent = d.total_usuarios || '—';
+      document.getElementById('s-ativos').textContent = d.usuarios_ativos_30d || '—';
+      document.getElementById('s-plus').textContent = d.plano_plus || '—';
+      document.getElementById('s-pro').textContent = d.plano_pro || '—';
+      document.getElementById('s-unlimited').textContent = d.plano_unlimited || '—';
+      document.getElementById('s-tokens').textContent = fmtN(d.tokens_usados_total);
+      return;
+    }
+  }catch(e){}
+  // Fallback: count from usuarios list
+  setTimeout(()=>{
+    document.getElementById('s-total').textContent = _usuarios.length || '—';
+    const plus = _usuarios.filter(u=>u.plano_slug==='plus').length;
+    const pro = _usuarios.filter(u=>u.plano_slug==='pro').length;
+    const unl = _usuarios.filter(u=>u.plano_slug==='unlimited').length;
+    document.getElementById('s-plus').textContent = plus;
+    document.getElementById('s-pro').textContent = pro;
+    document.getElementById('s-unlimited').textContent = unl;
+    const tokens = _usuarios.reduce((a,u)=>a+(u.tokens_usados_mes||0),0);
+    document.getElementById('s-tokens').textContent = fmtN(tokens);
+  }, 1500);
+}
+
+async function carregarUsuarios(){
+  try{
+    const r = await fetch(BACK+'/admin/usuarios?limit=200', {
+      headers:{'x-demo-key':DEMO,'Authorization':'Bearer '+_token}
+    });
+    if(r.ok){
+      const d = await r.json();
+      _usuarios = d.usuarios || d.clientes || [];
+    } else {
+      // Fallback: query Supabase directly
+      const {data} = await getSB()
+        .from('v_clientes')
+        .select('*')
+        .order('criado_em', {ascending:false})
+        .limit(200);
+      _usuarios = data || [];
+    }
+  }catch(e){
+    try{
+      const {data} = await getSB()
+        .from('v_clientes')
+        .select('*')
+        .order('criado_em', {ascending:false})
+        .limit(200);
+      _usuarios = data || [];
+    }catch(e2){ _usuarios = []; }
+  }
+  _filtrados = [..._usuarios];
+  _pagina = 0;
+  renderUsuarios();
+  // Update dashboard stats
+  document.getElementById('s-total').textContent = _usuarios.length;
+  const plus = _usuarios.filter(u=>u.plano_slug==='plus').length;
+  const pro = _usuarios.filter(u=>u.plano_slug==='pro').length;
+  const unl = _usuarios.filter(u=>u.plano_slug==='unlimited').length;
+  document.getElementById('s-plus').textContent = plus;
+  document.getElementById('s-pro').textContent = pro;
+  document.getElementById('s-unlimited').textContent = unl;
+  const tokens = _usuarios.reduce((a,u)=>a+(u.tokens_usados_mes||0),0);
+  document.getElementById('s-tokens').textContent = fmtN(tokens);
+}
+
+async function carregarAssinaturas(){
+  try{
+    const {data} = await getSB()
+      .from('assinaturas')
+      .select('*, perfis(email,nome), planos(slug,nome)')
+      .order('criado_em', {ascending:false})
+      .limit(200);
+    const rows = data || [];
+    const tbody = document.getElementById('tbody-assinaturas');
+    if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted);">Nenhuma assinatura encontrada</td></tr>'; return; }
+    tbody.innerHTML = rows.map(a => {
+      const email = a.perfis?.email || '—';
+      const plano = a.planos?.slug || 'free';
+      const pct = a.tokens_mes ? Math.round((a.tokens_usados_mes||0)/a.tokens_mes*100) : 0;
+      return `<tr>
+        <td>${email}</td>
+        <td>${badgePlano(plano)}</td>
+        <td>${badgeStatus(a.status)}</td>
+        <td>${fmtN(a.tokens_mes)}</td>
+        <td>${fmtN(a.tokens_usados_mes||0)}</td>
+        <td><div style="display:flex;align-items:center;gap:8px;">
+          <div style="width:60px;height:6px;background:rgba(27,43,75,.1);border-radius:3px;overflow:hidden;">
+            <div style="width:${Math.min(pct,100)}%;height:100%;background:${pct>80?'#DC2626':'#2A7A8C'};border-radius:3px;"></div>
+          </div>
+          <span style="font-size:11px;color:var(--muted);">${pct}%</span>
+        </div></td>
+      </tr>`;
+    }).join('');
+  }catch(e){ console.warn('assinaturas:', e); }
+}
+
+function renderUsuarios(){
+  const start = _pagina * PER_PAGE;
+  const slice = _filtrados.slice(start, start + PER_PAGE);
+  const tbody = document.getElementById('tbody-usuarios');
+
+  if(!slice.length){
+    tbody.innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted);">Nenhum usuário encontrado</td></tr>';
+  } else {
+    tbody.innerHTML = slice.map(u => {
+      const data = (u.criado_em||'').slice(0,10);
+      return `<tr>
+        <td>${u.email||'—'}</td>
+        <td>${u.nome||'—'}</td>
+        <td>${badgePlano(u.plano_slug||'free')}</td>
+        <td>${badgeStatus(u.status_assinatura||'ativa')}</td>
+        <td>${fmtN(u.tokens_usados_mes||0)} / ${fmtN(u.tokens_mes||1000000)}</td>
+        <td style="color:var(--muted);font-size:11px;">${data}</td>
+        <td><button class="btn-sm btn-edit" onclick="abrirEditar('${u.user_id||u.id}','${u.email||''}','${u.plano_slug||'free'}','${u.status_assinatura||'ativa'}')">Editar plano</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  const total = _filtrados.length;
+  document.getElementById('page-info').textContent = `${start+1}–${Math.min(start+PER_PAGE,total)} de ${total}`;
+  document.getElementById('btn-prev').disabled = _pagina === 0;
+  document.getElementById('btn-next').disabled = start + PER_PAGE >= total;
+}
+
+function filtrarUsuarios(val){
+  const v = val.toLowerCase();
+  _filtrados = _usuarios.filter(u =>
+    (u.email||'').toLowerCase().includes(v) ||
+    (u.nome||'').toLowerCase().includes(v)
+  );
+  _pagina = 0;
+  renderUsuarios();
+}
+
+function mudarPagina(dir){
+  _pagina += dir;
+  renderUsuarios();
+}
+
+function abrirEditar(userId, email, plano, status){
+  document.getElementById('edit-user-id').value = userId;
+  document.getElementById('edit-email').value = email;
+  document.getElementById('edit-plano').value = plano;
+  document.getElementById('edit-status').value = status;
+  document.getElementById('modal-alert').style.display = 'none';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function salvarPlano(){
+  const userId = document.getElementById('edit-user-id').value;
+  const plano = document.getElementById('edit-plano').value;
+  const status = document.getElementById('edit-status').value;
+
+  const tokens = {free:1000000,plus:3000000,pro:15000000,unlimited:999999999}[plano]||1000000;
+
+  try{
+    const r = await fetch(BACK+'/admin/atualizar-plano', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','x-demo-key':DEMO,'Authorization':'Bearer '+_token},
+      body: JSON.stringify({user_id:userId, plano_slug:plano, status, tokens_mes:tokens})
+    });
+    if(r.ok){
+      mostrarAlertaModal('Plano atualizado com sucesso!','success');
+      carregarUsuarios();
+      setTimeout(fecharCheckout, 1500);
+      return;
+    }
+  }catch(e){}
+
+  // Fallback: update directly via Supabase
+  try{
+    // Get plano_id
+    const {data:planos} = await getSB().from('planos').select('id').eq('slug',plano).single();
+    if(!planos) throw new Error('Plano não encontrado');
+
+    await getSB().from('assinaturas').update({
+      plano_id: planos.id,
+      status,
+      tokens_mes: tokens,
+    }).eq('user_id', userId);
+
+    mostrarAlertaModal('Plano atualizado com sucesso!','success');
+    carregarUsuarios();
+    carregarAssinaturas();
+    setTimeout(()=>document.getElementById('modal').classList.remove('open'), 1500);
+  }catch(e){
+    mostrarAlertaModal('Erro: '+e.message,'error');
+  }
+}
+
+function mostrarAlertaModal(msg, tipo){
+  const el = document.getElementById('modal-alert');
+  el.textContent = msg;
+  el.className = 'alert '+tipo;
+}
+
+function fecharModal(e){
+  if(!e || e.target.id==='modal' || e.target.className==='modal-close'){
+    document.getElementById('modal').classList.remove('open');
+  }
+}
+
+function fecharCheckout(){ document.getElementById('modal').classList.remove('open'); }
+
+function logout(){
+  localStorage.removeItem('juri_token');
+  localStorage.removeItem('juri_refresh');
+  window.location.href = 'https://jurimetrix.com/login-cadastro/';
+}
+
+// Init
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded', init);
+} else { init(); }
+</script>
+</body>
+</html>
