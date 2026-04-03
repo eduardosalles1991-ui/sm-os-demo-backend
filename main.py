@@ -921,7 +921,7 @@ def get_me(authorization: Optional[str] = Header(default=None)):
 # ═══════════════════════════════════════════════════════
 # ADMIN ROUTES
 # ═══════════════════════════════════════════════════════
-ADMIN_EMAILS = {"eduardo.salles1991@gmail.com", "Inteligenciajuridica@jurimetrix.com"}
+ADMIN_EMAILS = {"eduardo.salles1991@gmail.com", "paxelbr177@gmail.com"}
 
 def is_admin(authorization: Optional[str]) -> bool:
     if not SUPABASE_OK or not authorization: return False
