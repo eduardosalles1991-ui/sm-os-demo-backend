@@ -881,6 +881,7 @@ def salvar_mensagem(
         )
         return {"ok": True, "mensagem": msg}
     except Exception as e:
+        log.error(f"[/conversas/mensagem] erro: {e} | conversa_id={payload.conversa_id} | role={payload.role}")
         raise HTTPException(500, str(e))
 
 @app.delete("/conversas/{conversa_id}")
