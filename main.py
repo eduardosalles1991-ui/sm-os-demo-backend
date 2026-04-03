@@ -992,12 +992,22 @@ def serve_painel():
     log.info(f"[/painel] looking for: {path}, exists: {os.path.exists(path)}, cwd: {os.getcwd()}")
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
-    # List all files for debug
     all_files = []
     for root, dirs, files in os.walk(base):
         for f in files:
             all_files.append(os.path.relpath(os.path.join(root, f), base))
     return HTMLResponse(f"<pre>base={base}\nfiles={all_files}</pre>", status_code=404)
+
+@app.get("/admin")
+def serve_admin():
+    """Serve o painel admin."""
+    from fastapi.responses import FileResponse, HTMLResponse
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "static", "admin.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return HTMLResponse("<h1>admin.html não encontrado em /static/</h1>", status_code=404)
 
 @app.get("/health")
 def health():
