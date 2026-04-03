@@ -206,6 +206,26 @@ def extract_escavador_query(msg: str, tipo: str) -> dict:
     return q
 
 
+# BACEN triggers
+BACEN_TRIGGERS = [
+    "selic","inpc","ipca","tr ","taxa de juros","juros mora","correção monetária",
+    "correcao monetaria","atualizar valor","calcular juros","índice econômico",
+    "indice economico","juro de mora","atualização monetária","atualizacao monetaria",
+    "quanto vale hoje","valor atualizado","verbas atualizadas","cálculo trabalhista",
+    "calculo trabalhista","quanto seria hoje","fgts corrigido","multa corrigida",
+]
+
+def detect_bacen_intent(msg: str) -> Optional[str]:
+    """Detecta se a mensagem pede dados econômicos do BACEN."""
+    if not BACEN_OK: return None
+    m = msg.lower()
+    if any(t in m for t in BACEN_TRIGGERS): return "indices"
+    # Detecta cálculo com valor monetário
+    import re
+    if re.search(r'r\$\s*[\d.,]+', m) and any(w in m for w in ["corrig","atualiz","juros","mora"]):
+        return "calculo"
+    return None
+
 TRIVIAL_EXACT = {
     "olá","oi","ola","bom dia","boa tarde","boa noite","tudo bem","tudo bom",
     "obrigado","obrigada","valeu","ok","certo","entendi","show","perfeito",
@@ -635,6 +655,15 @@ if _os.path.isdir(_static_dir):
 
 # ── Escavador ────────────────────────────────────────────────────────
 try:
+    import bacen_client as BACEN_MOD
+    BACEN_OK = BACEN_MOD.is_configured()
+    log.info("✅ BACEN SGS configurado (API pública).")
+except Exception as _bacen_e:
+    BACEN_MOD = None
+    BACEN_OK = False
+    log.warning(f"⚠️  bacen_client não carregado: {_bacen_e}")
+
+try:
     import escavador_client as ESC
     ESCAVADOR_OK = ESC.is_configured()
     log.info(f"{'✅' if ESCAVADOR_OK else '⚠️ '} Escavador {'configurado' if ESCAVADOR_OK else 'não configurado (ESCAVADOR_API_KEY faltando)'}")
@@ -1020,6 +1049,7 @@ def health():
         "pdf":PDF_AVAILABLE,
         "tribunais":len(ALIAS_MAP),
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
+        "bacen":{"ok":BACEN_OK},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
@@ -1113,6 +1143,55 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     numbers=detect_numbers(message)
     has_proc=bool(numbers) or bool(s.get("last_process_numero"))
     plevel=classify_prompt(message,has_proc)
+
+    # ── BACEN SGS — índices econômicos e cálculos trabalhistas ─────
+    bacen_tipo = detect_bacen_intent(message) if BACEN_OK else None
+    if bacen_tipo:
+        try:
+            import re
+            bacen_dados = {}
+            
+            # Busca índices atuais sempre
+            bacen_dados["indices"] = BACEN_MOD.BACEN.indices_atuais()
+            
+            # Detecta cálculo de correção
+            valor_match = re.search(r'r\$\s*([\d.,]+)', message.lower())
+            if valor_match:
+                valor_str = valor_match.group(1).replace('.','').replace(',','.')
+                valor = float(valor_str)
+                
+                # Detecta data (formato dd/mm/aaaa ou mm/aaaa)
+                data_match = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', message)
+                if data_match:
+                    data_raw = data_match.group(1)
+                    if len(data_raw) == 7:  # mm/aaaa
+                        data_inicio = f"01/{data_raw}"
+                    else:
+                        data_inicio = data_raw
+                    bacen_dados["correcao"] = BACEN_MOD.BACEN.calcular_correcao_inpc(valor, data_inicio)
+                
+                # Detecta meses para juros
+                meses_match = re.search(r'(\d+)\s*m[eê]s', message.lower())
+                if meses_match:
+                    meses = int(meses_match.group(1))
+                    bacen_dados["juros"] = BACEN_MOD.BACEN.calcular_juros_mora(valor, meses)
+
+            ctx_bacen = BACEN_MOD.BACEN.build_context({
+                **bacen_dados.get("indices", {}),
+                "correcao": bacen_dados.get("correcao"),
+                "juros": bacen_dados.get("juros"),
+            })
+            
+            sys_p = build_system_prompt("juridico", ctx_bacen)
+            msgs_bacen = [{"role":"system","content":sys_p}]
+            for item in s["messages"][-6:]:
+                if item["role"] in {"user","assistant"}: msgs_bacen.append(item)
+            msgs_bacen[-1] = {"role":"user","content":f"{message}\n\n[Use os dados econômicos do BACEN acima. Responda em português com precisão técnica jurídica.]"}
+            reply = call_openai(msgs_bacen, 0.1)
+            s["messages"].append({"role":"assistant","content":reply})
+            return ChatOut(message=reply, state=state, prompt_level="juridico")
+        except Exception as _bacen_err:
+            log.warning(f"BACEN erro: {_bacen_err}")
 
     # ── Escavador — busca por pessoa/empresa/advogado ───────────────
     esc_tipo = detect_escavador_intent(message)
