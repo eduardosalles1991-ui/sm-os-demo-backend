@@ -139,7 +139,15 @@ html,body{height:100%;overflow:hidden;}
     </div>
     <button class="juri-nav active" onclick="juriPage('overview')">◈ Visão geral</button>
     <button class="juri-nav" onclick="juriPage('plano')">✦ Meu plano</button>
-    <button class="juri-nav" onclick="window.open('https://sm-os-demo-backend.onrender.com/chat-app','_self')">◉ Abrir chat</button>
+    <button class="juri-nav" onclick="(function(){
+  var tk = localStorage.getItem('juri_token');
+  var rf = localStorage.getItem('juri_refresh');
+  if(tk && rf){
+    window.location.href = 'https://sm-os-demo-backend.onrender.com/chat-app#tk='+encodeURIComponent(tk)+'&rf='+encodeURIComponent(rf);
+  } else {
+    window.location.href = 'https://sm-os-demo-backend.onrender.com/chat-app';
+  }
+})()">◉ Abrir chat</button>
     <div class="juri-sidebar-footer">
       <div class="juri-avatar-row">
         <div class="juri-avatar" id="juri-av">J</div>
