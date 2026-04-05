@@ -1028,6 +1028,93 @@ def admin_atualizar_plano(
     except Exception as e:
         raise HTTPException(500, str(e))
 
+@app.post("/speech-to-text")
+async def speech_to_text(
+    audio: UploadFile = File(...),
+    mime_type: str = Form(default="audio/webm"),
+    x_demo_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Transcreve áudio usando Google Cloud Speech-to-Text."""
+    import base64, json, os
+    
+    GOOGLE_CREDS = os.getenv("GOOGLE_VISION_CREDENTIALS")
+    if not GOOGLE_CREDS:
+        raise HTTPException(503, "Google Cloud não configurado")
+    
+    try:
+        audio_data = await audio.read()
+        audio_b64 = base64.b64encode(audio_data).decode()
+        
+        # Get access token (reuse OCR token logic)
+        if OCR_OK and OCR_MOD:
+            token = OCR_MOD._get_access_token()
+        else:
+            import time, json as _json
+            import jwt as _jwt
+            creds = _json.loads(GOOGLE_CREDS)
+            now = int(time.time())
+            payload = {
+                "iss": creds["client_email"],
+                "scope": "https://www.googleapis.com/auth/cloud-platform",
+                "aud": "https://oauth2.googleapis.com/token",
+                "iat": now, "exp": now + 3600,
+            }
+            signed = _jwt.encode(payload, creds["private_key"], algorithm="RS256")
+            r = requests.post("https://oauth2.googleapis.com/token", data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": signed,
+            }, timeout=10)
+            token = r.json()["access_token"]
+
+        # Map mime type to encoding
+        encoding_map = {
+            "audio/webm": "WEBM_OPUS",
+            "audio/webm;codecs=opus": "WEBM_OPUS",
+            "audio/ogg": "OGG_OPUS",
+            "audio/ogg;codecs=opus": "OGG_OPUS",
+            "audio/mp4": "MP4",
+            "audio/mpeg": "MP3",
+            "audio/wav": "LINEAR16",
+            "audio/flac": "FLAC",
+        }
+        encoding = encoding_map.get(mime_type.split(";")[0].strip(), "WEBM_OPUS")
+
+        payload = {
+            "config": {
+                "encoding": encoding,
+                "languageCode": "pt-BR",
+                "alternativeLanguageCodes": ["pt"],
+                "enableAutomaticPunctuation": True,
+                "model": "latest_long",
+                "useEnhanced": True,
+            },
+            "audio": {"content": audio_b64}
+        }
+
+        r = requests.post(
+            "https://speech.googleapis.com/v1/speech:recognize",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=30
+        )
+        r.raise_for_status()
+        result = r.json()
+
+        transcript = ""
+        for res in result.get("results", []):
+            alts = res.get("alternatives", [])
+            if alts:
+                transcript += alts[0].get("transcript", "") + " "
+
+        transcript = transcript.strip()
+        log.info(f"[STT] Transcrição: {transcript[:80]}...")
+        return {"ok": True, "transcript": transcript}
+
+    except Exception as e:
+        log.error(f"[STT] Erro: {e}")
+        raise HTTPException(500, f"Erro na transcrição: {str(e)}")
+
 @app.get("/ping")
 def ping(): return {"ok":True,"version":"8.0.0"}
 
