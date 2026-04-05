@@ -11,3 +11,5 @@ python-jose[cryptography]
 PyJWT
 
 aiofiles
+PyJWT
+PyMuPDF
