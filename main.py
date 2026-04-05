@@ -664,6 +664,15 @@ except Exception as _bacen_e:
     log.warning(f"⚠️  bacen_client não carregado: {_bacen_e}")
 
 try:
+    import ocr_client as OCR_MOD
+    OCR_OK = OCR_MOD.is_configured()
+    log.info(f"{'✅' if OCR_OK else '⚠️ '} Google Vision OCR {'configurado' if OCR_OK else 'não configurado'}")
+except Exception as _ocr_e:
+    OCR_MOD = None
+    OCR_OK = False
+    log.warning(f"⚠️  ocr_client não carregado: {_ocr_e}")
+
+try:
     import escavador_client as ESC
     ESCAVADOR_OK = ESC.is_configured()
     log.info(f"{'✅' if ESCAVADOR_OK else '⚠️ '} Escavador {'configurado' if ESCAVADOR_OK else 'não configurado (ESCAVADOR_API_KEY faltando)'}")
@@ -806,7 +815,17 @@ def sess(sid:str)->dict:
 def compact(t:str,lim:int=6000)->str: return (t or "").strip()[:lim]
 
 def extract_text(file:UploadFile,data:bytes)->str:
+    """Extração inteligente: nativa para PDFs com texto, OCR Google Vision para escaneados e imagens."""
     fn=(file.filename or "").lower()
+    if OCR_OK and OCR_MOD:
+        try:
+            text = OCR_MOD.extract_text_smart(data, fn)
+            if text and len(text) > 50:
+                log.info(f"[OCR] {fn}: {len(text)} chars extraídos")
+                return text
+        except Exception as _ocr_e:
+            log.warning(f"[OCR] falhou para {fn}: {_ocr_e}")
+    # Fallback sem OCR
     if fn.endswith((".txt",".md")): return data.decode("utf-8",errors="ignore")
     if fn.endswith(".pdf") and PdfReader:
         try: return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages[:40]).strip()
@@ -1050,6 +1069,7 @@ def health():
         "tribunais":len(ALIAS_MAP),
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "bacen":{"ok":BACEN_OK},
+        "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
