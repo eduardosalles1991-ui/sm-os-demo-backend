@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Jurimetrix — Chat Jurídico OS 6.1</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Lato:ital,wght@0,300;0,400;0,700;1,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy:      #1B2B4B;
+      --teal:      #2A7A8C;
+      --teal-lt:   rgba(42,122,140,.12);
+      --gold:      #C8A84B;
+      --gold-lt:   rgba(200,168,75,.12);
+      --muted:     #64748B;
+      --danger:    #DC2626;
+      --success:   #16A34A;
+
+      /* iOS 26 Glass System — Realístico */
+      --glass-bg:        rgba(248,250,255,0.65);
+      --glass-bg-strong: rgba(252,254,255,0.82);
+      --glass-bg-subtle: rgba(240,245,255,0.50);
+      --glass-border:    rgba(255,255,255,0.75);
+      --glass-border-md: rgba(180,195,220,0.40);
+      --glass-shadow:    0 4px 24px rgba(27,43,75,.07), 0 1px 4px rgba(27,43,75,.05), inset 0 1px 0 rgba(255,255,255,0.9);
+      --glass-shadow-lg: 0 8px 40px rgba(27,43,75,.10), inset 0 1px 0 rgba(255,255,255,0.9);
+      --blur:            blur(40px) saturate(1.8) brightness(1.05);
+      --blur-md:         blur(24px) saturate(1.5) brightness(1.03);
+    }
+
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;overflow:hidden;font-family:'Lato',sans-serif;}
+    /* WordPress override — forçar altura real da viewport */
+    html{height:100dvh!important;}
+    body{height:100dvh!important;overflow:hidden!important;max-height:100dvh!important;}
+    /* Remove margens/paddings do WordPress */
+    body{margin:0!important;padding:0!important;}
+    #page,#content,.site,.site-content,.entry-content,.wp-site-blocks{height:100%!important;overflow:hidden!important;padding:0!important;margin:0!important;}
+    .admin-bar html{height:calc(100dvh - 32px)!important;}
+    .admin-bar body{height:calc(100dvh - 32px)!important;}
+
+    /* ── Fundo gradiente Jurimetrix ── */
+    body{
+      background:
+        radial-gradient(ellipse 70% 50% at 15% 15%, rgba(42,122,140,0.12) 0%, transparent 50%),
+        radial-gradient(ellipse 50% 70% at 85% 85%, rgba(27,43,75,0.10) 0%, transparent 50%),
+        radial-gradient(ellipse 60% 40% at 70% 20%, rgba(200,168,75,0.05) 0%, transparent 50%),
+        radial-gradient(ellipse 80% 80% at 50% 50%, rgba(230,238,248,1) 0%, rgba(220,232,245,1) 100%);
+    }
+
+    /* ── Partículas de fundo (grid sutil) ── */
+    body::before{
+      content:'';position:fixed;inset:0;z-index:0;
+      background-image:
+        linear-gradient(rgba(42,122,140,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(42,122,140,0.04) 1px, transparent 1px);
+      background-size:48px 48px;
+      pointer-events:none;
+    }
+
+    /* ── App layout ── */
+    .app{
+      height:100dvh;display:flex;align-items:stretch;justify-content:center;
+      padding:0;position:fixed;inset:0;z-index:1;
+    }
+
+    /* ── Shell — vidro iOS 26 full screen ── */
+    .shell{
+      width:100%;
+      height:100dvh;
+      display:flex;flex-direction:column;
+      background:var(--glass-bg);
+      border:none;
+      border-radius:0;
+      overflow:hidden;
+      backdrop-filter:var(--blur);
+      -webkit-backdrop-filter:var(--blur);
+      box-shadow:none;
+      position:relative;
+    }
+    /* Brilho interno topo */
+    /* Sem highlight no shell pois é fullscreen */
+    .shell::before{ display:none; }
+
+    /* ── Topbar ── */
+    .topbar{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:0 28px;height:68px;flex-shrink:0;
+      background:var(--glass-bg-strong);
+      border-bottom:1px solid rgba(180,200,230,0.35);
+      backdrop-filter:var(--blur-md);
+      -webkit-backdrop-filter:var(--blur-md);
+      position:relative;z-index:5;
+      box-shadow:0 1px 0 rgba(255,255,255,0.9), 0 2px 16px rgba(27,43,75,.06);
+    }
+    /* Linha dourada decorativa */
+    .topbar::after{
+      content:'';position:absolute;bottom:0;left:24px;right:24px;height:1px;
+      background:linear-gradient(90deg,transparent,rgba(200,168,75,0.4),rgba(42,122,140,0.4),transparent);
+    }
+
+    /* ── Logo Jurimetrix ── */
+    .brand{display:flex;align-items:center;gap:14px;}
+
+    /* SVG do logo — tribunal grego com rede neural */
+    .logo-svg-wrap{width:44px;height:44px;flex-shrink:0;}
+
+    .brand-text{}
+    .brand-name{
+      font-family:'Rajdhani',sans-serif;font-weight:700;
+      font-size:19px;letter-spacing:.1em;color:var(--navy);
+      line-height:1;
+    }
+    .brand-tagline{
+      font-family:'Lato',sans-serif;font-weight:300;font-style:italic;
+      font-size:10px;color:var(--teal);letter-spacing:.03em;
+      margin-top:1px;
+    }
+
+    /* ── Status pill ── */
+    .topbar-right{display:flex;align-items:center;gap:10px;}
+
+    .status-pill{
+      display:flex;align-items:center;gap:7px;
+      padding:7px 14px;border-radius:999px;
+      background:var(--glass-bg-subtle);
+      border:1px solid var(--glass-border);
+      backdrop-filter:var(--blur-md);
+      -webkit-backdrop-filter:var(--blur-md);
+      font-size:12px;color:var(--muted);font-family:'Lato',sans-serif;
+      box-shadow:0 2px 8px rgba(27,43,75,.06);
+    }
+    .status-dot{width:7px;height:7px;border-radius:50%;background:#34D399;flex-shrink:0;transition:background .3s;}
+    .status-dot.busy{background:var(--gold);animation:pulse 1s infinite;}
+    .status-dot.err{background:var(--danger);}
+    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.85)}}
+
+    /* PDF btn */
+    .btn-pdf{
+      display:flex;align-items:center;gap:6px;
+      padding:7px 16px;border-radius:999px;
+      background:var(--glass-bg-subtle);
+      border:1px solid rgba(200,168,75,0.35);
+      backdrop-filter:var(--blur-md);-webkit-backdrop-filter:var(--blur-md);
+      color:var(--gold);font-size:12px;font-weight:700;
+      font-family:'Rajdhani',sans-serif;letter-spacing:.05em;
+      cursor:pointer;transition:all .2s;white-space:nowrap;
+      box-shadow:0 2px 8px rgba(200,168,75,.1);
+    }
+    .btn-pdf:hover:not(:disabled){background:rgba(200,168,75,.12);border-color:rgba(200,168,75,.5);}
+    .btn-pdf:disabled{opacity:.4;cursor:not-allowed;}
+
+    /* ── Chat ── */
+    .chat{
+      flex:1;min-height:0;overflow-y:auto;
+      padding:32px 28px 16px;scroll-behavior:smooth;
+    }
+    .chat::-webkit-scrollbar{width:4px;}
+    .chat::-webkit-scrollbar-thumb{background:rgba(27,43,75,.12);border-radius:2px;}
+
+    /* Empty state */
+    .empty{max-width:600px;margin:4vh auto 0;text-align:center;animation:fadeUp .6s ease both;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+
+    .empty-logo{margin:0 auto 20px;width:80px;height:80px;}
+
+    .empty h1{
+      font-family:'Rajdhani',sans-serif;font-weight:700;
+      font-size:clamp(22px,4vw,34px);letter-spacing:.04em;
+      color:var(--navy);margin-bottom:8px;line-height:1.1;
+    }
+    .empty-tagline{
+      font-family:'Lato',sans-serif;font-weight:300;font-style:italic;
+      font-size:13px;color:var(--teal);margin-bottom:8px;letter-spacing:.02em;
+    }
+    .empty p{font-size:14px;color:var(--muted);line-height:1.7;max-width:460px;margin:0 auto 28px;}
+
+    .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;}
+    .chip{
+      background:var(--glass-bg-strong);
+      border:1px solid var(--glass-border-md);
+      backdrop-filter:var(--blur-md);-webkit-backdrop-filter:var(--blur-md);
+      color:var(--navy);border-radius:999px;padding:9px 18px;
+      font-size:12.5px;cursor:pointer;font-family:'Lato',sans-serif;
+      transition:all .2s;box-shadow:0 2px 8px rgba(27,43,75,.06);
+    }
+    .chip:hover{border-color:rgba(42,122,140,.4);color:var(--teal);background:rgba(255,255,255,.92);box-shadow:0 4px 16px rgba(42,122,140,.12);}
+
+    /* ── Mensagens ── */
+    .msg-row{display:flex;margin-bottom:14px;animation:msgIn .25s ease both;}
+    .msg-row.user{justify-content:flex-end;}
+    @keyframes msgIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+    .msg{
+      max-width:min(72ch,86%);padding:13px 17px;
+      border-radius:20px;font-size:14px;line-height:1.65;word-wrap:break-word;
+    }
+
+    /* Mensagem do usuário — vidro navy */
+    .msg.user{
+      background:rgba(27,43,75,0.88);
+      backdrop-filter:var(--blur-md);-webkit-backdrop-filter:var(--blur-md);
+      border:1px solid rgba(27,43,75,0.5);
+      color:#fff;white-space:pre-wrap;
+      border-bottom-right-radius:6px;
+      box-shadow:0 4px 20px rgba(27,43,75,.2);
+    }
+
+    /* Mensagem da IA — vidro branco */
+    .msg.ai{
+      background:var(--glass-bg-strong);
+      backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+      border:1px solid var(--glass-border);
+      color:var(--navy);
+      border-bottom-left-radius:6px;
+      box-shadow:var(--glass-shadow);
+    }
+
+    .msg.system{
+      background:rgba(254,242,242,0.9);
+      border:1px solid rgba(254,202,202,0.6);
+      color:var(--danger);white-space:pre-wrap;
+      backdrop-filter:var(--blur-md);-webkit-backdrop-filter:var(--blur-md);
+    }
+
+    /* Markdown */
+    .msg.ai h1,.msg.ai h2,.msg.ai h3{font-family:'Rajdhani',sans-serif;color:var(--navy);margin:.75em 0 .3em;font-weight:700;letter-spacing:.03em;}
+    .msg.ai h1{font-size:1.12em}.msg.ai h2{font-size:1.02em}.msg.ai h3{font-size:.95em}
+    .msg.ai p{margin:.35em 0;}
+    .msg.ai ul,.msg.ai ol{margin:.35em 0;padding-left:1.3em;}
+    .msg.ai li{margin:.2em 0;}
+    .msg.ai strong{color:var(--navy);font-weight:700;}
+    .msg.ai em{color:var(--teal);font-style:italic;}
+    .msg.ai code{background:rgba(42,122,140,.08);border-radius:4px;padding:1px 5px;font-size:.86em;color:var(--teal);}
+    .msg.ai pre{background:rgba(27,43,75,.04);border:1px solid rgba(27,43,75,.08);border-radius:10px;padding:12px;overflow-x:auto;margin:.5em 0;}
+    .msg.ai pre code{background:none;padding:0;}
+    .msg.ai blockquote{border-left:3px solid var(--gold);margin:.5em 0;padding:.3em .8em;color:var(--muted);font-style:italic;}
+    .msg.ai hr{border:none;border-top:1px solid rgba(27,43,75,.1);margin:.7em 0;}
+    .msg.ai table{border-collapse:collapse;width:100%;font-size:.88em;margin:.4em 0;}
+    .msg.ai th,.msg.ai td{border:1px solid rgba(27,43,75,.1);padding:5px 9px;}
+    .msg.ai th{background:rgba(27,43,75,.05);color:var(--navy);font-family:'Rajdhani',sans-serif;font-weight:700;}
+
+    /* Typing */
+    .typing-row{display:flex;margin-bottom:14px;}
+    .typing-bubble{
+      padding:13px 17px;border-radius:20px;border-bottom-left-radius:6px;
+      background:var(--glass-bg-strong);
+      border:1px solid var(--glass-border);
+      backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+      box-shadow:var(--glass-shadow);
+      display:flex;gap:5px;align-items:center;
+    }
+    .typing-dot{width:6px;height:6px;border-radius:50%;background:var(--teal);opacity:.5;animation:tdot .9s infinite;}
+    .typing-dot:nth-child(2){animation-delay:.18s}
+    .typing-dot:nth-child(3){animation-delay:.36s}
+    @keyframes tdot{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-5px);opacity:1}}
+
+    /* ── Composer ── */
+    .composer-wrap{
+      padding:14px 28px 24px;flex-shrink:0;
+      background:var(--glass-bg-strong);
+      border-top:1px solid rgba(180,200,230,0.3);
+      backdrop-filter:var(--blur-md);-webkit-backdrop-filter:var(--blur-md);
+      box-shadow:0 -1px 0 rgba(255,255,255,0.9), 0 -4px 20px rgba(27,43,75,.04);
+    }
+
+    .attachments{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px;}
+    .file-pill{
+      display:inline-flex;align-items:center;gap:6px;
+      border-radius:999px;padding:5px 12px;
+      background:var(--glass-bg-subtle);border:1px solid var(--glass-border-md);
+      font-size:12px;color:var(--muted);
+    }
+    .file-pill .remove{cursor:pointer;}.file-pill .remove:hover{color:var(--danger);}
+
+    /* Input box — vidro flutuante */
+    .composer{
+      display:flex;align-items:center;gap:10px;
+      background:var(--glass-bg-strong);
+      border:1.5px solid var(--glass-border);
+      border-radius:18px;
+      padding:8px 8px 8px 18px;
+      backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+      box-shadow:0 4px 20px rgba(27,43,75,.08),0 1px 4px rgba(27,43,75,.06);
+      transition:border-color .2s,box-shadow .2s;
+    }
+    .composer:focus-within{
+      border-color:rgba(42,122,140,.5);
+      box-shadow:0 4px 20px rgba(42,122,140,.12),0 0 0 3px rgba(42,122,140,.08);
+    }
+
+    textarea{
+      flex:1;resize:none;border:none;outline:none;background:transparent;
+      color:var(--navy) !important;caret-color:var(--teal);
+      min-height:24px;max-height:160px;padding:7px 0;
+      line-height:1.5;font-size:14px;font-family:'Lato',sans-serif;
+    }
+    textarea::placeholder{color:var(--muted);opacity:.65;}
+
+    .btn-attach{
+      flex:0 0 auto;width:38px;height:38px;border-radius:12px;
+      background:var(--glass-bg-subtle);
+      border:1px solid var(--glass-border-md);
+      color:var(--muted);cursor:pointer;display:grid;place-items:center;
+      transition:all .2s;
+    }
+    .btn-attach:hover{border-color:rgba(42,122,140,.4);color:var(--teal);background:rgba(255,255,255,.8);}
+
+    .btn-send{
+      flex:0 0 auto;height:38px;padding:0 22px;
+      border-radius:12px;border:none;
+      background:linear-gradient(135deg,var(--navy) 0%,var(--teal) 100%);
+      color:#fff;font-size:13px;font-weight:700;
+      font-family:'Rajdhani',sans-serif;letter-spacing:.07em;
+      cursor:pointer;transition:all .2s;white-space:nowrap;
+      box-shadow:0 3px 14px rgba(27,43,75,.2);
+    }
+    .btn-send:hover:not(:disabled){background:linear-gradient(135deg,var(--teal) 0%,var(--navy) 100%);box-shadow:0 4px 20px rgba(42,122,140,.25);}
+    .btn-send:disabled{opacity:.4;cursor:not-allowed;}
+
+    .btn-mic{
+      flex:0 0 auto;width:38px;height:38px;border-radius:12px;
+      border:1.5px solid rgba(180,200,230,.4);background:rgba(255,255,255,.7);
+      color:var(--muted);cursor:pointer;display:grid;place-items:center;
+      transition:all .2s;
+    }
+    .btn-mic:hover{border-color:rgba(42,122,140,.4);color:var(--teal);background:rgba(255,255,255,.9);}
+    .btn-mic.recording{
+      background:rgba(220,38,38,.1);border-color:rgba(220,38,38,.5);
+      color:#DC2626;animation:mic-pulse 1s ease-in-out infinite;
+    }
+    @keyframes mic-pulse{
+      0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.3);}
+      50%{box-shadow:0 0 0 6px rgba(220,38,38,.0);}
+    }
+
+    .helper{
+      display:flex;justify-content:space-between;align-items:center;
+      padding:8px 2px 0;font-size:11px;color:var(--muted);
+    }
+
+
+    /* ══════════════════════════════════════════
+       SIDEBAR — Histórico de conversas
+    ══════════════════════════════════════════ */
+    .app{flex-direction:row;}
+
+    /* Sidebar wrapper */
+    .sidebar{
+      width:260px;flex-shrink:0;
+      display:flex;flex-direction:column;
+      background:rgba(240,245,255,0.60);
+      border-right:1px solid rgba(180,200,230,0.35);
+      backdrop-filter:blur(40px) saturate(1.8) brightness(1.04);
+      -webkit-backdrop-filter:blur(40px) saturate(1.8) brightness(1.04);
+      height:100%;overflow:hidden;
+      transition:width .25s cubic-bezier(.4,0,.2,1);
+      position:relative;z-index:4;
+      box-shadow:1px 0 0 rgba(255,255,255,0.8) inset;
+    }
+    .sidebar.collapsed{width:0;overflow:hidden;}
+
+    /* Sidebar header */
+    .sb-header{
+      padding:16px 16px 12px;
+      border-bottom:1px solid rgba(180,200,230,0.25);
+      flex-shrink:0;
+    }
+    .btn-new{
+      display:flex;align-items:center;justify-content:center;gap:8px;
+      width:100%;padding:10px 14px;border-radius:12px;
+      background:linear-gradient(135deg,var(--navy),var(--teal));
+      border:none;color:#fff;font-family:'Rajdhani',sans-serif;
+      font-size:13px;font-weight:700;letter-spacing:.06em;
+      cursor:pointer;transition:all .2s;
+      box-shadow:0 3px 14px rgba(27,43,75,.18);
+    }
+    .btn-new:hover{background:linear-gradient(135deg,var(--teal),var(--navy));box-shadow:0 4px 20px rgba(42,122,140,.22);}
+
+    /* Search */
+    .sb-search{
+      margin-top:10px;position:relative;
+    }
+    .sb-search input{
+      width:100%;padding:8px 12px 8px 34px;
+      border-radius:10px;border:1px solid rgba(180,200,230,0.4);
+      background:rgba(255,255,255,0.6);
+      backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+      font-size:12.5px;font-family:'Lato',sans-serif;
+      color:var(--navy);outline:none;
+      transition:border-color .2s,box-shadow .2s;
+    }
+    .sb-search input::placeholder{color:var(--muted);opacity:.7;}
+    .sb-search input:focus{border-color:rgba(42,122,140,.4);box-shadow:0 0 0 3px rgba(42,122,140,.08);}
+    .sb-search-icon{
+      position:absolute;left:10px;top:50%;transform:translateY(-50%);
+      color:var(--muted);pointer-events:none;
+    }
+
+    /* Conversation list */
+    .sb-list{
+      flex:1;overflow-y:auto;padding:8px 10px;
+    }
+    .sb-list::-webkit-scrollbar{width:3px;}
+    .sb-list::-webkit-scrollbar-thumb{background:rgba(27,43,75,.1);border-radius:2px;}
+
+    /* Date group label */
+    .sb-group{
+      font-family:'Rajdhani',sans-serif;font-size:10px;font-weight:700;
+      letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+      padding:10px 8px 4px;opacity:.7;
+    }
+
+    /* Conversation item */
+    .conv-item{
+      display:flex;align-items:center;gap:9px;
+      padding:10px 10px;border-radius:10px;
+      cursor:pointer;transition:all .18s;
+      border:1px solid transparent;
+      margin-bottom:1px;
+      position:relative;
+      group:hover;
+    }
+    .conv-item:hover{
+      background:rgba(255,255,255,0.7);
+      border-color:rgba(180,200,230,0.35);
+      box-shadow:0 2px 8px rgba(27,43,75,.06);
+    }
+    .conv-item.active{
+      background:rgba(255,255,255,0.85);
+      border-color:rgba(42,122,140,.25);
+      box-shadow:0 2px 12px rgba(42,122,140,.10), inset 0 1px 0 rgba(255,255,255,.9);
+    }
+    .conv-icon{
+      width:32px;height:32px;border-radius:8px;flex-shrink:0;
+      display:grid;place-items:center;
+      background:rgba(42,122,140,.1);
+      border:1px solid rgba(42,122,140,.15);
+    }
+    .conv-icon.gold-icon{background:rgba(200,168,75,.1);border-color:rgba(200,168,75,.2);}
+    .conv-info{flex:1;min-width:0;}
+    .conv-title{
+      font-size:12.5px;font-weight:700;color:var(--navy);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      line-height:1.3;
+    }
+    .conv-preview{
+      font-size:11px;color:var(--muted);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      margin-top:1px;
+    }
+    .conv-time{
+      font-size:10px;color:var(--muted);flex-shrink:0;
+      font-family:'Rajdhani',sans-serif;letter-spacing:.02em;
+    }
+    .conv-actions{
+      position:absolute;right:8px;top:50%;transform:translateY(-50%);
+      display:none;gap:4px;
+    }
+    .conv-item:hover .conv-actions{display:flex;}
+    .conv-btn{
+      width:24px;height:24px;border-radius:6px;border:none;
+      background:rgba(255,255,255,0.8);color:var(--muted);
+      display:grid;place-items:center;cursor:pointer;font-size:12px;
+      transition:all .15s;
+    }
+    .conv-btn:hover{background:var(--navy);color:#fff;}
+
+    /* Sidebar footer */
+    .sb-footer{
+      padding:10px 16px 16px;border-top:1px solid rgba(180,200,230,0.25);
+      flex-shrink:0;
+    }
+    .sb-user{
+      display:flex;align-items:center;gap:10px;padding:8px;
+      border-radius:10px;cursor:pointer;transition:all .2s;
+    }
+    .sb-user:hover{background:rgba(255,255,255,0.6);}
+    .sb-avatar{
+      width:32px;height:32px;border-radius:50%;
+      background:linear-gradient(135deg,var(--navy),var(--teal));
+      display:grid;place-items:center;
+      font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;color:#fff;
+      flex-shrink:0;
+    }
+    .sb-user-info .sb-uname{font-size:12.5px;font-weight:700;color:var(--navy);}
+    .sb-user-info .sb-uplan{
+      font-size:10px;color:var(--teal);font-weight:700;
+      font-family:'Rajdhani',sans-serif;letter-spacing:.05em;
+    }
+
+    /* Toggle sidebar button */
+    .btn-toggle-sb{
+      position:fixed;left:260px;top:50%;transform:translateY(-50%);
+      width:20px;height:48px;border-radius:0 10px 10px 0;
+      background:rgba(240,245,255,0.85);
+      border:1px solid rgba(180,200,230,0.4);
+      border-left:none;
+      backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+      display:grid;place-items:center;cursor:pointer;
+      color:var(--muted);font-size:12px;
+      transition:left .25s cubic-bezier(.4,0,.2,1),all .2s;
+      z-index:10;
+    }
+    .btn-toggle-sb:hover{background:rgba(255,255,255,.95);color:var(--navy);}
+    .btn-toggle-sb.collapsed{left:0;}
+
+    /* Shell adjustment when sidebar present */
+    .shell{flex:1;min-width:0;}
+
+    /* Mobile: hide sidebar */
+    @media(max-width:768px){
+      .sidebar{display:none;}
+      .btn-toggle-sb{display:none;}
+    }
+
+    .hidden{display:none!important}
+
+    @media(max-width:680px){
+      .app{padding:0;}
+      .shell{height:100dvh;}
+      .topbar{padding:0 16px;height:58px;}
+      .brand-name{font-size:17px;}
+      .brand-tagline{display:none;}
+      .btn-pdf span{display:none;}
+      .chat{padding:18px 16px 10px;}
+      .msg{max-width:90%;font-size:13.5px;}
+      .composer-wrap{padding:10px 14px 18px;}
+      .helper{display:none;}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+
+    <!-- ══ SIDEBAR ══ -->
+    <div class="sidebar" id="sidebar">
+      <div class="sb-header">
+        <button class="btn-new" onclick="novaConversa()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          NOVA CONVERSA
+        </button>
+        <div class="sb-search">
+          <svg class="sb-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="sb-search-input" placeholder="Buscar conversa…" oninput="filterConvs(this.value)">
+        </div>
+      </div>
+
+      <div class="sb-list" id="sb-list">
+        <!-- Preenchido pelo JS -->
+      </div>
+
+      <div class="sb-footer">
+        <div class="sb-user" onclick="window.location.href='https://jurimetrix.com/painel-do-cliente/'">
+          <div class="sb-avatar" id="sb-avatar">J</div>
+          <div class="sb-user-info">
+            <div class="sb-uname" id="sb-uname">Minha conta</div>
+            <div class="sb-uplan" id="sb-uplan">FREE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toggle sidebar button -->
+    <button class="btn-toggle-sb" id="btnToggleSb" onclick="toggleSidebar()" title="Ocultar/mostrar histórico">‹</button>
+
+    <div class="shell">
+
+      <!-- Topbar -->
+      <div class="topbar">
+        <div class="brand">
+          <!-- Logo SVG fiel ao original: tribunal grego + rede neural + balança dourada -->
+          <div class="logo-svg-wrap">
+            <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Base / degraus -->
+              <rect x="8"  y="68" width="64" height="4"  rx="1.5" fill="#2A7A8C" opacity=".6"/>
+              <rect x="12" y="64" width="56" height="4"  rx="1.5" fill="#2A7A8C" opacity=".75"/>
+              <rect x="16" y="60" width="48" height="4"  rx="1.5" fill="#2A7A8C" opacity=".9"/>
+              <!-- Colunas -->
+              <rect x="18" y="30" width="6" height="30" rx="2" fill="url(#colGrad)"/>
+              <rect x="30" y="30" width="6" height="30" rx="2" fill="url(#colGrad)"/>
+              <rect x="44" y="30" width="6" height="30" rx="2" fill="url(#colGrad)"/>
+              <rect x="56" y="30" width="6" height="30" rx="2" fill="url(#colGrad)"/>
+              <!-- Frontão / telhado -->
+              <path d="M10 30 L40 8 L70 30 Z" fill="url(#roofGrad)" stroke="url(#roofStroke)" stroke-width="1"/>
+              <!-- Cornija -->
+              <rect x="12" y="29" width="56" height="3" rx="1" fill="url(#corniceGrad)"/>
+              <!-- Rede neural nas colunas -->
+              <!-- Nós -->
+              <circle cx="21" cy="38" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="21" cy="50" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <circle cx="33" cy="42" r="2.5" fill="#C8A84B" opacity=".9"/>
+              <circle cx="33" cy="54" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <circle cx="47" cy="38" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="47" cy="54" r="2.5" fill="#C8A84B" opacity=".8"/>
+              <circle cx="59" cy="44" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="59" cy="56" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <!-- Conexões -->
+              <line x1="21" y1="38" x2="33" y2="42" stroke="#2A7A8C" stroke-width="1" opacity=".5"/>
+              <line x1="21" y1="50" x2="33" y2="42" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="21" y1="50" x2="33" y2="54" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="33" y1="42" x2="47" y2="38" stroke="#C8A84B" stroke-width="1" opacity=".55"/>
+              <line x1="33" y1="54" x2="47" y2="54" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="47" y1="38" x2="59" y2="44" stroke="#2A7A8C" stroke-width="1" opacity=".5"/>
+              <line x1="47" y1="54" x2="59" y2="44" stroke="#C8A84B" stroke-width="1" opacity=".45"/>
+              <line x1="47" y1="54" x2="59" y2="56" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <!-- Balança dourada no frontão -->
+              <line x1="40" y1="14" x2="40" y2="20" stroke="#C8A84B" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="34" y1="20" x2="46" y2="20" stroke="#C8A84B" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="34" cy="22.5" r="2" fill="none" stroke="#C8A84B" stroke-width="1.2"/>
+              <circle cx="46" cy="22.5" r="2" fill="none" stroke="#C8A84B" stroke-width="1.2"/>
+              <!-- Defs -->
+              <defs>
+                <linearGradient id="colGrad" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"   stop-color="#6B8FAA"/>
+                  <stop offset="50%"  stop-color="#A8BCC8"/>
+                  <stop offset="100%" stop-color="#7090A8"/>
+                </linearGradient>
+                <linearGradient id="roofGrad" x1="0" y1="1" x2="0" y2="0">
+                  <stop offset="0%"   stop-color="#6B8FAA"/>
+                  <stop offset="100%" stop-color="#A8BCC8"/>
+                </linearGradient>
+                <linearGradient id="roofStroke" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"   stop-color="#8899AA" stop-opacity=".4"/>
+                  <stop offset="50%"  stop-color="#C8A84B" stop-opacity=".7"/>
+                  <stop offset="100%" stop-color="#8899AA" stop-opacity=".4"/>
+                </linearGradient>
+                <linearGradient id="corniceGrad" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"   stop-color="#7090A8"/>
+                  <stop offset="50%"  stop-color="#C8A84B"/>
+                  <stop offset="100%" stop-color="#7090A8"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-name">JURIMETRIX</div>
+            <div class="brand-tagline">A plataforma mais eficiente e atualizada do direito</div>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <button class="btn-pdf hidden" id="pdfBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>Relatório</span>
+          </button>
+          <div class="status-pill">
+            <div class="status-dot busy" id="statusDot"></div>
+            <span id="statusText">Iniciando</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat -->
+      <div class="chat" id="chat">
+        <div class="empty" id="emptyState">
+          <!-- Logo grande no empty state -->
+          <div class="empty-logo">
+            <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="8"  y="68" width="64" height="4"  rx="1.5" fill="#2A7A8C" opacity=".5"/>
+              <rect x="12" y="64" width="56" height="4"  rx="1.5" fill="#2A7A8C" opacity=".65"/>
+              <rect x="16" y="60" width="48" height="4"  rx="1.5" fill="#2A7A8C" opacity=".8"/>
+              <rect x="18" y="30" width="6" height="30" rx="2" fill="url(#colGrad2)"/>
+              <rect x="30" y="30" width="6" height="30" rx="2" fill="url(#colGrad2)"/>
+              <rect x="44" y="30" width="6" height="30" rx="2" fill="url(#colGrad2)"/>
+              <rect x="56" y="30" width="6" height="30" rx="2" fill="url(#colGrad2)"/>
+              <path d="M10 30 L40 8 L70 30 Z" fill="url(#roofGrad2)" stroke="url(#roofStroke2)" stroke-width="1"/>
+              <rect x="12" y="29" width="56" height="3" rx="1" fill="url(#corniceGrad2)"/>
+              <circle cx="21" cy="38" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="21" cy="50" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <circle cx="33" cy="42" r="2.5" fill="#C8A84B" opacity=".9"/>
+              <circle cx="33" cy="54" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <circle cx="47" cy="38" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="47" cy="54" r="2.5" fill="#C8A84B" opacity=".8"/>
+              <circle cx="59" cy="44" r="2.5" fill="#2A7A8C" opacity=".9"/>
+              <circle cx="59" cy="56" r="2.5" fill="#2A7A8C" opacity=".7"/>
+              <line x1="21" y1="38" x2="33" y2="42" stroke="#2A7A8C" stroke-width="1" opacity=".5"/>
+              <line x1="21" y1="50" x2="33" y2="42" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="21" y1="50" x2="33" y2="54" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="33" y1="42" x2="47" y2="38" stroke="#C8A84B" stroke-width="1" opacity=".55"/>
+              <line x1="33" y1="54" x2="47" y2="54" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="47" y1="38" x2="59" y2="44" stroke="#2A7A8C" stroke-width="1" opacity=".5"/>
+              <line x1="47" y1="54" x2="59" y2="44" stroke="#C8A84B" stroke-width="1" opacity=".45"/>
+              <line x1="47" y1="54" x2="59" y2="56" stroke="#2A7A8C" stroke-width="1" opacity=".4"/>
+              <line x1="40" y1="14" x2="40" y2="20" stroke="#C8A84B" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="34" y1="20" x2="46" y2="20" stroke="#C8A84B" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="34" cy="22.5" r="2" fill="none" stroke="#C8A84B" stroke-width="1.2"/>
+              <circle cx="46" cy="22.5" r="2" fill="none" stroke="#C8A84B" stroke-width="1.2"/>
+              <defs>
+                <linearGradient id="colGrad2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#6B8FAA"/><stop offset="50%" stop-color="#A8BCC8"/><stop offset="100%" stop-color="#7090A8"/></linearGradient>
+                <linearGradient id="roofGrad2" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="#6B8FAA"/><stop offset="100%" stop-color="#A8BCC8"/></linearGradient>
+                <linearGradient id="roofStroke2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#8899AA" stop-opacity=".4"/><stop offset="50%" stop-color="#C8A84B" stop-opacity=".7"/><stop offset="100%" stop-color="#8899AA" stop-opacity=".4"/></linearGradient>
+                <linearGradient id="corniceGrad2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#7090A8"/><stop offset="50%" stop-color="#C8A84B"/><stop offset="100%" stop-color="#7090A8"/></linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <h1>JURIMETRIX</h1>
+          <div class="empty-tagline">A plataforma mais eficiente e atualizada do direito</div>
+          <p style="margin-top:10px;">Análise de processos em tempo real, identificação de magistrados, banco de decisões e relatórios jurídicos completos com OS 6.1.</p>
+          <div class="chips">
+            <button class="chip" data-fill="Resumo do processo 1002009-29.2025.5.02.0205">Resumo de processo</button>
+            <button class="chip" data-fill="Quem é o magistrado do processo 1002009-29.2025.5.02.0205?">Magistrado</button>
+            <button class="chip" data-fill="Andamento completo do processo 1002009-29.2025.5.02.0205">Andamento completo</button>
+            <button class="chip" data-fill="Análise completa com red team e estratégia">Análise OS 6.1</button>
+            <button class="chip" data-fill="Processos similares sobre horas extras">Banco de decisões</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <div class="composer-wrap">
+        <div class="attachments hidden" id="attachments"></div>
+        <div class="composer">
+          <input id="fileInput" type="file" multiple class="hidden" accept=".pdf,.docx,.txt,.md"/>
+          <textarea id="input" rows="1"
+            placeholder="Descreva o caso ou cole o número do processo…"></textarea>
+          <button class="btn-attach" id="attachBtn" title="Anexar PDF, DOCX ou TXT">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <button class="btn-mic" id="micBtn" title="Falar (Speech-to-Text)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+          <button class="btn-send" id="sendBtn">ENVIAR</button>
+        </div>
+        <div class="helper">
+          <span>Enter envia · Shift+Enter nova linha</span>
+          <span id="helperRight">Tribunal detectado automaticamente pelo número CNJ</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+  <script>
+    const BACKEND  = "https://sm-os-demo-backend.onrender.com";
+    const DEMO_KEY = "SMOS-DEMO-9f3a8c2b-2026";
+
+    // ── Supabase Auth ────────────────────────────────────
+    const SB_URL  = "https://jqwojzxbguzzlweebwyj.supabase.co";
+    const SB_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxd29qenhiZ3V6emx3ZWVid3lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ4OTQwODcsImV4cCI6MjA5MDQ3MDA4N30.m1OEcUla2TS2BAVgaoRiZKQXp1ujsPvv5mDDMH-_y00";
+    let _sbClient = null;
+    let _authToken = null;
+    let _sbConvId  = null; // Supabase conversa ID atual
+
+    function getSB(){
+      if(!_sbClient && typeof supabase !== 'undefined'){
+        _sbClient = supabase.createClient(SB_URL, SB_ANON);
+      }
+      return _sbClient;
+    }
+
+    async function initAuth(){
+      // _authToken already set by authGuard — just load conversations
+      if(_authToken){
+        await loadConvsFromSupabase();
+        return;
+      }
+      // Fallback: try to restore from localStorage
+      const sb = getSB();
+      if(!sb){ loadConvs(); renderSidebar(); return; }
+      const tk = localStorage.getItem('juri_token');
+      const rf = localStorage.getItem('juri_refresh');
+      if(tk && rf){
+        try{
+          const {data} = await sb.auth.setSession({access_token:tk, refresh_token:rf});
+          if(data?.session){
+            _authToken = data.session.access_token;
+            localStorage.setItem('juri_token', _authToken);
+            await loadConvsFromSupabase();
+            return;
+          }
+        }catch(e){ console.warn('Auth restore failed:', e); }
+      }
+      loadConvs();
+      renderSidebar();
+    }
+
+    function authHeaders(){
+      if(!_authToken) return {"x-demo-key": DEMO_KEY};
+      return {"x-demo-key": DEMO_KEY, "Authorization": "Bearer " + _authToken};
+    }
+
+    async function loadConvsFromSupabase(){
+      if(!_authToken){ loadConvs(); renderSidebar(); return; }
+      try{
+        const r = await fetch(BACKEND+"/conversas?limit=50", {headers: authHeaders()});
+        if(!r.ok) throw new Error("HTTP "+r.status);
+        const d = await r.json();
+        const sbConvs = (d.conversas || []).map(c => ({
+          id:        c.id,
+          title:     c.titulo || "Nova conversa",
+          preview:   c.preview || "",
+          createdAt: new Date(c.criado_em).getTime(),
+          updatedAt: new Date(c.atualizado_em || c.criado_em).getTime(),
+          sessionId: c.session_id,
+          sbId:      c.id,
+          messages:  [], // load on demand
+        }));
+        // Merge with localStorage (local takes precedence for active session)
+        loadConvs();
+        // Add Supabase convs not in localStorage
+        sbConvs.forEach(sc => {
+          if(!conversations.find(c => c.sbId === sc.id)){
+            conversations.push(sc);
+          }
+        });
+        conversations.sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+        renderSidebar();
+      }catch(e){
+        console.warn('Supabase convs failed:', e);
+        loadConvs(); renderSidebar();
+      }
+    }
+
+    async function ensureSupabaseConv(){
+      // Cria conversa no Supabase se ainda não existe
+      if(!_authToken) return;
+      if(_sbConvId) return; // já existe
+      try{
+        const firstMsg = document.querySelector('.msg.user')?.textContent?.slice(0,60) || 'Nova conversa';
+        const r = await fetch(BACKEND+"/conversas", {
+          method: "POST",
+          headers: {...authHeaders(), "Content-Type":"application/json"},
+          body: JSON.stringify({titulo: firstMsg, session_id: sessionId})
+        });
+        if(r.ok){
+          const d = await r.json();
+          _sbConvId = d.conversa?.id;
+          // Atualiza conv local com sbId
+          if(activeConvId && _sbConvId){
+            const conv = conversations.find(c => c.id === activeConvId);
+            if(conv) conv.sbId = _sbConvId;
+          }
+          log.debug && log.debug('[SB] conversa criada:', _sbConvId);
+        }
+      }catch(e){ console.warn('ensureSupabaseConv:', e); }
+    }
+
+    async function saveConvToSupabase(conv){
+      if(!_authToken || !conv) return;
+      try{
+        if(!conv.sbId){
+          // Create new conversation
+          const r = await fetch(BACKEND+"/conversas", {
+            method: "POST",
+            headers: {...authHeaders(), "Content-Type":"application/json"},
+            body: JSON.stringify({titulo: conv.title, session_id: conv.sessionId})
+          });
+          if(r.ok){
+            const d = await r.json();
+            conv.sbId = d.conversa?.id;
+            _sbConvId = conv.sbId;
+          }
+        } else {
+          // Update existing
+          _sbConvId = conv.sbId;
+        }
+      }catch(e){ console.warn('Save conv to SB failed:', e); }
+    }
+
+    async function saveMsgToSupabase(role, text){
+      if(!_authToken || !_sbConvId) return;
+      try{
+        await fetch(BACKEND+"/conversas/mensagem", {
+          method: "POST",
+          headers: {...authHeaders(), "Content-Type":"application/json"},
+          body: JSON.stringify({
+            conversa_id: _sbConvId,
+            role: role === 'ai' ? 'assistant' : role,
+            conteudo: text,
+          })
+        });
+      }catch(e){ console.warn('Save msg to SB failed:', e); }
+    }
+
+    async function loadMsgsFromSupabase(sbId){
+      if(!_authToken || !sbId) return null;
+      try{
+        const r = await fetch(BACKEND+"/conversas/"+sbId+"/mensagens", {headers: authHeaders()});
+        if(!r.ok) return null;
+        const d = await r.json();
+        return (d.mensagens || []).map(m => ({
+          role: m.role === 'assistant' ? 'ai' : m.role,
+          text: m.conteudo
+        }));
+      }catch(e){ return null; }
+    }
+    const EP_NEW   = BACKEND+"/session/new";
+    const EP_CHAT  = BACKEND+"/chat";
+    const EP_UPLOAD= BACKEND+"/upload";
+
+    // Mapa de aliases para nome do tribunal — exibido no helper
+    const TRIB_NOME = {
+      "api_publica_trt1":"TRT1 (RJ)","api_publica_trt2":"TRT2 (SP)",
+      "api_publica_trt3":"TRT3 (MG)","api_publica_trt4":"TRT4 (RS)",
+      "api_publica_trt5":"TRT5 (BA)","api_publica_trt6":"TRT6 (PE)",
+      "api_publica_trt7":"TRT7 (CE)","api_publica_trt9":"TRT9 (PR)",
+      "api_publica_trt10":"TRT10 (DF/TO)","api_publica_trt15":"TRT15 (Campinas)",
+      "api_publica_tst":"TST","api_publica_trf1":"TRF1","api_publica_trf2":"TRF2",
+      "api_publica_trf3":"TRF3","api_publica_trf4":"TRF4","api_publica_trf5":"TRF5",
+      "api_publica_tjsp":"TJSP","api_publica_tjrj":"TJRJ","api_publica_tjmg":"TJMG",
+      "api_publica_tjrs":"TJRS","api_publica_stj":"STJ","api_publica_stf":"STF",
+    };
+
+    // Auto-detecta tribunal pelo número CNJ
+    const PROC_RE = /\b(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})\b/;
+    const ALIAS_MAP = {
+      "5.00":"api_publica_tst",
+      "5.01":"api_publica_trt1","5.02":"api_publica_trt2","5.03":"api_publica_trt3",
+      "5.04":"api_publica_trt4","5.05":"api_publica_trt5","5.06":"api_publica_trt6",
+      "5.07":"api_publica_trt7","5.08":"api_publica_trt8","5.09":"api_publica_trt9",
+      "5.10":"api_publica_trt10","5.15":"api_publica_trt15",
+      "4.01":"api_publica_trf1","4.02":"api_publica_trf2","4.03":"api_publica_trf3",
+      "4.04":"api_publica_trf4","4.05":"api_publica_trf5",
+      "8.19":"api_publica_tjrj","8.26":"api_publica_tjsp","8.11":"api_publica_tjmg",
+      "8.23":"api_publica_tjrs","1.00":"api_publica_stj","1.01":"api_publica_stf",
+    };
+
+    function detectTribunal(text) {
+      const m = PROC_RE.exec(text || "");
+      if (!m) return null;
+      const key = `${m[4]}.${String(parseInt(m[5])).padStart(2,"0")}`;
+      const alias = ALIAS_MAP[key];
+      return alias ? (TRIB_NOME[alias] || alias) : null;
+    }
+
+    let sessionId=null, state={}, pendingFiles=[], isTyping=false;
+
+    const chatEl    = document.getElementById("chat");
+    const emptyEl   = document.getElementById("emptyState");
+    const statusDot = document.getElementById("statusDot");
+    const statusTxt = document.getElementById("statusText");
+    const inputEl   = document.getElementById("input");
+    const sendBtn   = document.getElementById("sendBtn");
+    const attachBtn = document.getElementById("attachBtn");
+    const fileInput = document.getElementById("fileInput");
+    const attEl     = document.getElementById("attachments");
+    const pdfBtn    = document.getElementById("pdfBtn");
+    const helperR   = document.getElementById("helperRight");
+
+    if (typeof marked !== "undefined") marked.setOptions({breaks:true, gfm:true});
+
+    function setStatus(t,c){ statusTxt.textContent=t; statusDot.className="status-dot "+(c||""); }
+    function autoResize(){ inputEl.style.height="auto"; inputEl.style.height=Math.min(inputEl.scrollHeight,160)+"px"; }
+    function scrollBottom(){ requestAnimationFrame(()=>{ chatEl.scrollTop=chatEl.scrollHeight; }); }
+    function esc(s){ return(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+    // Atualizar helper com tribunal detectado ao digitar
+    inputEl.addEventListener("input", () => {
+      autoResize();
+      const trib = detectTribunal(inputEl.value);
+      helperR.textContent = trib
+        ? `Tribunal detectado: ${trib}`
+        : "Tribunal detectado automaticamente pelo número CNJ";
+    });
+
+    function addRow(kind, text){
+      emptyEl.classList.add("hidden");
+      const row=document.createElement("div");
+      row.className="msg-row"+(kind==="user"?" user":"");
+      const box=document.createElement("div");
+      box.className="msg "+(kind==="user"?"user":kind==="system"?"system":"ai");
+      if(kind==="ai"&&typeof marked!=="undefined"){ box.innerHTML=marked.parse(text||""); }
+      else{ box.textContent=text||""; }
+      row.appendChild(box); chatEl.appendChild(row); scrollBottom();
+    }
+
+    function showTyping(){ if(isTyping)return; isTyping=true; const row=document.createElement("div"); row.id="typingRow"; row.className="typing-row"; row.innerHTML=`<div class="typing-bubble"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`; chatEl.appendChild(row); scrollBottom(); }
+    function hideTyping(){ isTyping=false; const r=document.getElementById("typingRow"); if(r)r.remove(); }
+
+    function renderAttachments(){
+      attEl.innerHTML="";
+      if(!pendingFiles.length){ attEl.classList.add("hidden"); return; }
+      attEl.classList.remove("hidden");
+      pendingFiles.forEach((f,i)=>{
+        const pill=document.createElement("div"); pill.className="file-pill";
+        pill.innerHTML=`<span>${esc(f.name)}</span><span class="remove">✕</span>`;
+        pill.querySelector(".remove").onclick=()=>{ pendingFiles.splice(i,1); renderAttachments(); };
+        attEl.appendChild(pill);
+      });
+    }
+
+    async function api(url,opts={}){
+      const authH = _authToken ? {"Authorization": "Bearer "+_authToken} : {};
+      const headers={Accept:"application/json","x-demo-key":DEMO_KEY,...authH,...(opts.headers||{})};
+      const final={method:"GET",...opts,headers};
+      if(final.body&&!(final.body instanceof FormData)&&typeof final.body!=="string"){ headers["Content-Type"]="application/json"; final.body=JSON.stringify(final.body); }
+      if(final.body instanceof FormData) delete headers["Content-Type"];
+      const res=await fetch(url,final); const raw=await res.text();
+      let data; try{ data=raw?JSON.parse(raw):{}; }catch{ data={raw}; }
+      if(!res.ok) throw new Error(data?.detail||data?.error||raw||`HTTP ${res.status}`);
+      return data;
+    }
+
+    async function ensureSession(){ if(sessionId)return; const d=await api(EP_NEW,{method:"POST",body:{}}); sessionId=d.session_id; state=d.state||{}; }
+    async function uploadPendingFiles(){ if(!pendingFiles.length)return; for(const file of pendingFiles){ const fd=new FormData(); fd.append("session_id",sessionId); fd.append("file",file); const r=await api(EP_UPLOAD,{method:"POST",body:fd}); addRow("ai",r.message||`Arquivo anexado: ${file.name}`); } pendingFiles=[]; renderAttachments(); }
+
+    async function sendMessage(){
+      const draft=(inputEl.value||"").trim();
+      if(!draft&&!pendingFiles.length)return;
+      // Ensure token is fresh before sending
+      if(!_authToken){
+        const tk = localStorage.getItem('juri_token');
+        const rf = localStorage.getItem('juri_refresh');
+        if(tk && rf){
+          try{
+            const sb = getSB();
+            const {data} = await sb.auth.setSession({access_token:tk, refresh_token:rf});
+            if(data?.session){
+              _authToken = data.session.access_token;
+              localStorage.setItem('juri_token', _authToken);
+            }
+          }catch(e){ console.warn('token refresh:', e); }
+        }
+      }
+      await ensureSession(); await uploadPendingFiles();
+      const message=(inputEl.value||"").trim();
+      if(!message){ inputEl.value=""; autoResize(); return; }
+      addRow("user",message); inputEl.value=""; autoResize();
+      // Garante que conversa existe no Supabase antes de salvar mensagem
+      await ensureSupabaseConv();
+      await saveMsgToSupabase("user", message);
+      setStatus("Analisando…","busy"); sendBtn.disabled=true; showTyping();
+      try{
+        const data=await api(EP_CHAT,{method:"POST",body:{session_id:sessionId,message,state:state||{}}});
+        state=data.state||state; hideTyping(); addRow("ai",data.message||"Ok.");
+        await saveMsgToSupabase("ai", data.message||"Ok.");
+        if(data.prompt_level==="os61"||data.prompt_level==="juridico") pdfBtn.classList.remove("hidden");
+      }catch(e){ hideTyping(); addRow("system","Erro: "+(e.message||e)); }
+      finally{ sendBtn.disabled=false; setStatus("Pronto",""); inputEl.focus(); }
+    }
+
+    async function exportarPDF(){
+      if(!sessionId)return;
+      pdfBtn.disabled=true; pdfBtn.querySelector("span").textContent="Gerando…"; setStatus("Gerando PDF…","busy");
+      try{
+        const resp=await fetch(BACKEND+"/relatorio",{method:"POST",headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},body:JSON.stringify({session_id:sessionId})});
+        if(!resp.ok){ const e=await resp.json().catch(()=>({})); throw new Error(e.detail||`HTTP ${resp.status}`); }
+        const blob=await resp.blob(); const url=URL.createObjectURL(blob);
+        const a=document.createElement("a"); a.href=url; a.download=`relatorio_${Date.now()}.pdf`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        addRow("ai","✅ Relatório PDF gerado e baixado com sucesso.");
+      }catch(e){ addRow("system","Erro ao gerar PDF: "+(e.message||e)); }
+      finally{ pdfBtn.disabled=false; pdfBtn.querySelector("span").textContent="Relatório"; setStatus("Pronto",""); }
+    }
+    pdfBtn.addEventListener("click",exportarPDF);
+
+    async function boot(){
+      setStatus("Conectando…","busy");
+      for(let i=0;i<3;i++){
+        try{ await ensureSession(); setStatus("Pronto",""); inputEl.focus(); return; }
+        catch(e){ if(i<2){ setStatus("Reconectando…","busy"); await new Promise(r=>setTimeout(r,3500)); } else{ setStatus("Erro de conexão","err"); addRow("system","Não foi possível conectar. Recarregue a página.\n\n"+(e.message||e)); } }
+      }
+    }
+
+    document.querySelectorAll(".chip").forEach(btn=>btn.addEventListener("click",()=>{ inputEl.value=btn.dataset.fill||""; autoResize(); const trib=detectTribunal(inputEl.value); helperR.textContent=trib?`Tribunal detectado: ${trib}`:"Tribunal detectado automaticamente pelo número CNJ"; inputEl.focus(); }));
+    attachBtn.addEventListener("click",()=>fileInput.click());
+    fileInput.addEventListener("change",()=>{ pendingFiles.push(...Array.from(fileInput.files||[])); fileInput.value=""; renderAttachments(); });
+    sendBtn.addEventListener("click",sendMessage);
+    inputEl.addEventListener("keydown",async e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); await sendMessage(); } });
+    autoResize();
+
+    // ── Auth Guard — redireciona para login se não autenticado ──
+    async function authGuard(){
+      const tk = localStorage.getItem('juri_token');
+      const rf = localStorage.getItem('juri_refresh');
+      if(!tk || !rf){
+        window.location.href = "https://jurimetrix.com/login-cadastro/";
+        return false;
+      }
+      try{
+        const sb = getSB();
+        const {data} = await sb.auth.setSession({access_token:tk, refresh_token:rf});
+        if(!data?.session){
+          localStorage.removeItem('juri_token');
+          localStorage.removeItem('juri_refresh');
+          window.location.href = "https://jurimetrix.com/login-cadastro/";
+          return false;
+        }
+        _authToken = data.session.access_token;
+        localStorage.setItem('juri_token', _authToken);
+        return true;
+      }catch(e){
+        window.location.href = "https://jurimetrix.com/login-cadastro/";
+        return false;
+      }
+    }
+
+    // Boot com guard
+    authGuard().then(ok => {
+      if(ok){
+        initAuth();
+        loadSbUser();
+        boot();
+      }
+    });
+
+    /* ══════════════════════════════════════
+       SIDEBAR — Histórico de conversas
+    ══════════════════════════════════════ */
+
+    // Storage key
+    const CONV_KEY = 'juri_convs';
+    let conversations = [];
+    let activeConvId  = null;
+    let sbOpen        = true;
+
+    function genId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+    function saveConvs(){ localStorage.setItem(CONV_KEY, JSON.stringify(conversations)); }
+
+    function loadConvs(){
+      try{ conversations = JSON.parse(localStorage.getItem(CONV_KEY) || '[]'); }
+      catch{ conversations = []; }
+    }
+
+    function dateLabel(ts){
+      const d = new Date(ts), now = new Date();
+      const diff = Math.floor((now - d) / 86400000);
+      if(diff === 0) return 'Hoje';
+      if(diff === 1) return 'Ontem';
+      if(diff <= 7)  return 'Esta semana';
+      if(diff <= 30) return 'Este mês';
+      return d.toLocaleDateString('pt-BR', {month:'long', year:'numeric'});
+    }
+
+    function renderSidebar(filter=''){
+      const list = document.getElementById('sb-list');
+      const filt = filter.toLowerCase();
+      const filtered = conversations.filter(c =>
+        c.title.toLowerCase().includes(filt) ||
+        (c.preview || '').toLowerCase().includes(filt)
+      );
+
+      if(!filtered.length){
+        list.innerHTML = `<div style="padding:24px 12px;text-align:center;font-size:12px;color:var(--muted);opacity:.7;">
+          ${filter ? 'Nenhuma conversa encontrada' : 'Nenhuma conversa ainda.<br>Comece digitando uma pergunta.'}
+        </div>`;
+        return;
+      }
+
+      // Group by date
+      const groups = {};
+      filtered.forEach(c => {
+        const label = dateLabel(c.updatedAt || c.createdAt);
+        if(!groups[label]) groups[label] = [];
+        groups[label].push(c);
+      });
+
+      let html = '';
+      Object.entries(groups).forEach(([label, convs]) => {
+        html += `<div class="sb-group">${label}</div>`;
+        convs.forEach(c => {
+          const isActive = c.id === activeConvId;
+          const time = new Date(c.updatedAt || c.createdAt).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+          const isProcess = /\d{7}-\d{2}/.test(c.title);
+          html += `
+          <div class="conv-item${isActive?' active':''}" onclick="loadConv('${c.id}')">
+            <div class="conv-icon${isProcess?' gold-icon':''}">
+              ${isProcess
+                ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C8A84B" stroke-width="2" stroke-linecap="round"><path d="M3 20h18M5 20V10M19 20V10M12 20V4M12 4L5 10M12 4L19 10"/></svg>'
+                : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2A7A8C" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'}
+            </div>
+            <div class="conv-info">
+              <div class="conv-title">${esc(c.title)}</div>
+              <div class="conv-preview">${esc(c.preview || '')}</div>
+            </div>
+            <div class="conv-time">${time}</div>
+            <div class="conv-actions">
+              <button class="conv-btn" onclick="renameConv(event,'${c.id}')" title="Renomear">✎</button>
+              <button class="conv-btn" onclick="deleteConv(event,'${c.id}')" title="Excluir">×</button>
+            </div>
+          </div>`;
+        });
+      });
+
+      list.innerHTML = html;
+    }
+
+    function filterConvs(val){ renderSidebar(val); }
+
+    function novaConversa(){
+      // Salvar conversa atual se tiver mensagens
+      saveCurrentConv();
+      // Reset
+      activeConvId = null;
+      sessionId    = null;
+      state        = {};
+      document.getElementById('chat').innerHTML = '';
+      document.getElementById('emptyState') && document.getElementById('chat').appendChild(
+        (() => { const d = document.createElement('div'); d.className='empty'; d.id='emptyState'; d.innerHTML = document.getElementById('emptyState')?.innerHTML || ''; return d; })()
+      );
+      // Re-create empty state
+      location.reload();
+    }
+
+    function saveCurrentConv(){
+      const msgs = document.querySelectorAll('.msg');
+      if(!msgs.length) return;
+
+      const firstUserMsg = document.querySelector('.msg.user')?.textContent?.slice(0,60) || 'Nova conversa';
+      const lastMsg      = [...msgs].pop()?.textContent?.slice(0,50) || '';
+
+      if(activeConvId){
+        const conv = conversations.find(c => c.id === activeConvId);
+        if(conv){
+          conv.preview   = lastMsg;
+          conv.updatedAt = Date.now();
+          conv.sessionId = sessionId;
+          conv.messages  = getMessagesForSave();
+          saveConvs(); renderSidebar();
+          saveConvToSupabase(conv);
+          return;
+        }
+      }
+
+      // Nova conversa
+      const newConv = {
+        id:        genId(),
+        title:     firstUserMsg,
+        preview:   lastMsg,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        sessionId: sessionId,
+        messages:  getMessagesForSave(),
+      };
+      conversations.unshift(newConv);
+      activeConvId = newConv.id;
+      _sbConvId = null; // reset so new SB conv is created
+      saveConvs();
+      renderSidebar();
+      saveConvToSupabase(newConv);
+    }
+
+    function getMessagesForSave(){
+      const rows = document.querySelectorAll('.msg-row');
+      const out  = [];
+      rows.forEach(row => {
+        const isUser = row.classList.contains('user');
+        const box    = row.querySelector('.msg');
+        if(box) out.push({ role: isUser ? 'user' : 'ai', text: box.innerText });
+      });
+      return out;
+    }
+
+    async function loadConv(id){
+      saveCurrentConv();
+      const conv = conversations.find(c => c.id === id);
+      if(!conv) return;
+      activeConvId = id;
+      _sbConvId = conv.sbId || null;
+
+      // Try to load messages from Supabase if available
+      let messages = conv.messages || [];
+      if(conv.sbId && _authToken && (!messages.length)){
+        const sbMsgs = await loadMsgsFromSupabase(conv.sbId);
+        if(sbMsgs && sbMsgs.length){ messages = sbMsgs; conv.messages = sbMsgs; }
+      }
+
+      // Restore messages
+      const chatEl2 = document.getElementById('chat');
+      chatEl2.innerHTML = '';
+      document.getElementById('emptyState')?.classList.add('hidden');
+
+      messages.forEach(m => {
+        const row = document.createElement('div');
+        row.className = 'msg-row' + (m.role === 'user' ? ' user' : '');
+        const box = document.createElement('div');
+        box.className = 'msg ' + (m.role === 'user' ? 'user' : 'ai');
+        if(m.role === 'ai' && typeof marked !== 'undefined'){ box.innerHTML = marked.parse(m.text || ''); }
+        else{ box.textContent = m.text || ''; }
+        row.appendChild(box); chatEl2.appendChild(row);
+      });
+      scrollBottom();
+      renderSidebar();
+
+      // Restore session if same session still active (best effort)
+      if(conv.sessionId) sessionId = conv.sessionId;
+    }
+
+    function deleteConv(e, id){
+      e.stopPropagation();
+      if(!confirm('Excluir esta conversa?')) return;
+      conversations = conversations.filter(c => c.id !== id);
+      if(activeConvId === id){ activeConvId = null; }
+      saveConvs(); renderSidebar();
+    }
+
+    function renameConv(e, id){
+      e.stopPropagation();
+      const conv = conversations.find(c => c.id === id);
+      if(!conv) return;
+      const newTitle = prompt('Novo nome:', conv.title);
+      if(newTitle && newTitle.trim()){
+        conv.title = newTitle.trim();
+        saveConvs(); renderSidebar();
+      }
+    }
+
+    function toggleSidebar(){
+      const sb  = document.getElementById('sidebar');
+      const btn = document.getElementById('btnToggleSb');
+      sbOpen = !sbOpen;
+      sb.classList.toggle('collapsed', !sbOpen);
+      btn.style.left = sbOpen ? '260px' : '0';
+      btn.textContent = sbOpen ? '‹' : '›';
+    }
+
+    // Load user info from localStorage
+    function loadSbUser(){
+      try{
+        const u = JSON.parse(localStorage.getItem('juri_user') || '{}');
+        if(u.nome){ document.getElementById('sb-uname').textContent = u.nome; document.getElementById('sb-avatar').textContent = u.nome[0].toUpperCase(); }
+        if(u.plano){ document.getElementById('sb-uplan').textContent = (u.plano.nome || 'FREE').toUpperCase(); }
+      }catch{}
+    }
+
+    // Auto-save on send
+    const _origSend = sendMessage;
+    // Hook: after each message added, auto-save
+    const origAddRow = addRow;
+
+    // Save conversation periodically and on beforeunload
+    window.addEventListener('beforeunload', saveCurrentConv);
+    setInterval(saveCurrentConv, 30000);
+
+    // Init handled by authGuard above
+
+  </script>
+
+<script>
+/* ══════════════════════════════════════════
+   SPEECH-TO-TEXT — Google Cloud via Web API
+══════════════════════════════════════════ */
+(function(){
+  const BACKEND = "https://sm-os-demo-backend.onrender.com";
+  const DEMO_KEY = "SMOS-DEMO-9f3a8c2b-2026";
+
+  const micBtn  = document.getElementById('micBtn');
+  const inputEl = document.getElementById('input');
+  if(!micBtn || !inputEl) return;
+
+  let mediaRecorder = null;
+  let audioChunks   = [];
+  let isRecording   = false;
+
+  micBtn.addEventListener('click', async function(){
+    if(isRecording){
+      stopRecording();
+    } else {
+      await startRecording();
+    }
+  });
+
+  async function startRecording(){
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      
+      // Prefer webm/opus, fallback to ogg
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+        ? 'audio/ogg;codecs=opus'
+        : 'audio/webm';
+
+      mediaRecorder = new MediaRecorder(stream, {mimeType});
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = e => {
+        if(e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        await sendAudioToBackend(new Blob(audioChunks, {type: mimeType}), mimeType);
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      micBtn.classList.add('recording');
+      micBtn.title = 'Parar gravação';
+
+      // Auto-stop after 60 seconds
+      setTimeout(()=>{ if(isRecording) stopRecording(); }, 60000);
+
+    }catch(e){
+      console.error('Mic error:', e);
+      alert('Não foi possível acessar o microfone. Verifique as permissões do navegador.');
+    }
+  }
+
+  function stopRecording(){
+    if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+      mediaRecorder.stop();
+    }
+    isRecording = false;
+    micBtn.classList.remove('recording');
+    micBtn.title = 'Falar (Speech-to-Text)';
+    micBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>`;
+  }
+
+  async function sendAudioToBackend(blob, mimeType){
+    // Show loading state
+    micBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+    micBtn.title = 'Transcrevendo...';
+
+    try{
+      const formData = new FormData();
+      formData.append('audio', blob, 'audio.webm');
+      formData.append('mime_type', mimeType);
+
+      const token = localStorage.getItem('juri_token') || '';
+      const r = await fetch(BACKEND + '/speech-to-text', {
+        method: 'POST',
+        headers: {
+          'x-demo-key': DEMO_KEY,
+          ...(token ? {'Authorization': 'Bearer ' + token} : {})
+        },
+        body: formData
+      });
+
+      if(r.ok){
+        const data = await r.json();
+        const text = data.transcript || '';
+        if(text){
+          // Append to existing input or set
+          const current = inputEl.value.trim();
+          inputEl.value = current ? current + ' ' + text : text;
+          inputEl.dispatchEvent(new Event('input'));
+          inputEl.focus();
+          // Move cursor to end
+          inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+        } else {
+          alert('Não foi possível transcrever o áudio. Tente falar mais claramente.');
+        }
+      } else {
+        const err = await r.json().catch(()=>({}));
+        console.error('STT error:', err);
+        alert('Erro na transcrição: ' + (err.detail || 'Tente novamente.'));
+      }
+    }catch(e){
+      console.error('STT fetch error:', e);
+      alert('Erro ao enviar áudio. Verifique sua conexão.');
+    }finally{
+      // Restore mic icon
+      micBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>`;
+      micBtn.title = 'Falar (Speech-to-Text)';
+    }
+  }
+})();
+</script>
+</body>
+</html>
