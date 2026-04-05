@@ -1145,6 +1145,17 @@ def serve_admin():
         return FileResponse(path, media_type="text/html")
     return HTMLResponse("<h1>admin.html não encontrado em /static/</h1>", status_code=404)
 
+@app.get("/chat-app")
+def serve_chat():
+    """Serve o chat como página standalone no Render."""
+    from fastapi.responses import FileResponse, HTMLResponse
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "static", "chat.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return HTMLResponse("<h1>chat.html não encontrado em /static/</h1>", status_code=404)
+
 @app.get("/health")
 def health():
     return {
