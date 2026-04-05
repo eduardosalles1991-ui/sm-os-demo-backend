@@ -1069,6 +1069,30 @@
 
     // ── Auth Guard — redireciona para login se não autenticado ──
     async function authGuard(){
+      // Try hash params first (coming from painel)
+      const hash = window.location.hash.replace('#','');
+      const hp = new URLSearchParams(hash);
+      const hashTk = hp.get('tk');
+      const hashRf = hp.get('rf');
+
+      if(hashTk && hashRf){
+        try{
+          const sb = getSB();
+          const {data} = await sb.auth.setSession({
+            access_token: decodeURIComponent(hashTk),
+            refresh_token: decodeURIComponent(hashRf)
+          });
+          if(data?.session){
+            history.replaceState(null,'',window.location.pathname);
+            _authToken = data.session.access_token;
+            localStorage.setItem('juri_token', _authToken);
+            localStorage.setItem('juri_refresh', data.session.refresh_token);
+            return true;
+          }
+        }catch(e){ console.warn('hash auth:', e); }
+      }
+
+      // Try localStorage
       const tk = localStorage.getItem('juri_token');
       const rf = localStorage.getItem('juri_refresh');
       if(!tk || !rf){
