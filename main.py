@@ -642,7 +642,7 @@ def call_openai(messages:List[dict],temperature:float=0.15)->str:
 # ═══════════════════════════════════════════════════════
 app = FastAPI(title="Jurimetrix OS Chat", version="8.0.0")
 app.add_middleware(CORSMiddleware,
-    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com"],
+    allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com", "https://chat.jurimetrix.com", "https://painel.jurimetrix.com", "https://admin.jurimetrix.com"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # Serve static files
