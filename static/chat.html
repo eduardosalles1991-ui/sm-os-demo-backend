@@ -839,7 +839,7 @@
             const conv = conversations.find(c => c.id === activeConvId);
             if(conv) conv.sbId = _sbConvId;
           }
-          log.debug && log.debug('[SB] conversa criada:', _sbConvId);
+          console.debug('[SB] conversa criada:', _sbConvId);
         }
       }catch(e){ console.warn('ensureSupabaseConv:', e); }
     }
