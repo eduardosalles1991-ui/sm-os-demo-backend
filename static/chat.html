@@ -491,7 +491,7 @@
       </div>
 
       <div class="sb-footer">
-        <div class="sb-user" onclick="window.location.href='https://painel.jurimetrix.com'">
+        <div class="sb-user" onclick="(function(){var tk=localStorage.getItem('juri_token');var rf=localStorage.getItem('juri_refresh');if(tk&&rf){window.location.href='https://painel.jurimetrix.com/painel#tk='+encodeURIComponent(tk)+'&rf='+encodeURIComponent(rf);}else{window.location.href='https://painel.jurimetrix.com/painel';}})()">
           <div class="sb-avatar" id="sb-avatar">J</div>
           <div class="sb-user-info">
             <div class="sb-uname" id="sb-uname">Minha conta</div>
@@ -657,6 +657,7 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
   <script>
     const BACKEND  = "https://sm-os-demo-backend.onrender.com";
@@ -932,8 +933,27 @@
     autoResize();
 
     async function authGuard(){
-      const tk = localStorage.getItem('juri_token');
-      const rf = localStorage.getItem('juri_refresh');
+      // Try hash tokens first (passed from painel cross-domain)
+      const hash = window.location.hash.replace('#','');
+      const hp = new URLSearchParams(hash);
+      let tk = hp.get('tk') ? decodeURIComponent(hp.get('tk')) : null;
+      let rf = hp.get('rf') ? decodeURIComponent(hp.get('rf')) : null;
+      if(tk && rf){
+        try{
+          const sb = getSB();
+          const {data} = await sb.auth.setSession({access_token:tk, refresh_token:rf});
+          if(data?.session){
+            history.replaceState(null,'',window.location.pathname);
+            localStorage.setItem('juri_token', data.session.access_token);
+            localStorage.setItem('juri_refresh', data.session.refresh_token);
+            _authToken = data.session.access_token;
+            return true;
+          }
+        }catch(e){ console.warn('Hash auth failed:', e); }
+      }
+      // Fallback to localStorage
+      tk = localStorage.getItem('juri_token');
+      rf = localStorage.getItem('juri_refresh');
       if(!tk || !rf){
         window.location.href = "https://jurimetrix.com/login-cadastro/";
         return false;
