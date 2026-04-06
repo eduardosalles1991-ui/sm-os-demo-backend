@@ -273,10 +273,12 @@ html,body{height:100%;overflow:hidden;}
   }
 
   window.juriLogout = async function(){
-    if(typeof window._juriSB !== 'undefined') await window._juriSB.auth.signOut();
-    localStorage.removeItem('juri_token');
-    localStorage.removeItem('juri_refresh');
-    localStorage.removeItem('juri_user');
+    try{
+      if(typeof window._juriSB !== 'undefined') await window._juriSB.auth.signOut();
+    }catch(e){}
+    // Clear all storage
+    localStorage.clear();
+    sessionStorage.clear();
     window.location.href = "https://jurimetrix.com/login-cadastro/";
   };
 
