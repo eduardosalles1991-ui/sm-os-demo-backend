@@ -197,7 +197,7 @@ def verificar_e_decrementar_tokens(user_id: str, tokens_entrada: int = 0) -> dic
     try:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/assinaturas",
-            params={"user_id": f"eq.{user_id}", "select": "tokens_mes,tokens_usados_mes,status,planos(slug)"},
+            params={"usuario_id": f"eq.{user_id}", "select": "id,tokens_mes,tokens_usados_mes,status"},
             headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
             timeout=10
         )
@@ -206,6 +206,7 @@ def verificar_e_decrementar_tokens(user_id: str, tokens_entrada: int = 0) -> dic
             return {"ok": True}  # sem assinatura = free, permite usar
 
         assin = data[0]
+        assin_id = assin.get("id")
         tokens_mes = assin.get("tokens_mes") or 1_000_000
         tokens_usados = assin.get("tokens_usados_mes") or 0
 
@@ -216,19 +217,20 @@ def verificar_e_decrementar_tokens(user_id: str, tokens_entrada: int = 0) -> dic
         if tokens_usados >= tokens_mes:
             return {"ok": False, "motivo": "limite_atingido", "tokens_mes": tokens_mes, "tokens_usados": tokens_usados}
 
-        # Decrementa tokens de entrada
-        novo_usado = tokens_usados + max(tokens_entrada // 4, 100)  # ~1 token = 4 chars
+        # Decrementa tokens de entrada (~1 token = 4 chars)
+        novo_usado = tokens_usados + max(tokens_entrada // 4, 100)
         requests.patch(
             f"{SUPABASE_URL}/rest/v1/assinaturas",
-            params={"user_id": f"eq.{user_id}"},
+            params={"id": f"eq.{assin_id}"},
             json={"tokens_usados_mes": novo_usado},
-            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"},
             timeout=10
         )
+        log.info(f"[tokens] user={user_id[:8]} usado={novo_usado}/{tokens_mes}")
         return {"ok": True, "tokens_restantes": tokens_mes - novo_usado}
     except Exception as e:
         log.warning(f"[SB] verificar_tokens erro: {e}")
-        return {"ok": True}  # em caso de erro, permite continuar
+        return {"ok": True}
 
 def registrar_tokens_resposta(user_id: str, chars_resposta: int = 0):
     """Adiciona tokens da resposta ao consumo do usuario."""
@@ -236,22 +238,21 @@ def registrar_tokens_resposta(user_id: str, chars_resposta: int = 0):
         tokens_resposta = max(chars_resposta // 4, 50)
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/assinaturas",
-            params={"user_id": f"eq.{user_id}", "select": "tokens_usados_mes,tokens_mes"},
+            params={"usuario_id": f"eq.{user_id}", "select": "id,tokens_usados_mes,tokens_mes"},
             headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"},
             timeout=10
         )
         data = r.json() if r.ok else []
-        if not data:
-            return
+        if not data: return
+        assin_id = data[0].get("id")
         tokens_mes = data[0].get("tokens_mes") or 1_000_000
-        if tokens_mes >= 999_999_999:
-            return
+        if tokens_mes >= 999_999_999: return
         tokens_usados = data[0].get("tokens_usados_mes") or 0
         requests.patch(
             f"{SUPABASE_URL}/rest/v1/assinaturas",
-            params={"user_id": f"eq.{user_id}"},
+            params={"id": f"eq.{assin_id}"},
             json={"tokens_usados_mes": tokens_usados + tokens_resposta},
-            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json"},
+            headers={"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}", "Content-Type": "application/json", "Prefer": "return=minimal"},
             timeout=10
         )
     except Exception as e:
