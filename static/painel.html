@@ -143,9 +143,9 @@ html,body{height:100%;overflow:hidden;}
   var tk = localStorage.getItem('juri_token');
   var rf = localStorage.getItem('juri_refresh');
   if(tk && rf){
-    window.location.href = 'https://sm-os-demo-backend.onrender.com/chat-app#tk='+encodeURIComponent(tk)+'&rf='+encodeURIComponent(rf);
+    window.location.href = 'https://chat.jurimetrix.com/chat-app#tk='+encodeURIComponent(tk)+'&rf='+encodeURIComponent(rf);
   } else {
-    window.location.href = 'https://sm-os-demo-backend.onrender.com/chat-app';
+    window.location.href = 'https://chat.jurimetrix.com/chat-app';
   }
 })()">◉ Abrir chat</button>
     <div class="juri-sidebar-footer">
@@ -228,7 +228,6 @@ html,body{height:100%;overflow:hidden;}
     document.querySelectorAll('.juri-nav').forEach(function(n){n.classList.remove('active');});
     var pg = document.getElementById('juri-'+id) || document.getElementById('juri-'+id+'-page');
     if(pg) pg.classList.add('active');
-    // Mark nav active
     document.querySelectorAll('.juri-nav').forEach(function(n){
       if(n.getAttribute('onclick') && n.getAttribute('onclick').includes("'"+id+"'")){n.classList.add('active');}
     });
@@ -276,7 +275,6 @@ html,body{height:100%;overflow:hidden;}
     try{
       if(typeof window._juriSB !== 'undefined') await window._juriSB.auth.signOut();
     }catch(e){}
-    // Clear all storage
     localStorage.clear();
     sessionStorage.clear();
     window.location.href = "https://jurimetrix.com/login-cadastro/";
@@ -310,7 +308,6 @@ html,body{height:100%;overflow:hidden;}
     var sb = supabase.createClient(SURL, SKEY);
     window._juriSB = sb;
 
-    // Try hash token
     var hash = window.location.hash.replace('#','');
     var hp   = new URLSearchParams(hash);
     var tk   = hp.get('tk');
@@ -332,11 +329,9 @@ html,body{height:100%;overflow:hidden;}
       }catch(e){ console.warn('setSession:', e); }
     }
 
-    // Try existing session
     var {data} = await sb.auth.getSession();
     var s = data && data.session;
 
-    // Try localStorage
     if(!s){
       var storedTk = localStorage.getItem('juri_token');
       var storedRf = localStorage.getItem('juri_refresh');
