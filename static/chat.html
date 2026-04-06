@@ -294,6 +294,20 @@
     .btn-send:hover:not(:disabled){background:linear-gradient(135deg,var(--teal) 0%,var(--navy) 100%);box-shadow:0 4px 20px rgba(42,122,140,.25);}
     .btn-send:disabled{opacity:.4;cursor:not-allowed;}
 
+    .btn-mic{
+      flex:0 0 auto;width:38px;height:38px;border-radius:12px;
+      background:var(--glass-bg-subtle);
+      border:1px solid var(--glass-border-md);
+      color:var(--muted);cursor:pointer;display:grid;place-items:center;
+      transition:all .2s;
+    }
+    .btn-mic:hover{border-color:rgba(42,122,140,.4);color:var(--teal);background:rgba(255,255,255,.8);}
+    .btn-mic.recording{
+      background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.4);color:var(--danger);
+      animation:mic-pulse 1s infinite;
+    }
+    @keyframes mic-pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.3)}50%{box-shadow:0 0 0 8px rgba(220,38,38,0)}}
+
     .helper{
       display:flex;justify-content:space-between;align-items:center;
       padding:8px 2px 0;font-size:11px;color:var(--muted);
@@ -646,6 +660,9 @@
           <button class="btn-attach" id="attachBtn" title="Anexar PDF, DOCX ou TXT">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
           </button>
+          <button class="btn-mic" id="micBtn" title="Gravar áudio (Speech-to-Text)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </button>
           <button class="btn-send" id="sendBtn">ENVIAR</button>
         </div>
         <div class="helper">
@@ -931,6 +948,53 @@
     sendBtn.addEventListener("click",sendMessage);
     inputEl.addEventListener("keydown",async e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); await sendMessage(); } });
     autoResize();
+
+    // ── Speech-to-Text (Microfone) ──────────────────────────────
+    const micBtn = document.getElementById("micBtn");
+    let _mediaRecorder = null;
+    let _audioChunks = [];
+    let _isRecording = false;
+
+    micBtn.addEventListener("click", async () => {
+      if(_isRecording){
+        if(_mediaRecorder && _mediaRecorder.state !== "inactive") _mediaRecorder.stop();
+        return;
+      }
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        _audioChunks = [];
+        _mediaRecorder = new MediaRecorder(stream, {mimeType:"audio/webm;codecs=opus"});
+        _mediaRecorder.ondataavailable = e => { if(e.data.size>0) _audioChunks.push(e.data); };
+        _mediaRecorder.onstop = async () => {
+          _isRecording = false;
+          micBtn.classList.remove("recording");
+          micBtn.title = "Gravar áudio (Speech-to-Text)";
+          stream.getTracks().forEach(t=>t.stop());
+          if(!_audioChunks.length) return;
+          const blob = new Blob(_audioChunks, {type:"audio/webm"});
+          setStatus("Transcrevendo…","busy");
+          try{
+            const fd = new FormData();
+            fd.append("audio", blob, "audio.webm");
+            fd.append("mime_type", "audio/webm;codecs=opus");
+            const r = await fetch(BACKEND+"/speech-to-text", {method:"POST",headers:{"x-demo-key":DEMO_KEY},body:fd});
+            const d = await r.json();
+            if(d.ok && d.transcript){
+              inputEl.value = (inputEl.value ? inputEl.value+" " : "") + d.transcript;
+              autoResize(); inputEl.focus();
+            }
+          }catch(e){ console.error("STT error:", e); }
+          finally{ setStatus("Pronto",""); }
+        };
+        _mediaRecorder.start();
+        _isRecording = true;
+        micBtn.classList.add("recording");
+        micBtn.title = "Clique para parar a gravação";
+      }catch(e){
+        console.error("Mic access denied:", e);
+        alert("Permissão de microfone negada. Habilite nas configurações do navegador.");
+      }
+    });
 
     async function authGuard(){
       // Try hash tokens first (passed from painel cross-domain)
