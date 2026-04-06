@@ -471,16 +471,50 @@
 
     .hidden{display:none!important}
 
+    /* Mobile topbar menu button */
+    .btn-mobile-menu{
+      display:none;width:36px;height:36px;border-radius:10px;
+      background:var(--glass-bg-subtle);border:1px solid var(--glass-border-md);
+      color:var(--muted);cursor:pointer;place-items:center;transition:all .2s;
+    }
+    .btn-mobile-menu:hover{border-color:rgba(42,122,140,.4);color:var(--teal);}
+
+    /* Mobile drawer */
+    .mobile-drawer{
+      display:none;position:fixed;inset:0;z-index:100;
+    }
+    .mobile-drawer.open{display:flex;}
+    .mobile-drawer-bg{position:absolute;inset:0;background:rgba(27,43,75,.4);backdrop-filter:blur(4px);}
+    .mobile-drawer-panel{
+      position:relative;width:280px;height:100%;
+      background:rgba(240,245,255,0.95);backdrop-filter:blur(40px);
+      box-shadow:4px 0 30px rgba(27,43,75,.15);
+      display:flex;flex-direction:column;overflow-y:auto;z-index:1;
+    }
+    .mobile-drawer-header{padding:16px;border-bottom:1px solid rgba(180,200,230,.3);display:flex;justify-content:space-between;align-items:center;}
+    .mobile-drawer-close{background:none;border:none;font-size:22px;color:var(--muted);cursor:pointer;}
+    .mobile-drawer-links{padding:12px;display:flex;flex-direction:column;gap:6px;}
+    .mobile-drawer-link{
+      display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;
+      font-size:13px;font-weight:700;color:var(--navy);cursor:pointer;
+      border:none;background:transparent;text-align:left;transition:all .2s;
+    }
+    .mobile-drawer-link:hover{background:rgba(42,122,140,.08);}
+
     @media(max-width:680px){
       .app{padding:0;}
       .shell{height:100dvh;}
-      .topbar{padding:0 16px;height:58px;}
-      .brand-name{font-size:17px;}
+      .topbar{padding:0 12px;height:54px;}
+      .brand-name{font-size:15px;}
       .brand-tagline{display:none;}
       .btn-pdf span{display:none;}
-      .chat{padding:18px 16px 10px;}
-      .msg{max-width:90%;font-size:13.5px;}
-      .composer-wrap{padding:10px 14px 18px;}
+      .btn-mobile-menu{display:grid;}
+      .chat{padding:14px 12px 10px;}
+      .msg{max-width:92%;font-size:13.5px;}
+      .composer-wrap{padding:8px 10px 14px;}
+      .composer{padding:6px 6px 6px 12px;gap:6px;}
+      .btn-attach,.btn-mic{width:34px;height:34px;border-radius:10px;}
+      .btn-send{height:34px;padding:0 14px;font-size:12px;border-radius:10px;}
       .helper{display:none;}
     }
   </style>
@@ -592,6 +626,9 @@
             <div class="status-dot busy" id="statusDot"></div>
             <span id="statusText">Iniciando</span>
           </div>
+          <button class="btn-mobile-menu" id="mobileMenuBtn" onclick="document.getElementById('mobileDrawer').classList.add('open')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
         </div>
       </div>
 
@@ -671,6 +708,31 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- Mobile Drawer -->
+  <div class="mobile-drawer" id="mobileDrawer">
+    <div class="mobile-drawer-bg" onclick="document.getElementById('mobileDrawer').classList.remove('open')"></div>
+    <div class="mobile-drawer-panel">
+      <div class="mobile-drawer-header">
+        <span style="font-family:'Rajdhani',sans-serif;font-weight:700;font-size:16px;color:var(--navy);">JURIMETRIX</span>
+        <button class="mobile-drawer-close" onclick="document.getElementById('mobileDrawer').classList.remove('open')">×</button>
+      </div>
+      <div class="mobile-drawer-links">
+        <button class="mobile-drawer-link" onclick="document.getElementById('mobileDrawer').classList.remove('open');novaConversa();">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Nova conversa
+        </button>
+        <button class="mobile-drawer-link" onclick="(function(){var tk=localStorage.getItem('juri_token');var rf=localStorage.getItem('juri_refresh');if(tk&&rf){window.location.href='https://painel.jurimetrix.com/painel#tk='+encodeURIComponent(tk)+'&rf='+encodeURIComponent(rf);}else{window.location.href='https://painel.jurimetrix.com/painel';}})()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Meu painel
+        </button>
+        <button class="mobile-drawer-link" onclick="document.getElementById('mobileDrawer').classList.remove('open');" style="border-top:1px solid rgba(180,200,230,.2);margin-top:4px;padding-top:16px;color:var(--muted);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Fechar
+        </button>
+      </div>
     </div>
   </div>
 
