@@ -802,16 +802,16 @@
           updatedAt: new Date(c.atualizado_em || c.criado_em).getTime(),
           sessionId: c.session_id,
           sbId:      c.id,
-          messages:  [], // load on demand
+          messages:  [],
         }));
-        // Merge with localStorage (local takes precedence for active session)
-        loadConvs();
-        // Add Supabase convs not in localStorage
-        sbConvs.forEach(sc => {
-          if(!conversations.find(c => c.sbId === sc.id)){
-            conversations.push(sc);
-          }
-        });
+
+        // Supabase é a fonte de verdade — usa sempre as conversas do servidor
+        if(sbConvs.length > 0){
+          conversations = sbConvs;
+        } else {
+          // Fallback para localStorage se Supabase vazio
+          loadConvs();
+        }
         conversations.sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
         renderSidebar();
       }catch(e){
