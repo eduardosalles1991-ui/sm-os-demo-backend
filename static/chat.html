@@ -1282,12 +1282,17 @@
       activeConvId = id;
       _sbConvId = conv.sbId || null;
 
-      // Try to load messages from Supabase if available
-      let messages = conv.messages || [];
-      if(conv.sbId && _authToken && (!messages.length)){
+      // Always try to load messages from Supabase first
+      let messages = [];
+      if(conv.sbId && _authToken){
         const sbMsgs = await loadMsgsFromSupabase(conv.sbId);
-        if(sbMsgs && sbMsgs.length){ messages = sbMsgs; conv.messages = sbMsgs; }
+        if(sbMsgs && sbMsgs.length){ 
+          messages = sbMsgs; 
+          conv.messages = sbMsgs;
+        }
       }
+      // Fallback to localStorage messages
+      if(!messages.length) messages = conv.messages || [];
 
       // Restore messages
       const chatEl2 = document.getElementById('chat');
