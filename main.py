@@ -154,7 +154,6 @@ def trib_from_msg(msg:str)->Optional[str]:
 # ═══════════════════════════════════════════════════════
 # SMART PROMPT ROUTER — 5 níveis
 # ═══════════════════════════════════════════════════════
-# Escavador intent triggers
 ESC_PROC_TRIGGERS = [
     "processos de","processos do","processos da",
     "todos os processos","quantos processos",
@@ -175,7 +174,6 @@ ESC_ADV_TRIGGERS = [
 ]
 
 def detect_escavador_intent(msg: str) -> Optional[str]:
-    """Detecta se a mensagem pede dados do Escavador. Retorna tipo ou None."""
     if not ESCAVADOR_OK:
         return None
     m = msg.lower()
@@ -186,27 +184,20 @@ def detect_escavador_intent(msg: str) -> Optional[str]:
     return None
 
 def extract_escavador_query(msg: str, tipo: str) -> dict:
-    """Extrai nome/CPF/CNPJ/OAB da mensagem para busca no Escavador."""
     import re
     q = {"tipo": tipo}
-    # CPF pattern
-    cpf = re.search(r'\d{3}\.?\d{3}\.?\d{3}-?\d{2}', msg)
+    cpf = re.search(r'\d{3}\.?\d{3}\.?\d{3}-?\d{2}', msg)
     if cpf: q["cpf"] = cpf.group()
-    # CNPJ pattern
-    cnpj = re.search(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', msg)
+    cnpj = re.search(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', msg)
     if cnpj: q["cnpj"] = cnpj.group()
-    # OAB pattern
-    oab = re.search(r'OAB[/\s]*([A-Z]{2}[/\s]*)?\d+', msg, re.IGNORECASE)
+    oab = re.search(r'OAB[/\s]*([A-Z]{2}[/\s]*)?\d+', msg, re.IGNORECASE)
     if oab: q["oab"] = oab.group()
-    # Nome — texto entre aspas ou após preposição
-    nome_quotes = None  # busca por nome entre aspas simplificada
+    nome_quotes = None
     nome_prep   = re.search(r'(?:de|do|da|sobre|para)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+)+)', msg)
     if nome_quotes: q["nome"] = nome_quotes.group(1)
     elif nome_prep: q["nome"] = nome_prep.group(1)
     return q
 
-
-# BACEN triggers
 BACEN_TRIGGERS = [
     "selic","inpc","ipca","tr ","taxa de juros","juros mora","correção monetária",
     "correcao monetaria","atualizar valor","calcular juros","índice econômico",
@@ -216,11 +207,9 @@ BACEN_TRIGGERS = [
 ]
 
 def detect_bacen_intent(msg: str) -> Optional[str]:
-    """Detecta se a mensagem pede dados econômicos do BACEN."""
     if not BACEN_OK: return None
     m = msg.lower()
     if any(t in m for t in BACEN_TRIGGERS): return "indices"
-    # Detecta cálculo com valor monetário
     import re
     if re.search(r'r\$\s*[\d.,]+', m) and any(w in m for w in ["corrig","atualiz","juros","mora"]):
         return "calculo"
@@ -653,7 +642,7 @@ if _os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
     log.info(f"✅ Static files served from {_static_dir}")
 
-# ── Escavador ────────────────────────────────────────────────────────
+# ── BACEN ────────────────────────────────────────────────────────────
 try:
     import bacen_client as BACEN_MOD
     BACEN_OK = BACEN_MOD.is_configured()
@@ -663,6 +652,17 @@ except Exception as _bacen_e:
     BACEN_OK = False
     log.warning(f"⚠️  bacen_client não carregado: {_bacen_e}")
 
+# ── NL API (Google Natural Language) ─────────────────────────────────
+try:
+    import nl_client as NL_MOD
+    NL_OK = NL_MOD.is_configured()
+    log.info(f"{'✅' if NL_OK else '⚠️ '} Google NL API {'configurado' if NL_OK else 'não configurado'}")
+except Exception as _nl_e:
+    NL_MOD = None
+    NL_OK = False
+    log.warning(f"⚠️  nl_client não carregado: {_nl_e}")
+
+# ── OCR ──────────────────────────────────────────────────────────────
 try:
     import ocr_client as OCR_MOD
     OCR_OK = OCR_MOD.is_configured()
@@ -672,6 +672,7 @@ except Exception as _ocr_e:
     OCR_OK = False
     log.warning(f"⚠️  ocr_client não carregado: {_ocr_e}")
 
+# ── Escavador ────────────────────────────────────────────────────────
 try:
     import escavador_client as ESC
     ESCAVADOR_OK = ESC.is_configured()
@@ -681,14 +682,14 @@ except Exception as _esc_e:
     ESCAVADOR_OK = False
     log.warning(f"⚠️  escavador_client não carregado: {_esc_e}")
 
-# ── Integrar auth + planos + pagamentos ──────────────────────────────
+# ── Auth + planos + pagamentos ───────────────────────────────────────
 from database import criar_tabelas
 from rotas_auth_planos import registrar_rotas
 criar_tabelas()
 registrar_rotas(app)
 log.info("✅ Auth + planos + pagamentos carregados.")
 
-# ── Mercado Pago ──────────────────────────────────────────────────────
+# ── Mercado Pago ─────────────────────────────────────────────────────
 try:
     import mp_client as MP
     MP_OK = MP.is_configured()
@@ -713,7 +714,6 @@ class MPWebhookIn(BaseModel):
 
 @app.post("/mp/preferencia")
 async def mp_criar_preferencia(body: MPPreferenciaIn, authorization: Optional[str] = Header(default=None)):
-    """Cria preferência de pagamento Mercado Pago."""
     if not MP_OK:
         raise HTTPException(503, "Mercado Pago não configurado")
     user_id = get_user_from_request(authorization) if authorization else None
@@ -732,12 +732,10 @@ async def mp_criar_preferencia(body: MPPreferenciaIn, authorization: Optional[st
 
 @app.get("/mp/public-key")
 def mp_public_key():
-    """Retorna a public key do Mercado Pago."""
     return {"public_key": MP_PUBLIC_KEY or ""}
 
 @app.post("/mp/webhook")
 async def mp_webhook(body: dict):
-    """Recebe notificações do Mercado Pago e atualiza plano do usuário."""
     log.info(f"[MP Webhook] {body}")
     try:
         tipo = body.get("type") or body.get("topic", "")
@@ -758,7 +756,6 @@ async def mp_webhook(body: dict):
                 plano_info = MP.PLANOS.get(plano_slug, {})
                 tokens = plano_info.get("tokens")
                 
-                # Atualiza plano no Supabase
                 SB.atualizar_plano_usuario(
                     user_id=user_id,
                     plano_slug=plano_slug,
@@ -772,8 +769,6 @@ async def mp_webhook(body: dict):
         log.error(f"[MP Webhook] Erro: {e}")
         return {"ok": False, "error": str(e)}
 
-
-
 # ── Sessions (in-memory) ─────────────────────────────────────────────
 SESSIONS: Dict[str,Dict[str,Any]] = {}
 
@@ -786,25 +781,23 @@ class ChatIn(BaseModel):
     session_id: str
     message: str
     state: Optional[Dict[str,Any]] = None
-    conversa_id: Optional[str] = None  # Supabase conversa ID
+    conversa_id: Optional[str] = None
 
 class ChatOut(BaseModel):
     message: str
     state: Dict[str,Any] = {}
     prompt_level: Optional[str] = None
-    conversa_id: Optional[str] = None  # Supabase conversa ID
+    conversa_id: Optional[str] = None
 
 class RelatorioIn(BaseModel):
     session_id: str
     numero_processo: Optional[str] = None
     alias: Optional[str] = None
 
-# ── Helpers ───────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────
 def auth401(k:Optional[str]):
     if DEMO_KEY and k != DEMO_KEY:
         raise HTTPException(status_code=401, detail="Não autorizado")
-
-
 
 def sess(sid:str)->dict:
     return SESSIONS.setdefault(sid,{
@@ -815,7 +808,6 @@ def sess(sid:str)->dict:
 def compact(t:str,lim:int=6000)->str: return (t or "").strip()[:lim]
 
 def extract_text(file:UploadFile,data:bytes)->str:
-    """Extração inteligente: nativa para PDFs com texto, OCR Google Vision para escaneados e imagens."""
     fn=(file.filename or "").lower()
     if OCR_OK and OCR_MOD:
         try:
@@ -825,7 +817,6 @@ def extract_text(file:UploadFile,data:bytes)->str:
                 return text
         except Exception as _ocr_e:
             log.warning(f"[OCR] falhou para {fn}: {_ocr_e}")
-    # Fallback sem OCR
     if fn.endswith((".txt",".md")): return data.decode("utf-8",errors="ignore")
     if fn.endswith(".pdf") and PdfReader:
         try: return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages[:40]).strip()
@@ -834,10 +825,6 @@ def extract_text(file:UploadFile,data:bytes)->str:
         try: return "\n".join(p.text for p in DocxDocument(io.BytesIO(data)).paragraphs if p.text).strip()
         except: return ""
     return ""
-
-# ═══════════════════════════════════════════════════════
-# ROUTES
-# ═══════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════
 # SUPABASE ROUTES — Conversas & Mensagens
@@ -862,7 +849,6 @@ def listar_conversas(
     authorization: Optional[str] = Header(default=None),
     limit: int = 50,
 ):
-    """Lista conversas do usuário autenticado via Supabase Auth."""
     user_id = get_user_from_request(authorization)
     if not user_id or not SUPABASE_OK:
         return {"ok": False, "conversas": [], "error": "Não autenticado ou Supabase não configurado"}
@@ -877,7 +863,6 @@ def criar_conversa(
     payload: ConversaIn,
     authorization: Optional[str] = Header(default=None),
 ):
-    """Cria nova conversa no Supabase."""
     user_id = get_user_from_request(authorization)
     if not user_id or not SUPABASE_OK:
         raise HTTPException(401, "Não autenticado")
@@ -899,7 +884,6 @@ def get_mensagens(
     conversa_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
-    """Retorna mensagens de uma conversa."""
     user_id = get_user_from_request(authorization)
     if not user_id or not SUPABASE_OK:
         raise HTTPException(401, "Não autenticado")
@@ -914,7 +898,6 @@ def salvar_mensagem(
     payload: MensagemIn,
     authorization: Optional[str] = Header(default=None),
 ):
-    """Salva uma mensagem no Supabase."""
     user_id = get_user_from_request(authorization)
     if not user_id or not SUPABASE_OK:
         raise HTTPException(401, "Não autenticado")
@@ -937,7 +920,6 @@ def deletar_conversa(
     conversa_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
-    """Deleta conversa e suas mensagens."""
     user_id = get_user_from_request(authorization)
     if not user_id or not SUPABASE_OK:
         raise HTTPException(401, "Não autenticado")
@@ -949,7 +931,6 @@ def deletar_conversa(
 
 @app.get("/me")
 def get_me(authorization: Optional[str] = Header(default=None)):
-    """Retorna perfil + assinatura do usuário autenticado via Supabase."""
     if not SUPABASE_OK:
         raise HTTPException(503, "Supabase não configurado.")
     user_id = get_user_from_request(authorization)
@@ -963,9 +944,6 @@ def get_me(authorization: Optional[str] = Header(default=None)):
     except Exception as e:
         log.error(f"[/me] erro: {e}")
         raise HTTPException(500, str(e))
-
-
-# Rotas de conversas implementadas acima
 
 # ═══════════════════════════════════════════════════════
 # ADMIN ROUTES
@@ -1035,7 +1013,6 @@ async def speech_to_text(
     x_demo_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """Transcreve áudio usando Google Cloud Speech-to-Text."""
     import base64, json, os
     
     GOOGLE_CREDS = os.getenv("GOOGLE_VISION_CREDENTIALS")
@@ -1046,7 +1023,6 @@ async def speech_to_text(
         audio_data = await audio.read()
         audio_b64 = base64.b64encode(audio_data).decode()
         
-        # Get access token (reuse OCR token logic)
         if OCR_OK and OCR_MOD:
             token = OCR_MOD._get_access_token()
         else:
@@ -1067,7 +1043,6 @@ async def speech_to_text(
             }, timeout=10)
             token = r.json()["access_token"]
 
-        # Map mime type to encoding
         encoding_map = {
             "audio/webm": "WEBM_OPUS",
             "audio/webm;codecs=opus": "WEBM_OPUS",
@@ -1120,23 +1095,16 @@ def ping(): return {"ok":True,"version":"8.0.0"}
 
 @app.get("/painel")
 def serve_painel():
-    """Serve o painel do cliente como página standalone."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
     base = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(base, "static", "painel.html")
-    log.info(f"[/painel] looking for: {path}, exists: {os.path.exists(path)}, cwd: {os.getcwd()}")
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
-    all_files = []
-    for root, dirs, files in os.walk(base):
-        for f in files:
-            all_files.append(os.path.relpath(os.path.join(root, f), base))
-    return HTMLResponse(f"<pre>base={base}\nfiles={all_files}</pre>", status_code=404)
+    return HTMLResponse("<h1>painel.html não encontrado em /static/</h1>", status_code=404)
 
 @app.get("/admin")
 def serve_admin():
-    """Serve o painel admin."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
     base = os.path.dirname(os.path.abspath(__file__))
@@ -1147,7 +1115,6 @@ def serve_admin():
 
 @app.get("/chat-app")
 def serve_chat():
-    """Serve o chat como página standalone no Render."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
     base = os.path.dirname(os.path.abspath(__file__))
@@ -1168,6 +1135,7 @@ def health():
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "bacen":{"ok":BACEN_OK},
         "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
+        "nl":{"ok":NL_OK if 'NL_OK' in dir() else False},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
@@ -1269,26 +1237,22 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
             import re
             bacen_dados = {}
             
-            # Busca índices atuais sempre
             bacen_dados["indices"] = BACEN_MOD.BACEN.indices_atuais()
             
-            # Detecta cálculo de correção
             valor_match = re.search(r'r\$\s*([\d.,]+)', message.lower())
             if valor_match:
                 valor_str = valor_match.group(1).replace('.','').replace(',','.')
                 valor = float(valor_str)
                 
-                # Detecta data (formato dd/mm/aaaa ou mm/aaaa)
                 data_match = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', message)
                 if data_match:
                     data_raw = data_match.group(1)
-                    if len(data_raw) == 7:  # mm/aaaa
+                    if len(data_raw) == 7:
                         data_inicio = f"01/{data_raw}"
                     else:
                         data_inicio = data_raw
                     bacen_dados["correcao"] = BACEN_MOD.BACEN.calcular_correcao_inpc(valor, data_inicio)
                 
-                # Detecta meses para juros
                 meses_match = re.search(r'(\d+)\s*m[eê]s', message.lower())
                 if meses_match:
                     meses = int(meses_match.group(1))
@@ -1381,6 +1345,22 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                         r2=DJ.search(alias,{"bool":{"must":must}},size=8)
                         s2=[f for f in DJ.sources(r2) if norm_num(f.get("numeroProcesso",""))!=norm_num(numero)][:6]
                         extra=ctx_banco(s2,orgao,ast)
+                        # NL API — análise automática das sentenças
+                        if NL_OK and NL_MOD and s2:
+                            try:
+                                decisoes_para_nl = []
+                                for src in s2:
+                                    p_tmp = DJ.normalize(src)
+                                    for sent in (p_tmp.get("sentencas") or [])[:3]:
+                                        decisoes_para_nl.append({
+                                            "numero_processo": p_tmp.get("numero_processo",""),
+                                            "texto": sent.get("nome",""),
+                                        })
+                                if decisoes_para_nl:
+                                    nl_analise = NL_MOD.NL.analisar_lote(decisoes_para_nl)
+                                    extra += "\n\n" + NL_MOD.NL.build_context(nl_analise)
+                            except Exception as _nl_err:
+                                log.warning(f"NL banco_decisoes: {_nl_err}")
                     except: pass
                 elif intent=="tematico":
                     ml=message.lower()
