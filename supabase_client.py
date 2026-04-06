@@ -83,7 +83,7 @@ class SupabaseClient:
     def listar_conversas(self, user_id, limit=50):
         return self.select("conversas",
             query="id,titulo,preview,tribunal,session_id,criado_em,atualizado_em",
-            filters={"usuario_id": f"eq.{user_id}", "arquivada": "eq.false", "order": "atualizado_em.desc", "limit": str(limit)})
+            filters={"usuario_id": f"eq.{user_id}", "order": "atualizado_em.desc", "limit": str(limit)})
 
     def atualizar_conversa(self, conversa_id, data):
         rows = self.update("conversas", data, {"id": f"eq.{conversa_id}"})
