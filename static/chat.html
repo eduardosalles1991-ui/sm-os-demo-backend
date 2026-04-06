@@ -552,7 +552,7 @@
       </div>
 
       <div class="sb-footer">
-        <div class="sb-user" onclick="window.location.href='https://jurimetrix.com/painel-do-cliente/'">
+        <div class="sb-user" onclick="window.location.href='https://sm-os-demo-backend.onrender.com/painel'">
           <div class="sb-avatar" id="sb-avatar">J</div>
           <div class="sb-user-info">
             <div class="sb-uname" id="sb-uname">Minha conta</div>
@@ -794,6 +794,7 @@
         const r = await fetch(BACKEND+"/conversas?limit=50", {headers: authHeaders()});
         if(!r.ok) throw new Error("HTTP "+r.status);
         const d = await r.json();
+        console.log('[SB] conversas carregadas:', d.conversas?.length || 0, d);
         const sbConvs = (d.conversas || []).map(c => ({
           id:        c.id,
           title:     c.titulo || "Nova conversa",
