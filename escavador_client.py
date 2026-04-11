@@ -165,10 +165,10 @@ class EscavadorClient:
     def build_context(self, data: dict, tipo: str) -> str:
         """Constrói contexto textual para o GPT a partir dos dados do Escavador."""
         if not data:
-            return "Nenhum dado retornado pelo Escavador."
+            return "Nenhum dado retornado pela consulta."
 
         if data.get("error"):
-            return f"Erro Escavador: {data['error']}"
+            return f"Erro na consulta: {data['error']}"
 
         # V2 format: {"envolvido": {...}, "items": [...]} or {"advogado_encontrado": {...}, ...}
         envolvido = data.get("envolvido") or data.get("envolvido_encontrado") or data.get("advogado_encontrado") or data.get("advogado") or {}
@@ -183,7 +183,7 @@ class EscavadorClient:
         if envolvido:
             nome = envolvido.get("nome") or envolvido.get("name") or "n/d"
             tipo_env = envolvido.get("tipo") or tipo
-            lines.append(f"DADOS DO ESCAVADOR — {tipo_env.upper()}: {nome}")
+            lines.append(f"DADOS CADASTRAIS — {tipo_env.upper()}: {nome}")
             if envolvido.get("oab_numero"):
                 lines.append(f"OAB: {envolvido.get('oab_estado','')}/{envolvido.get('oab_numero','')}")
             if envolvido.get("cpf"):
@@ -215,9 +215,9 @@ class EscavadorClient:
             return "\n".join(lines)
 
         if not items:
-            return f"Escavador: nenhum resultado encontrado para busca tipo '{tipo}'."
+            return f"Nenhum resultado encontrado para busca tipo '{tipo}'."
 
-        lines.append(f"DADOS DO ESCAVADOR — Tipo: {tipo.upper()} | {len(items)} resultado(s)")
+        lines.append(f"DADOS CADASTRAIS — Tipo: {tipo.upper()} | {len(items)} resultado(s)")
         lines.append("")
 
         if tipo == "pessoa":
