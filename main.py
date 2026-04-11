@@ -215,6 +215,20 @@ def detect_bacen_intent(msg: str) -> Optional[str]:
         return "calculo"
     return None
 
+# PDF auto-generation triggers
+PDF_TRIGGERS = [
+    "gerar pdf","gere pdf","gera pdf","gerar relatório","gere relatório","gera relatório",
+    "gerar relatorio","gere relatorio","gera relatorio","relatório pdf","relatorio pdf",
+    "quero o pdf","quero pdf","baixar pdf","download pdf","exportar pdf",
+    "relatório completo","relatorio completo","gerar documento","documento pdf",
+    "me envia o pdf","me manda o pdf","pdf do processo","relatório do processo",
+    "relatorio do processo","gere o relatório","gera o relatório",
+]
+
+def detect_pdf_intent(msg: str) -> bool:
+    m = msg.lower()
+    return any(t in m for t in PDF_TRIGGERS)
+
 TRIVIAL_EXACT = {
     "olá","oi","ola","bom dia","boa tarde","boa noite","tudo bem","tudo bom",
     "obrigado","obrigada","valeu","ok","certo","entendi","show","perfeito",
@@ -263,13 +277,15 @@ def classify_prompt(message:str, has_proc:bool)->str:
 
 PROMPT_CONV = (
     "Você é um assistente do escritório Salles & Mendes / Jurimetrix. "
-    "Responda em português, de forma direta e cordial. Seja breve."
+    "Responda em português, de forma direta e cordial. Seja breve. "
+    "O sistema Jurimetrix gera relatórios em PDF automaticamente quando solicitado."
 )
 PROMPT_JUR = (
     "Você é um assistente jurídico especializado em Direito do Trabalho brasileiro. "
     "Responda em português, de forma técnica, clara e objetiva. "
     "Nunca prometa resultados. Separe fato de hipótese. "
-    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante."
+    "Cite fundamentos legais (CLT, súmulas TST/TRT) quando relevante. "
+    "Nunca diga que não pode gerar PDF — o sistema gera automaticamente."
 )
 _FMT: Dict[str,str] = {
     "simples":    "Responda de forma breve e cordial, em no máximo 2-3 frases.",
@@ -641,6 +657,12 @@ _static_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "stati
 if _os.path.isdir(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
     log.info(f"✅ Static files served from {_static_dir}")
+
+# Reports directory for auto-generated PDFs
+_reports_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "reports")
+_os.makedirs(_reports_dir, exist_ok=True)
+app.mount("/reports", StaticFiles(directory=_reports_dir), name="reports")
+log.info(f"✅ Reports directory: {_reports_dir}")
 
 # ── BACEN ────────────────────────────────────────────────────────────
 try:
@@ -1309,6 +1331,51 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 return ChatOut(message=reply,state=state,prompt_level="juridico")
         except Exception as _esc_err:
             log.warning(f"Escavador erro: {_esc_err}")
+
+    # ── PDF auto-generation — detecta pedido de relatório ──────────
+    if detect_pdf_intent(message) and PDF_AVAILABLE:
+        numero = numbers[0] if numbers else s.get("last_process_numero")
+        if numero:
+            alias_pdf = (infer_alias(numero) if numero else None) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS
+            try:
+                raw=DJ.get_process(numero, alias_pdf); items=DJ.sources(raw)
+                if items:
+                    proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc, numero)
+                    context=build_ctx(proc,"resumo",alias_pdf)
+                    instrucao=(
+                        "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
+                        "SÍNTESE\nANÁLISE TÉCNICA\nQUESTÃO JURÍDICA\nFORÇA DA TESE\nCONFIABILIDADE\n"
+                        "SCORES (Viabilidade: XX, Risco: XX, Rentabilidade: XX, Urgência: XX, Prioridade: XX, Composto: XX)\n"
+                        "RISCOS (com nível: CRÍTICO/ALTO/MÉDIO/BAIXO)\n"
+                        "RED TEAM\nATAQUES\nPONTO MAIS VULNERÁVEL\nMEDIDAS PREVENTIVAS\n"
+                        "ESTRATÉGIA\nLINHA PRINCIPAL\nLINHAS SUBSIDIÁRIAS\nAÇÕES PRIORITÁRIAS\n"
+                        "PENDÊNCIAS\nALERTAS\nResposta em português formal."
+                    )
+                    sys_p=build_system_prompt("os61",context)
+                    analise_texto=call_openai([{"role":"system","content":sys_p},{"role":"user","content":instrucao}],temperature=0.1)
+                    analise_dict=parse_analise_gpt(analise_texto)
+                    pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
+                    # Save PDF
+                    numero_safe=re.sub(r"[^\w\-]","_",numero)
+                    pdf_filename = f"relatorio_{numero_safe}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_path = _os.path.join(_reports_dir, pdf_filename)
+                    with open(pdf_path, "wb") as f:
+                        f.write(pdf_bytes)
+                    pdf_url = f"/reports/{pdf_filename}"
+                    reply = f"✅ **Relatório PDF gerado com sucesso!**\n\n📄 [Clique aqui para baixar o relatório]({pdf_url})\n\nProcesso: **{numero}** | Tribunal: **{alias_nome(alias_pdf)}**"
+                    s["messages"].append({"role":"assistant","content":reply})
+                    if user_id and SUPABASE_OK:
+                        SB.registrar_tokens_resposta(user_id, len(analise_texto))
+                    return ChatOut(message=reply, state=state, prompt_level="os61", conversa_id=payload.conversa_id)
+            except Exception as e:
+                log.warning(f"PDF auto-gen failed: {e}")
+                reply = f"Erro ao gerar o relatório PDF: {str(e)}"
+                s["messages"].append({"role":"assistant","content":reply})
+                return ChatOut(message=reply, state=state, prompt_level="erro")
+        else:
+            reply = "Para gerar o relatório PDF, primeiro informe o número do processo (formato CNJ)."
+            s["messages"].append({"role":"assistant","content":reply})
+            return ChatOut(message=reply, state=state, prompt_level="direto")
 
     # ── Rota processo (DataJud + MNI) ────────────────────────────────
     if DATAJUD_ENABLED and (
