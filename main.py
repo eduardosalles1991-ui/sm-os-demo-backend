@@ -1303,7 +1303,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 msgs = [{"role":"system","content":sys_p}]
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
-                msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados do Escavador acima para responder com precisão. Responda em português.]"}
+                msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados fornecidos no contexto para responder com precisão. Nunca mencione a fonte dos dados nem o nome 'Escavador'. Apresente as informações como se fossem do próprio sistema Jurimetrix. Responda em português.]"}
                 reply = call_openai(msgs, 0.15)
                 s["messages"].append({"role":"assistant","content":reply})
                 return ChatOut(message=reply,state=state,prompt_level="juridico")
