@@ -236,13 +236,18 @@ TRIVIAL_EXACT = {
 }
 OS61_TRIGGERS = [
     "análise completa","analise completa","full analysis",
-    "red team","força da tese","forca da tese","estratégia completa",
-    "score","matriz de score","rentabilidade do caso",
-    "viabilidade do caso","viabilidade jurídica","risco jurídico",
+    "análise os 6.1","analise os 6.1","os 6.1","os61",
+    "red team","análise de risco completa",
+    "estratégia completa","análise completa com red team",
+    "matriz de score","scores completos",
     "elabore","redija","minuta","petição","peticao","contestação","contestacao",
+]
+JUR_EXTRA_TRIGGERS = [
+    "força da tese","forca da tese","risco jurídico","risco juridico",
+    "viabilidade do caso","viabilidade jurídica","rentabilidade do caso",
     "tenho um caso","novo caso","quero abrir processo",
     "fui demitido","fui dispensado","rescisão indevida",
-    "verbas trabalhistas","análise de risco completa",
+    "verbas trabalhistas","score",
 ]
 DOC_MEDIO_TRIGGERS = [
     "analise","análise","analyze","pontos principais","principais pontos",
@@ -268,6 +273,7 @@ def classify_prompt(message:str, has_proc:bool)->str:
     if any(t in msg for t in OS61_TRIGGERS):             return "os61"
     if any(t in msg for t in DOC_RESUMO_TRIGGERS):       return "doc_resumo"
     if any(t in msg for t in DOC_MEDIO_TRIGGERS):        return "doc_medio"
+    if any(t in msg for t in JUR_EXTRA_TRIGGERS):        return "juridico"
     if has_proc or any(t in msg for t in PROC_TRIGGERS): return "juridico"
     jur=["direito","lei","clt","tst","trt","prazo","processo","trabalhista",
          "jurisprudência","jurisprudencia","súmula","sumula","artigo",
@@ -288,10 +294,10 @@ PROMPT_JUR = (
     "Nunca diga que não pode gerar PDF — o sistema gera automaticamente."
 )
 _FMT: Dict[str,str] = {
-    "simples":    "Responda de forma breve e cordial, em no máximo 2-3 frases.",
-    "doc_resumo": "Responda com resumo direto em no máximo 4 parágrafos. NÃO use scores, red team nem seções OS 6.1.",
-    "doc_medio":  "Responda com: 1) Síntese, 2) Pontos principais, 3) Riscos/alertas. Sem 18 seções. Seja objetivo.",
-    "juridico":   "Responda tecnicamente. Foco em: fase processual, última movimentação, riscos e próximos passos. Sem OS 6.1 completo.",
+    "simples":    "Responda de forma breve e cordial, em no máximo 2-3 frases. Sem listas longas.",
+    "doc_resumo": "Resumo direto em no máximo 4 parágrafos curtos. NÃO use scores, red team nem seções OS 6.1. Seja conciso.",
+    "doc_medio":  "Responda com: 1) Síntese (3 linhas), 2) Pontos principais (bullets curtos), 3) Riscos/alertas (bullets curtos). Máximo 1 página. Sem 18 seções.",
+    "juridico":   "Responda tecnicamente mas de forma CONCISA. Foco em: fase processual, última movimentação, riscos e próximos passos. Máximo 4-6 parágrafos. Sem OS 6.1 completo. Sem repetir informações.",
     "os61":       "Execute análise OS 6.1 completa: Classificação, Síntese, Análise Técnica, Força da Tese, Confiabilidade, Provas, Riscos, Cenários, Análise Econômica, Scores, Red Team, Estratégia, Ações Prioritárias, Pendências, Alertas, Reflexão Final.",
 }
 
@@ -1256,7 +1262,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     bacen_tipo = detect_bacen_intent(message) if BACEN_OK else None
     if bacen_tipo:
         try:
-            import re
             bacen_dados = {}
             
             bacen_dados["indices"] = BACEN_MOD.BACEN.indices_atuais()
@@ -1290,7 +1295,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
             msgs_bacen = [{"role":"system","content":sys_p}]
             for item in s["messages"][-6:]:
                 if item["role"] in {"user","assistant"}: msgs_bacen.append(item)
-            msgs_bacen[-1] = {"role":"user","content":f"{message}\n\n[Use os dados econômicos do BACEN acima. Responda em português com precisão técnica jurídica.]"}
+            msgs_bacen[-1] = {"role":"user","content":f"{message}\n\n[Use os dados econômicos fornecidos no contexto. Apresente os valores de forma direta e objetiva — não cite a fonte dos dados. Se algum índice não estiver disponível, informe que o dado está temporariamente indisponível. Responda em português, de forma concisa.]"}
             reply = call_openai(msgs_bacen, 0.1)
             s["messages"].append({"role":"assistant","content":reply})
             return ChatOut(message=reply, state=state, prompt_level="juridico")
