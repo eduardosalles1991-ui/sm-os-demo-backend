@@ -618,10 +618,6 @@
         </div>
 
         <div class="topbar-right">
-          <button class="btn-pdf hidden" id="pdfBtn">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span>Relatório</span>
-          </button>
           <div class="status-pill">
             <div class="status-dot busy" id="statusDot"></div>
             <span id="statusText">Iniciando</span>
@@ -905,7 +901,6 @@
     const attachBtn = document.getElementById("attachBtn");
     const fileInput = document.getElementById("fileInput");
     const attEl     = document.getElementById("attachments");
-    const pdfBtn    = document.getElementById("pdfBtn");
     const helperR   = document.getElementById("helperRight");
 
     if (typeof marked !== "undefined") marked.setOptions({breaks:true, gfm:true});
@@ -929,7 +924,23 @@
       row.className="msg-row"+(kind==="user"?" user":"");
       const box=document.createElement("div");
       box.className="msg "+(kind==="user"?"user":kind==="system"?"system":"ai");
-      if(kind==="ai"&&typeof marked!=="undefined"){ box.innerHTML=marked.parse(text||""); }
+      if(kind==="ai"&&typeof marked!=="undefined"){
+        box.innerHTML=marked.parse(text||"");
+        // Open links in new tab & auto-download PDFs
+        box.querySelectorAll("a").forEach(a=>{
+          a.target="_blank"; a.rel="noopener";
+          const href=a.getAttribute("href")||"";
+          if(href.includes("/reports/") && href.endsWith(".pdf")){
+            // Auto-trigger PDF download
+            setTimeout(()=>{
+              const dl=document.createElement("a");
+              dl.href=BACKEND+href; dl.download=""; dl.target="_blank";
+              document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
+            },500);
+            a.href=BACKEND+href;
+          }
+        });
+      }
       else{ box.textContent=text||""; }
       row.appendChild(box); chatEl.appendChild(row); scrollBottom();
     }
@@ -976,25 +987,9 @@
         const data=await api(EP_CHAT,{method:"POST",body:{session_id:sessionId,message,state:state||{}}});
         state=data.state||state; hideTyping(); addRow("ai",data.message||"Ok.");
         saveMsgToSupabase("ai", data.message||"Ok.");
-        if(data.prompt_level==="os61"||data.prompt_level==="juridico") pdfBtn.classList.remove("hidden");
       }catch(e){ hideTyping(); addRow("system","Erro: "+(e.message||e)); }
       finally{ sendBtn.disabled=false; setStatus("Pronto",""); inputEl.focus(); }
     }
-
-    async function exportarPDF(){
-      if(!sessionId)return;
-      pdfBtn.disabled=true; pdfBtn.querySelector("span").textContent="Gerando…"; setStatus("Gerando PDF…","busy");
-      try{
-        const resp=await fetch(BACKEND+"/relatorio",{method:"POST",headers:{"Content-Type":"application/json","x-demo-key":DEMO_KEY},body:JSON.stringify({session_id:sessionId})});
-        if(!resp.ok){ const e=await resp.json().catch(()=>({})); throw new Error(e.detail||`HTTP ${resp.status}`); }
-        const blob=await resp.blob(); const url=URL.createObjectURL(blob);
-        const a=document.createElement("a"); a.href=url; a.download=`relatorio_${Date.now()}.pdf`;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-        addRow("ai","✅ Relatório PDF gerado e baixado com sucesso.");
-      }catch(e){ addRow("system","Erro ao gerar PDF: "+(e.message||e)); }
-      finally{ pdfBtn.disabled=false; pdfBtn.querySelector("span").textContent="Relatório"; setStatus("Pronto",""); }
-    }
-    pdfBtn.addEventListener("click",exportarPDF);
 
     async function boot(){
       setStatus("Conectando…","busy");
