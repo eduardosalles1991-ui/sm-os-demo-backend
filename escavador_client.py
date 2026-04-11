@@ -109,20 +109,20 @@ class EscavadorClient:
         """
         Busca advogado por nome ou OAB.
         OAB aceita formatos: 'OAB/SP 105.488', 'SP 105488', etc.
-        Usa API V2 para busca por OAB: /api/v2/envolvido/processos?oab_numero=X&oab_estado=Y
+        Usa API V2 para busca por OAB: /api/v2/advogado/processos?oab_numero=X&oab_estado=Y
         """
         if oab:
             parsed = parse_oab(oab)
             if parsed.get("estado") and parsed.get("numero"):
                 # V2: busca processos do advogado por OAB
                 try:
-                    result = _get_v2("envolvido/processos", {
+                    result = _get_v2("advogado/processos", {
                         "oab_numero": parsed["numero"],
                         "oab_estado": parsed["estado"],
                     })
                     return result
                 except requests.HTTPError as e:
-                    log.warning(f"[Escavador] V2 OAB {parsed['estado']}/{parsed['numero']} falhou: {e}")
+                    log.warning(f"[Escavador] V2 advogado OAB {parsed['estado']}/{parsed['numero']} falhou: {e}")
                 # Fallback V1: busca por nome
                 try:
                     return _get("pessoas", {"q": f"OAB {parsed['estado']} {parsed['numero']}"})
@@ -170,9 +170,9 @@ class EscavadorClient:
         if data.get("error"):
             return f"Erro Escavador: {data['error']}"
 
-        # V2 format: {"envolvido": {...}, "items": [...]}
-        envolvido = data.get("envolvido") or {}
-        items = data.get("items") or data.get("data") or data.get("results") or []
+        # V2 format: {"envolvido": {...}, "items": [...]} or {"advogado_encontrado": {...}, ...}
+        envolvido = data.get("envolvido") or data.get("envolvido_encontrado") or data.get("advogado_encontrado") or data.get("advogado") or {}
+        items = data.get("items") or data.get("data") or data.get("results") or data.get("processos") or []
         if isinstance(data, dict) and not items:
             if data.get("nome") or data.get("name") or data.get("numero") or data.get("razao_social"):
                 items = [data]
