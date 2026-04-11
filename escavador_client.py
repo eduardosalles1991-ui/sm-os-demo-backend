@@ -6,6 +6,7 @@ Variável de ambiente: ESCAVADOR_API_KEY
 ═══════════════════════════════════════════════════
 """
 import os
+import re
 import logging
 import requests
 from typing import Any, Dict, List, Optional
@@ -32,6 +33,7 @@ def _get(endpoint: str, params: dict = None) -> dict:
     if not ESCAVADOR_API_KEY:
         raise RuntimeError("ESCAVADOR_API_KEY não configurado.")
     url = f"{BASE_URL}/{endpoint.lstrip('/')}"
+    log.info(f"[Escavador] GET {url} params={params}")
     r = requests.get(url, headers=_headers(), params=params, timeout=25)
     r.raise_for_status()
     return r.json()
@@ -41,9 +43,31 @@ def _post(endpoint: str, payload: dict = None) -> dict:
     if not ESCAVADOR_API_KEY:
         raise RuntimeError("ESCAVADOR_API_KEY não configurado.")
     url = f"{BASE_URL}/{endpoint.lstrip('/')}"
+    log.info(f"[Escavador] POST {url}")
     r = requests.post(url, headers=_headers(), json=payload or {}, timeout=25)
     r.raise_for_status()
     return r.json()
+
+
+def parse_oab(oab_raw: str) -> dict:
+    """
+    Parseia string de OAB em estado e número.
+    Aceita: 'OAB/SP 105.488', 'OAB SP 105488', 'SP 105.488', 'OAB/SP/105488'
+    Retorna: {"estado": "SP", "numero": "105488"}
+    """
+    if not oab_raw:
+        return {}
+    s = oab_raw.strip().upper()
+    s = re.sub(r'^OAB[/\s]*', '', s)
+    m = re.match(r'([A-Z]{2})[/\s.,\-]*(\d[\d.]*)', s)
+    if m:
+        estado = m.group(1)
+        numero = m.group(2).replace(".", "")
+        return {"estado": estado, "numero": numero}
+    m2 = re.search(r'(\d[\d.]+)', s)
+    if m2:
+        return {"numero": m2.group(1).replace(".", "")}
+    return {}
 
 
 class EscavadorClient:
@@ -71,10 +95,25 @@ class EscavadorClient:
         return _get("empresas", params)
 
     def buscar_advogado(self, nome: str = None, oab: str = None) -> dict:
-        """Busca advogado por nome ou OAB."""
+        """
+        Busca advogado por nome ou OAB.
+        OAB aceita formatos: 'OAB/SP 105.488', 'SP 105488', etc.
+        """
         params = {}
         if oab:
-            params["oab"] = oab
+            parsed = parse_oab(oab)
+            if parsed.get("estado") and parsed.get("numero"):
+                # Tenta endpoint específico: /advogados/{estado}/{numero}
+                try:
+                    return _get(f"advogados/{parsed['estado']}/{parsed['numero']}")
+                except requests.HTTPError as e:
+                    log.warning(f"[Escavador] advogados/{parsed['estado']}/{parsed['numero']} falhou: {e}")
+                # Fallback: busca por query
+                params["q"] = f"OAB {parsed['estado']} {parsed['numero']}"
+            elif parsed.get("numero"):
+                params["q"] = f"OAB {parsed['numero']}"
+            else:
+                params["q"] = oab
         elif nome:
             params["q"] = nome
         else:
@@ -107,8 +146,8 @@ class EscavadorClient:
 
         items = data.get("items") or data.get("data") or data.get("results") or []
         if isinstance(data, dict) and not items:
-            # Single result
-            items = [data]
+            if data.get("nome") or data.get("name") or data.get("numero") or data.get("razao_social"):
+                items = [data]
 
         if not items:
             return f"Escavador: nenhum resultado encontrado para busca tipo '{tipo}'."
@@ -147,15 +186,19 @@ class EscavadorClient:
         elif tipo == "advogado":
             for a in items[:5]:
                 nome = a.get("nome") or a.get("name") or "n/d"
-                oab = a.get("oab") or a.get("inscricao") or "n/d"
+                oab_val = a.get("oab") or a.get("inscricao") or a.get("numero_oab") or "n/d"
+                estado_oab = a.get("estado_oab") or a.get("uf") or ""
                 lines.append(f"── {nome}")
-                lines.append(f"   OAB: {oab}")
+                lines.append(f"   OAB: {estado_oab} {oab_val}".strip())
                 escritorio = a.get("escritorio") or a.get("office") or ""
                 if escritorio:
                     lines.append(f"   Escritório: {escritorio}")
                 processos = a.get("processos") or a.get("lawsuits") or []
                 if processos:
                     lines.append(f"   Processos: {len(processos)}")
+                    for proc in processos[:5]:
+                        num = proc.get("numero") or proc.get("number") or "n/d"
+                        lines.append(f"     • {num}")
                 lines.append("")
 
         elif tipo == "processos":
