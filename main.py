@@ -190,8 +190,8 @@ def extract_escavador_query(msg: str, tipo: str) -> dict:
     if cpf: q["cpf"] = cpf.group()
     cnpj = re.search(r'\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}', msg)
     if cnpj: q["cnpj"] = cnpj.group()
-    oab = re.search(r'OAB[/\s]*([A-Z]{2}[/\s]*)?\d+', msg, re.IGNORECASE)
-    if oab: q["oab"] = oab.group()
+    oab = re.search(r'OAB[/\s]*([A-Z]{2})[/\s]*(\d[\d.]+)', msg, re.IGNORECASE)
+    if oab: q["oab"] = f"OAB/{oab.group(1).upper()} {oab.group(2)}"
     nome_quotes = None
     nome_prep   = re.search(r'(?:de|do|da|sobre|para)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+(?:\s+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][a-záàâãéêíóôõúç]+)+)', msg)
     if nome_quotes: q["nome"] = nome_quotes.group(1)
