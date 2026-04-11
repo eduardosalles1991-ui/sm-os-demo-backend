@@ -14,7 +14,8 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger("escavador_client")
 
 ESCAVADOR_API_KEY = (os.getenv("ESCAVADOR_API_KEY") or "").strip()
-BASE_URL = "https://api.escavador.com/v1"
+BASE_URL = "https://api.escavador.com/api/v1"
+BASE_URL_V2 = "https://api.escavador.com/api/v2"
 
 
 def is_configured() -> bool:
@@ -45,6 +46,16 @@ def _post(endpoint: str, payload: dict = None) -> dict:
     url = f"{BASE_URL}/{endpoint.lstrip('/')}"
     log.info(f"[Escavador] POST {url}")
     r = requests.post(url, headers=_headers(), json=payload or {}, timeout=25)
+    r.raise_for_status()
+    return r.json()
+
+
+def _get_v2(endpoint: str, params: dict = None) -> dict:
+    if not ESCAVADOR_API_KEY:
+        raise RuntimeError("ESCAVADOR_API_KEY não configurado.")
+    url = f"{BASE_URL_V2}/{endpoint.lstrip('/')}"
+    log.info(f"[Escavador] GET V2 {url} params={params}")
+    r = requests.get(url, headers=_headers(), params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
@@ -98,39 +109,54 @@ class EscavadorClient:
         """
         Busca advogado por nome ou OAB.
         OAB aceita formatos: 'OAB/SP 105.488', 'SP 105488', etc.
+        Usa API V2 para busca por OAB: /api/v2/envolvido/processos?oab_numero=X&oab_estado=Y
         """
-        params = {}
         if oab:
             parsed = parse_oab(oab)
             if parsed.get("estado") and parsed.get("numero"):
-                # Tenta endpoint específico: /advogados/{estado}/{numero}
+                # V2: busca processos do advogado por OAB
                 try:
-                    return _get(f"advogados/{parsed['estado']}/{parsed['numero']}")
+                    result = _get_v2("envolvido/processos", {
+                        "oab_numero": parsed["numero"],
+                        "oab_estado": parsed["estado"],
+                    })
+                    return result
                 except requests.HTTPError as e:
-                    log.warning(f"[Escavador] advogados/{parsed['estado']}/{parsed['numero']} falhou: {e}")
-                # Fallback: busca por query
-                params["q"] = f"OAB {parsed['estado']} {parsed['numero']}"
+                    log.warning(f"[Escavador] V2 OAB {parsed['estado']}/{parsed['numero']} falhou: {e}")
+                # Fallback V1: busca por nome
+                try:
+                    return _get("pessoas", {"q": f"OAB {parsed['estado']} {parsed['numero']}"})
+                except requests.HTTPError:
+                    pass
             elif parsed.get("numero"):
-                params["q"] = f"OAB {parsed['numero']}"
-            else:
-                params["q"] = oab
+                try:
+                    return _get("pessoas", {"q": f"OAB {parsed['numero']}"})
+                except requests.HTTPError:
+                    pass
+            return {"error": f"OAB não encontrada: {oab}"}
         elif nome:
-            params["q"] = nome
+            return _get("pessoas", {"q": nome})
         else:
             return {"error": "Nome ou OAB necessário"}
-        return _get("advogados", params)
 
     def processos_por_envolvido(self, nome: str = None, cpf_cnpj: str = None) -> dict:
         """Lista processos de uma pessoa/empresa."""
-        params = {}
         if cpf_cnpj:
             doc = cpf_cnpj.replace(".", "").replace("-", "").replace("/", "")
-            params["cpf_cnpj"] = doc
+            # V2 primeiro
+            try:
+                return _get_v2("envolvido/processos", {"cpf_cnpj": doc})
+            except requests.HTTPError:
+                pass
+            return _get("processos", {"cpf_cnpj": doc})
         elif nome:
-            params["q"] = nome
+            try:
+                return _get_v2("envolvido/processos", {"nome": nome})
+            except requests.HTTPError:
+                pass
+            return _get("processos", {"q": nome})
         else:
             return {"error": "Nome ou CPF/CNPJ necessário"}
-        return _get("processos", params)
 
     def detalhes_processo(self, processo_id: int) -> dict:
         """Retorna detalhes de um processo pelo ID do Escavador."""
@@ -144,15 +170,55 @@ class EscavadorClient:
         if data.get("error"):
             return f"Erro Escavador: {data['error']}"
 
+        # V2 format: {"envolvido": {...}, "items": [...]}
+        envolvido = data.get("envolvido") or {}
         items = data.get("items") or data.get("data") or data.get("results") or []
         if isinstance(data, dict) and not items:
             if data.get("nome") or data.get("name") or data.get("numero") or data.get("razao_social"):
                 items = [data]
 
+        lines = []
+
+        # Se tem envolvido (V2), mostrar info do envolvido primeiro
+        if envolvido:
+            nome = envolvido.get("nome") or envolvido.get("name") or "n/d"
+            tipo_env = envolvido.get("tipo") or tipo
+            lines.append(f"DADOS DO ESCAVADOR — {tipo_env.upper()}: {nome}")
+            if envolvido.get("oab_numero"):
+                lines.append(f"OAB: {envolvido.get('oab_estado','')}/{envolvido.get('oab_numero','')}")
+            if envolvido.get("cpf"):
+                lines.append(f"CPF: {envolvido['cpf']}")
+            if envolvido.get("cnpj"):
+                lines.append(f"CNPJ: {envolvido['cnpj']}")
+            lines.append("")
+            if items:
+                lines.append(f"PROCESSOS ENCONTRADOS: {len(items)}")
+                lines.append("")
+                for proc in items[:12]:
+                    num = proc.get("numero_cnj") or proc.get("numero") or proc.get("number") or "n/d"
+                    titulo_polo = proc.get("titulo_polo_ativo") or ""
+                    titulo_passivo = proc.get("titulo_polo_passivo") or ""
+                    tribunal = proc.get("fonte") or proc.get("tribunal") or proc.get("court") or ""
+                    if isinstance(tribunal, dict):
+                        tribunal = tribunal.get("nome") or tribunal.get("sigla") or ""
+                    fontes = proc.get("fontes") or []
+                    if fontes and isinstance(fontes[0], dict):
+                        tribunal = fontes[0].get("nome") or fontes[0].get("sigla") or tribunal
+                    data_inicio = proc.get("data_inicio") or ""
+                    data_ult = proc.get("data_ultima_movimentacao") or ""
+                    lines.append(f"── {num} | {tribunal}")
+                    if titulo_polo or titulo_passivo:
+                        lines.append(f"   {titulo_polo} x {titulo_passivo}")
+                    if data_inicio:
+                        lines.append(f"   Início: {data_inicio} | Última mov.: {data_ult}")
+                    lines.append("")
+            return "\n".join(lines)
+
         if not items:
             return f"Escavador: nenhum resultado encontrado para busca tipo '{tipo}'."
 
-        lines = [f"DADOS DO ESCAVADOR — Tipo: {tipo.upper()} | {len(items)} resultado(s)", ""]
+        lines.append(f"DADOS DO ESCAVADOR — Tipo: {tipo.upper()} | {len(items)} resultado(s)")
+        lines.append("")
 
         if tipo == "pessoa":
             for p in items[:5]:
