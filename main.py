@@ -1497,7 +1497,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     pdf_path = os.path.join(_reports_dir, pdf_filename)
                     with open(pdf_path, "wb") as f:
                         f.write(pdf_bytes)
-                    pdf_url = f"https://sm-os-demo-backend.onrender.com/reports/{pdf_filename}"
+                    pdf_url = f"/reports/{pdf_filename}"
                     reply = f"✅ **Relatório PDF gerado com sucesso!**\n\n📄 [Clique aqui para baixar o relatório]({pdf_url})\n\nProcesso: **{numero}** | Tribunal: **{alias_nome(alias_pdf)}**"
                     s["messages"].append({"role":"assistant","content":reply})
                     if user_id and SUPABASE_OK:
