@@ -635,18 +635,35 @@ INSTRUCAO:Dict[str,str]={
 # ═══════════════════════════════════════════════════════
 # OPENAI
 # ═══════════════════════════════════════════════════════
-def call_openai(messages:List[dict],temperature:float=0.15)->str:
+MAX_TOKENS_PER_LEVEL = {
+    "simples":    400,
+    "doc_resumo": 1200,
+    "doc_medio":  1800,
+    "juridico":   1500,
+    "os61":       4000,
+    "direto":     300,
+    "erro":       200,
+}
+
+def call_openai(messages:List[dict], temperature:float=0.15, max_tokens:int=None) -> str:
     if not OPENAI_API_KEY: raise RuntimeError("OPENAI_API_KEY não configurado.")
+    body = {"model":OPENAI_MODEL, "messages":messages, "temperature":temperature}
+    if max_tokens:
+        body["max_tokens"] = max_tokens
     r=requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
-        json={"model":OPENAI_MODEL,"messages":messages,"temperature":temperature},
-        timeout=90,
+        json=body, timeout=90,
     )
     try: r.raise_for_status()
     except requests.HTTPError as e:
         raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:400]}")
-    return (r.json().get("choices") or [{}])[0].get("message",{}).get("content","").strip() or "Sem resposta."
+    data = r.json()
+    # Log actual token usage from OpenAI
+    usage = data.get("usage", {})
+    if usage:
+        log.info(f"[OpenAI] tokens: input={usage.get('prompt_tokens',0)} output={usage.get('completion_tokens',0)} total={usage.get('total_tokens',0)}")
+    return (data.get("choices") or [{}])[0].get("message",{}).get("content","").strip() or "Sem resposta."
 
 # ═══════════════════════════════════════════════════════
 # FASTAPI APP
@@ -1296,7 +1313,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
             for item in s["messages"][-6:]:
                 if item["role"] in {"user","assistant"}: msgs_bacen.append(item)
             msgs_bacen[-1] = {"role":"user","content":f"{message}\n\n[Use os dados econômicos fornecidos no contexto. Apresente os valores de forma direta e objetiva — não cite a fonte dos dados. Se algum índice não estiver disponível, informe que o dado está temporariamente indisponível. Responda em português, de forma concisa.]"}
-            reply = call_openai(msgs_bacen, 0.1)
+            reply = call_openai(msgs_bacen, 0.1, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
             s["messages"].append({"role":"assistant","content":reply})
             return ChatOut(message=reply, state=state, prompt_level="juridico")
         except Exception as _bacen_err:
@@ -1331,7 +1348,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
                 msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados fornecidos no contexto para responder com precisão. Nunca mencione a fonte dos dados nem o nome 'Escavador'. Apresente as informações como se fossem do próprio sistema Jurimetrix. Responda em português.]"}
-                reply = call_openai(msgs, 0.15)
+                reply = call_openai(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
                 s["messages"].append({"role":"assistant","content":reply})
                 return ChatOut(message=reply,state=state,prompt_level="juridico")
         except Exception as _esc_err:
@@ -1343,6 +1360,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
         if numero:
             alias_pdf = (infer_alias(numero) if numero else None) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS
             try:
+                import re as _re  # safety import for PDF block
                 raw=DJ.get_process(numero, alias_pdf); items=DJ.sources(raw)
                 if items:
                     proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc, numero)
@@ -1361,9 +1379,9 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     analise_dict=parse_analise_gpt(analise_texto)
                     pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
                     # Save PDF
-                    numero_safe=re.sub(r"[^\w\-]","_",numero)
+                    numero_safe=_re.sub(r"[^\w\-]","_",numero)
                     pdf_filename = f"relatorio_{numero_safe}_{uuid.uuid4().hex[:8]}.pdf"
-                    pdf_path = _os.path.join(_reports_dir, pdf_filename)
+                    pdf_path = os.path.join(_reports_dir, pdf_filename)
                     with open(pdf_path, "wb") as f:
                         f.write(pdf_bytes)
                     pdf_url = f"/reports/{pdf_filename}"
@@ -1373,7 +1391,8 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                         SB.registrar_tokens_resposta(user_id, len(analise_texto))
                     return ChatOut(message=reply, state=state, prompt_level="os61", conversa_id=payload.conversa_id)
             except Exception as e:
-                log.warning(f"PDF auto-gen failed: {e}")
+                import traceback
+                log.error(f"PDF auto-gen failed: {e}\n{traceback.format_exc()}")
                 reply = f"Erro ao gerar o relatório PDF: {str(e)}"
                 s["messages"].append({"role":"assistant","content":reply})
                 return ChatOut(message=reply, state=state, prompt_level="erro")
@@ -1454,7 +1473,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
                 msgs[-1]={"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
-                reply=call_openai(msgs,0.15)
+                reply=call_openai(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL.get(eff_lvl, 1500))
                 s["messages"].append({"role":"assistant","content":reply})
                 if user_id and SUPABASE_OK:
                     SB.registrar_tokens_resposta(user_id, len(reply))
@@ -1482,7 +1501,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
 
     temp=0.1 if plevel=="os61" else (0.2 if plevel in ("juridico","doc_medio") else 0.35)
     try:
-        reply=call_openai(msgs,temp)
+        reply=call_openai(msgs, temp, max_tokens=MAX_TOKENS_PER_LEVEL.get(plevel, 1200))
     except Exception as e:
         reply=f"Erro: {str(e)}"
 
