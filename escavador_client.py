@@ -250,8 +250,10 @@ class EscavadorClient:
     def extrair_dados_tribunal(self, dados: dict) -> dict:
         """
         Extrai dados estruturados do resultado da busca no tribunal.
-        Retorna: magistrado, partes, advogados, movimentos.
+        Formato Escavador V1 async: dados.instancias[].{partes, movimentacoes, ...}
         """
+        import re as _re
+
         result = {
             "magistrado": None,
             "polo_ativo": [],
@@ -263,63 +265,98 @@ class EscavadorClient:
         if not dados or not isinstance(dados, dict):
             return result
 
-        # Pode vir em diferentes formatos dependendo do tribunal
-        # Formato 1: dados diretos
-        processo = dados.get("processo") or dados
+        # O Escavador retorna dados dentro de "instancias"
+        instancias = dados.get("instancias") or []
+        if not instancias:
+            # Fallback: talvez os dados estejam no nível superior
+            instancias = [dados.get("processo") or dados]
 
-        # Magistrado — buscar em vários campos
-        result["magistrado"] = (
-            processo.get("magistrado") or
-            processo.get("juiz") or
-            processo.get("magistrado_prolator") or
-            processo.get("relator") or
-            None
-        )
-        if isinstance(result["magistrado"], dict):
-            result["magistrado"] = result["magistrado"].get("nome") or result["magistrado"].get("nomeCompleto")
-
-        # Partes/Envolvidos
-        partes = processo.get("partes") or processo.get("envolvidos") or processo.get("polos") or []
-        for p in partes:
-            if not isinstance(p, dict):
+        for inst in instancias:
+            if not isinstance(inst, dict):
                 continue
-            nome = p.get("nome") or p.get("nomeCompleto") or ""
-            tipo = (p.get("tipo") or p.get("tipo_envolvido") or p.get("polo") or p.get("tipo_parte") or "").lower()
-            if not nome:
-                continue
-            if "ativo" in tipo or "autor" in tipo or "reclamante" in tipo or "requerente" in tipo:
-                result["polo_ativo"].append(nome)
-            elif "passivo" in tipo or "réu" in tipo or "reclamado" in tipo or "requerido" in tipo:
-                result["polo_passivo"].append(nome)
-            elif "advogado" in tipo or "representante" in tipo:
-                result["advogados"].append(nome)
-            elif "juiz" in tipo or "magistrad" in tipo or "relator" in tipo:
-                if not result["magistrado"]:
-                    result["magistrado"] = nome
 
-        # Valor da causa
-        result["valor_causa"] = processo.get("valor_causa") or processo.get("valorCausa")
+            # ── Magistrado ────────────────────────────────
+            if not result["magistrado"]:
+                result["magistrado"] = (
+                    inst.get("magistrado") or
+                    inst.get("juiz") or
+                    inst.get("magistrado_prolator") or
+                    inst.get("relator") or
+                    None
+                )
+                if isinstance(result["magistrado"], dict):
+                    result["magistrado"] = result["magistrado"].get("nome") or result["magistrado"].get("nomeCompleto")
 
-        # Buscar magistrado no texto das movimentações
-        if not result["magistrado"]:
-            movs = processo.get("movimentacoes") or processo.get("movimentos") or processo.get("andamentos") or []
-            for m in movs[:20]:
-                texto = ""
-                if isinstance(m, dict):
-                    texto = m.get("texto") or m.get("conteudo") or m.get("descricao") or m.get("nome") or ""
-                elif isinstance(m, str):
-                    texto = m
-                if texto:
-                    import re as _re
-                    match = _re.search(
-                        r'conclus[oa]s?\s+.*?\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])',
-                        texto, _re.IGNORECASE
-                    )
-                    if match:
-                        nome = match.group(1).strip()
-                        if len(nome) > 5 and ' ' in nome:
-                            result["magistrado"] = nome.title()
+            # ── Partes / Envolvidos ───────────────────────
+            partes = inst.get("partes") or inst.get("envolvidos") or inst.get("polos") or []
+            for p in partes:
+                if not isinstance(p, dict):
+                    continue
+                nome = p.get("nome") or p.get("nomeCompleto") or p.get("nome_completo") or ""
+                tipo = (p.get("tipo") or p.get("tipo_envolvido") or p.get("polo") or p.get("tipo_parte") or p.get("tipo_pessoa") or "").lower()
+                participacao = (p.get("participacao") or p.get("tipo_participacao") or "").lower()
+                tipo_full = f"{tipo} {participacao}".strip()
+
+                if not nome:
+                    continue
+                if any(kw in tipo_full for kw in ["ativo", "autor", "reclamante", "requerente", "exequente"]):
+                    result["polo_ativo"].append(nome)
+                elif any(kw in tipo_full for kw in ["passivo", "réu", "reclamado", "requerido", "executado"]):
+                    result["polo_passivo"].append(nome)
+                elif "advogado" in tipo_full or "representante" in tipo_full or "procurador" in tipo_full:
+                    oab = p.get("oab") or p.get("numero_oab") or ""
+                    result["advogados"].append(f"{nome} (OAB: {oab})" if oab else nome)
+                elif any(kw in tipo_full for kw in ["juiz", "magistrad", "relator", "prolator"]):
+                    if not result["magistrado"]:
+                        result["magistrado"] = nome
+
+            # ── Valor da causa ────────────────────────────
+            if not result["valor_causa"]:
+                vc = inst.get("valor_causa") or inst.get("valorCausa")
+                if isinstance(vc, dict):
+                    vc = vc.get("valor")
+                result["valor_causa"] = vc
+
+            # ── Magistrado no texto das movimentações ─────
+            if not result["magistrado"]:
+                movs = inst.get("movimentacoes") or inst.get("movimentos") or inst.get("andamentos") or []
+                for m in movs[:30]:
+                    texto = ""
+                    if isinstance(m, dict):
+                        texto = m.get("texto") or m.get("conteudo") or m.get("descricao") or m.get("nome") or ""
+                        # Também checar campos extras
+                        extras = m.get("extras") or m.get("complementos") or []
+                        for ex in extras:
+                            if isinstance(ex, str):
+                                texto += " " + ex
+                            elif isinstance(ex, dict):
+                                texto += " " + (ex.get("texto") or ex.get("valor") or ex.get("descricao") or "")
+                    elif isinstance(m, str):
+                        texto = m
+
+                    if texto:
+                        patterns = [
+                            r'conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+[\w\s]+?)?\s*(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])',
+                            r'juntado\s+por\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])',
+                            r'intimaç[aã]o\s+a[o]?\s+(?:juiz|juíza|magistrad[oa])\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
+                        ]
+                        for pat in patterns:
+                            match = _re.search(pat, texto, _re.IGNORECASE)
+                            if match:
+                                nome = match.group(1).strip()
+                                if (len(nome) > 5 and ' ' in nome and
+                                    not any(kw in nome.lower() for kw in ['recurso','processo','parte','documento','sentença','petição'])):
+                                    result["magistrado"] = nome.title()
+                                    break
+                        if result["magistrado"]:
                             break
+
+        # Deduplicate
+        result["polo_ativo"] = list(dict.fromkeys(result["polo_ativo"]))
+        result["polo_passivo"] = list(dict.fromkeys(result["polo_passivo"]))
+        result["advogados"] = list(dict.fromkeys(result["advogados"]))
+
+        return result
 
         return result
 
