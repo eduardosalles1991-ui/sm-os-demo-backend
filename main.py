@@ -426,57 +426,85 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
     """
     Enriquece dados do processo com Escavador quando DataJud/MNI
     não trouxe partes, advogados ou magistrado.
-    Busca por número do processo no Escavador.
     """
     if not ESCAVADOR_OK or not ESC:
         return proc
 
-    # Só busca se faltam dados essenciais
     has_partes = bool(proc.get("polo_ativo")) or bool(proc.get("polo_passivo"))
     has_advs = bool(proc.get("advogados"))
     if has_partes and has_advs:
-        return proc  # já tem dados, não precisa
+        return proc
 
     try:
-        # Busca processos do envolvido pelo número CNJ
         numero_limpo = re.sub(r'\D', '', numero)
-        result = ESC.ESCAVADOR.processos_por_envolvido(nome=numero)
 
-        # Se não achou por nome (número), tenta busca direta
+        # Busca pelo número CNJ (método correto)
+        result = ESC.ESCAVADOR.buscar_processo_por_numero(numero)
+
         if not result or result.get("error"):
             return proc
 
-        # Extrai dados do resultado
+        # V2 retorna objeto direto do processo
+        # V1 retorna lista em items/data
         items = result.get("items") or result.get("data") or []
-        envolvido = result.get("envolvido") or result.get("envolvido_encontrado") or result.get("advogado_encontrado") or {}
+        
+        # Se o resultado é o processo direto (V2)
+        if not items and (result.get("numero_cnj") or result.get("numero")):
+            items = [result]
 
-        if envolvido and envolvido.get("nome"):
-            log.info(f"[Escavador] Enriquecendo processo {numero} com dados do Escavador")
-
-        # Procura o processo específico nos resultados
-        for item in (items if isinstance(items, list) else []):
-            num_item = re.sub(r'\D', '', str(item.get("numero_cnj") or item.get("numero") or ""))
-            if num_item == numero_limpo:
-                # Extrai partes
+        # Percorre resultados buscando o processo exato
+        for item in (items if isinstance(items, list) else [items] if isinstance(items, dict) else []):
+            num_item = re.sub(r'\D', '', str(item.get("numero_cnj") or item.get("numero_novo") or item.get("numero") or ""))
+            
+            # Match exato ou parcial
+            if num_item == numero_limpo or numero_limpo in num_item or num_item in numero_limpo:
+                # Extrair partes de múltiplos formatos
                 if not proc.get("polo_ativo"):
-                    polo_ativo = item.get("titulo_polo_ativo") or item.get("polo_ativo") or ""
-                    if polo_ativo:
-                        proc["polo_ativo"] = [polo_ativo] if isinstance(polo_ativo, str) else polo_ativo
+                    pa = (item.get("titulo_polo_ativo") or 
+                          item.get("polo_ativo") or
+                          item.get("partes_polo_ativo") or "")
+                    if isinstance(pa, list):
+                        proc["polo_ativo"] = [p.get("nome", p) if isinstance(p, dict) else str(p) for p in pa]
+                    elif isinstance(pa, str) and pa:
+                        proc["polo_ativo"] = [pa]
 
                 if not proc.get("polo_passivo"):
-                    polo_passivo = item.get("titulo_polo_passivo") or item.get("polo_passivo") or ""
-                    if polo_passivo:
-                        proc["polo_passivo"] = [polo_passivo] if isinstance(polo_passivo, str) else polo_passivo
+                    pp = (item.get("titulo_polo_passivo") or
+                          item.get("polo_passivo") or
+                          item.get("partes_polo_passivo") or "")
+                    if isinstance(pp, list):
+                        proc["polo_passivo"] = [p.get("nome", p) if isinstance(p, dict) else str(p) for p in pp]
+                    elif isinstance(pp, str) and pp:
+                        proc["polo_passivo"] = [pp]
 
-                # Fonte dos dados
-                fontes = item.get("fontes") or []
-                if fontes and isinstance(fontes[0], dict):
-                    fonte_nome = fontes[0].get("nome") or fontes[0].get("sigla") or ""
-                    if fonte_nome and not proc.get("tribunal"):
-                        proc["tribunal"] = fonte_nome
+                # Advogados
+                if not proc.get("advogados"):
+                    advs = item.get("advogados") or []
+                    if advs:
+                        proc["advogados"] = [
+                            a.get("nome", a) if isinstance(a, dict) else str(a)
+                            for a in advs[:5]
+                        ]
 
-                proc["escavador_enriched"] = True
-                log.info(f"[Escavador] Processo {numero}: partes encontradas")
+                # Envolvidos (formato alternativo)
+                envolvidos = item.get("envolvidos") or item.get("partes") or []
+                for env in envolvidos:
+                    if not isinstance(env, dict):
+                        continue
+                    nome = env.get("nome") or ""
+                    tipo = (env.get("tipo_envolvido") or env.get("tipo") or env.get("polo") or "").lower()
+                    if not nome:
+                        continue
+                    if ("ativo" in tipo or "reclamante" in tipo or "autor" in tipo) and not proc.get("polo_ativo"):
+                        proc["polo_ativo"] = [nome]
+                    elif ("passivo" in tipo or "reclamado" in tipo or "réu" in tipo) and not proc.get("polo_passivo"):
+                        proc["polo_passivo"] = [nome]
+                    elif "advogado" in tipo and not proc.get("advogados"):
+                        proc.setdefault("advogados", []).append(nome)
+
+                if proc.get("polo_ativo") or proc.get("polo_passivo"):
+                    proc["escavador_enriched"] = True
+                    log.info(f"[Escavador] Processo {numero}: partes encontradas via Escavador")
                 break
 
     except Exception as e:
