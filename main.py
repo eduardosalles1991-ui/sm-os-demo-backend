@@ -528,6 +528,52 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
 
     return proc
 
+
+def enrich_with_tribunal(proc: dict, numero: str) -> dict:
+    """
+    Último recurso: busca no site do tribunal via Escavador async.
+    Só executa se ainda falta magistrado (o dado mais difícil de obter).
+    Aguarda até 18 segundos pela resposta.
+    """
+    if not ESCAVADOR_OK or not ESC:
+        return proc
+
+    # Só busca se falta o magistrado
+    if proc.get("magistrado"):
+        return proc
+
+    try:
+        dados = ESC.ESCAVADOR.buscar_processo_tribunal(numero, timeout=18)
+
+        if not dados or dados.get("error"):
+            return proc
+
+        extraido = ESC.ESCAVADOR.extrair_dados_tribunal(dados)
+
+        if extraido.get("magistrado") and not proc.get("magistrado"):
+            proc["magistrado"] = extraido["magistrado"]
+            proc["tribunal_enriched"] = True
+            log.info(f"[Tribunal] Magistrado encontrado: {extraido['magistrado']}")
+
+        if extraido.get("polo_ativo") and not proc.get("polo_ativo"):
+            proc["polo_ativo"] = extraido["polo_ativo"]
+            proc["tribunal_enriched"] = True
+
+        if extraido.get("polo_passivo") and not proc.get("polo_passivo"):
+            proc["polo_passivo"] = extraido["polo_passivo"]
+            proc["tribunal_enriched"] = True
+
+        if extraido.get("advogados") and not proc.get("advogados"):
+            proc["advogados"] = extraido["advogados"]
+
+        if extraido.get("valor_causa") and not proc.get("valor_causa"):
+            proc["valor_causa"] = extraido["valor_causa"]
+
+    except Exception as e:
+        log.warning(f"[Tribunal] enrich falhou para {numero}: {e}")
+
+    return proc
+
 # ═══════════════════════════════════════════════════════
 # DATAJUD
 # ═══════════════════════════════════════════════════════
@@ -1399,6 +1445,7 @@ def gerar_relatorio(
         proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
         proc=enrich_with_escavador(proc,numero)
         if PJE_OK and PJE: proc=PJE.enrich_processo(proc,numero,alias)
+        proc=enrich_with_tribunal(proc,numero)
         context=build_ctx(proc,"resumo",alias)
         instrucao=(
             "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
@@ -1534,6 +1581,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc, numero)
                     proc=enrich_with_escavador(proc, numero)
                     if PJE_OK and PJE: proc=PJE.enrich_processo(proc, numero, alias_pdf)
+                    proc=enrich_with_tribunal(proc, numero)
                     context=build_ctx(proc,"resumo",alias_pdf)
                     instrucao=(
                         "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
@@ -1596,6 +1644,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
                 proc=enrich_with_escavador(proc,numero)
                 if PJE_OK and PJE: proc=PJE.enrich_processo(proc,numero,alias)
+                proc=enrich_with_tribunal(proc,numero)
                 s["last_process"]=proc; s["last_process_numero"]=numero; s["last_alias"]=alias
 
                 extra=""
