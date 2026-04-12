@@ -223,6 +223,12 @@ PDF_TRIGGERS = [
     "relatório completo","relatorio completo","gerar documento","documento pdf",
     "me envia o pdf","me manda o pdf","pdf do processo","relatório do processo",
     "relatorio do processo","gere o relatório","gera o relatório",
+    "faz um pdf","faz o pdf","faz pdf","fazer pdf","fazer o pdf",
+    "em pdf","no pdf","como pdf","formato pdf","salvar pdf","salvar em pdf",
+    "necessito pdf","preciso do pdf","preciso pdf","preciso em pdf",
+    "manda pdf","manda o pdf","envia pdf","envia o pdf",
+    "cria um pdf","cria o pdf","criar pdf",
+    "imprimir","para imprimir","versão para impressão",
 ]
 
 def detect_pdf_intent(msg: str) -> bool:
