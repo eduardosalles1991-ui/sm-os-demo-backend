@@ -421,6 +421,69 @@ def enrich_with_mni(proc:dict, numero:str)->dict:
         proc["mni_status"]="error"; proc["mni_error"]=str(e)
     return proc
 
+
+def enrich_with_escavador(proc: dict, numero: str) -> dict:
+    """
+    Enriquece dados do processo com Escavador quando DataJud/MNI
+    não trouxe partes, advogados ou magistrado.
+    Busca por número do processo no Escavador.
+    """
+    if not ESCAVADOR_OK or not ESC:
+        return proc
+
+    # Só busca se faltam dados essenciais
+    has_partes = bool(proc.get("polo_ativo")) or bool(proc.get("polo_passivo"))
+    has_advs = bool(proc.get("advogados"))
+    if has_partes and has_advs:
+        return proc  # já tem dados, não precisa
+
+    try:
+        # Busca processos do envolvido pelo número CNJ
+        numero_limpo = re.sub(r'\D', '', numero)
+        result = ESC.ESCAVADOR.processos_por_envolvido(nome=numero)
+
+        # Se não achou por nome (número), tenta busca direta
+        if not result or result.get("error"):
+            return proc
+
+        # Extrai dados do resultado
+        items = result.get("items") or result.get("data") or []
+        envolvido = result.get("envolvido") or result.get("envolvido_encontrado") or result.get("advogado_encontrado") or {}
+
+        if envolvido and envolvido.get("nome"):
+            log.info(f"[Escavador] Enriquecendo processo {numero} com dados do Escavador")
+
+        # Procura o processo específico nos resultados
+        for item in (items if isinstance(items, list) else []):
+            num_item = re.sub(r'\D', '', str(item.get("numero_cnj") or item.get("numero") or ""))
+            if num_item == numero_limpo:
+                # Extrai partes
+                if not proc.get("polo_ativo"):
+                    polo_ativo = item.get("titulo_polo_ativo") or item.get("polo_ativo") or ""
+                    if polo_ativo:
+                        proc["polo_ativo"] = [polo_ativo] if isinstance(polo_ativo, str) else polo_ativo
+
+                if not proc.get("polo_passivo"):
+                    polo_passivo = item.get("titulo_polo_passivo") or item.get("polo_passivo") or ""
+                    if polo_passivo:
+                        proc["polo_passivo"] = [polo_passivo] if isinstance(polo_passivo, str) else polo_passivo
+
+                # Fonte dos dados
+                fontes = item.get("fontes") or []
+                if fontes and isinstance(fontes[0], dict):
+                    fonte_nome = fontes[0].get("nome") or fontes[0].get("sigla") or ""
+                    if fonte_nome and not proc.get("tribunal"):
+                        proc["tribunal"] = fonte_nome
+
+                proc["escavador_enriched"] = True
+                log.info(f"[Escavador] Processo {numero}: partes encontradas")
+                break
+
+    except Exception as e:
+        log.warning(f"[Escavador] enrich falhou para {numero}: {e}")
+
+    return proc
+
 # ═══════════════════════════════════════════════════════
 # DATAJUD
 # ═══════════════════════════════════════════════════════
@@ -726,6 +789,16 @@ except Exception as _esc_e:
     ESC = None
     ESCAVADOR_OK = False
     log.warning(f"⚠️  escavador_client não carregado: {_esc_e}")
+
+# ── PJe Consulta Pública (scraping) ─────────────────────────────────
+try:
+    import pje_scraper as PJE
+    PJE_OK = PJE.is_configured()
+    log.info("✅ PJe Consulta Pública configurado (scraping)")
+except Exception as _pje_e:
+    PJE = None
+    PJE_OK = False
+    log.warning(f"⚠️  pje_scraper não carregado: {_pje_e}")
 
 # ── Auth + planos + pagamentos ───────────────────────────────────────
 from database import criar_tabelas
@@ -1178,6 +1251,7 @@ def health():
         "pdf":PDF_AVAILABLE,
         "tribunais":len(ALIAS_MAP),
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
+        "pje_scraper":{"ok":PJE_OK},
         "bacen":{"ok":BACEN_OK},
         "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
         "nl":{"ok":NL_OK},
@@ -1231,6 +1305,8 @@ def gerar_relatorio(
         if not items:
             raise HTTPException(404,f"Processo {numero} não encontrado no {alias_nome(alias)}.")
         proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
+        proc=enrich_with_escavador(proc,numero)
+        if PJE_OK and PJE: proc=PJE.enrich_processo(proc,numero,alias)
         context=build_ctx(proc,"resumo",alias)
         instrucao=(
             "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
@@ -1364,6 +1440,8 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 raw=DJ.get_process(numero, alias_pdf); items=DJ.sources(raw)
                 if items:
                     proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc, numero)
+                    proc=enrich_with_escavador(proc, numero)
+                    if PJE_OK and PJE: proc=PJE.enrich_processo(proc, numero, alias_pdf)
                     context=build_ctx(proc,"resumo",alias_pdf)
                     instrucao=(
                         "Gere análise OS 6.1 COMPLETA e ESTRUTURADA. Use EXATAMENTE estas seções:\n"
@@ -1424,6 +1502,8 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     return ChatOut(message=reply,state=state,prompt_level="direto")
 
                 proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc,numero)
+                proc=enrich_with_escavador(proc,numero)
+                if PJE_OK and PJE: proc=PJE.enrich_processo(proc,numero,alias)
                 s["last_process"]=proc; s["last_process_numero"]=numero; s["last_alias"]=alias
 
                 extra=""
