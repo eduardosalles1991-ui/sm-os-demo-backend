@@ -4,6 +4,7 @@ S&M OS 6.1 — Salles & Mendes
 Uso: importar build_relatorio_pdf() no main.py
 """
 import io
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
