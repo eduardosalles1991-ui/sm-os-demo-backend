@@ -196,6 +196,133 @@ class EscavadorClient:
 
         return {"error": f"Processo {numero_cnj} não encontrado no Escavador"}
 
+    def buscar_processo_tribunal(self, numero_cnj: str, timeout: int = 18) -> dict:
+        """
+        Busca processo diretamente no site do tribunal via Escavador (V1 async).
+        Dispara a busca e aguarda o resultado por até `timeout` segundos.
+        Retorna dados completos incluindo partes, juiz e movimentações do tribunal.
+        """
+        import time as _time
+
+        numero_fmt = numero_cnj.strip()
+
+        # 1. Dispara busca assíncrona
+        try:
+            log.info(f"[Escavador] Disparando busca async no tribunal para {numero_fmt}")
+            result = _post(f"processo-tribunal/{numero_fmt}/async", {})
+            async_id = result.get("id") or result.get("resposta", {}).get("id")
+            if not async_id:
+                log.warning(f"[Escavador] Async tribunal: sem ID retornado. Response: {str(result)[:200]}")
+                return {"error": "Sem ID de busca assíncrona"}
+            log.info(f"[Escavador] Async tribunal ID: {async_id}")
+        except Exception as e:
+            log.warning(f"[Escavador] Async tribunal falhou ao disparar: {e}")
+            return {"error": str(e)}
+
+        # 2. Polling — aguarda resultado
+        start = _time.time()
+        while (_time.time() - start) < timeout:
+            _time.sleep(3)
+            try:
+                check = _get(f"async/resultados/{async_id}")
+                status = check.get("status") or check.get("resposta", {}).get("status") or ""
+                status_lower = status.lower() if isinstance(status, str) else ""
+
+                if status_lower == "sucesso" or status_lower == "finalizado":
+                    dados = check.get("resposta", {}).get("resposta") or check.get("resposta") or check
+                    log.info(f"[Escavador] Async tribunal SUCESSO para {numero_fmt}")
+                    return dados
+
+                if status_lower == "erro" or status_lower == "falha":
+                    msg = check.get("resposta", {}).get("mensagem") or str(check)[:200]
+                    log.warning(f"[Escavador] Async tribunal ERRO: {msg}")
+                    return {"error": msg}
+
+                # Ainda pendente
+                log.debug(f"[Escavador] Async tribunal status: {status} ({int(_time.time()-start)}s)")
+
+            except Exception as e:
+                log.debug(f"[Escavador] Polling erro: {e}")
+
+        log.info(f"[Escavador] Async tribunal timeout ({timeout}s) para {numero_fmt}")
+        return {"error": "timeout", "async_id": async_id}
+
+    def extrair_dados_tribunal(self, dados: dict) -> dict:
+        """
+        Extrai dados estruturados do resultado da busca no tribunal.
+        Retorna: magistrado, partes, advogados, movimentos.
+        """
+        result = {
+            "magistrado": None,
+            "polo_ativo": [],
+            "polo_passivo": [],
+            "advogados": [],
+            "valor_causa": None,
+        }
+
+        if not dados or not isinstance(dados, dict):
+            return result
+
+        # Pode vir em diferentes formatos dependendo do tribunal
+        # Formato 1: dados diretos
+        processo = dados.get("processo") or dados
+
+        # Magistrado — buscar em vários campos
+        result["magistrado"] = (
+            processo.get("magistrado") or
+            processo.get("juiz") or
+            processo.get("magistrado_prolator") or
+            processo.get("relator") or
+            None
+        )
+        if isinstance(result["magistrado"], dict):
+            result["magistrado"] = result["magistrado"].get("nome") or result["magistrado"].get("nomeCompleto")
+
+        # Partes/Envolvidos
+        partes = processo.get("partes") or processo.get("envolvidos") or processo.get("polos") or []
+        for p in partes:
+            if not isinstance(p, dict):
+                continue
+            nome = p.get("nome") or p.get("nomeCompleto") or ""
+            tipo = (p.get("tipo") or p.get("tipo_envolvido") or p.get("polo") or p.get("tipo_parte") or "").lower()
+            if not nome:
+                continue
+            if "ativo" in tipo or "autor" in tipo or "reclamante" in tipo or "requerente" in tipo:
+                result["polo_ativo"].append(nome)
+            elif "passivo" in tipo or "réu" in tipo or "reclamado" in tipo or "requerido" in tipo:
+                result["polo_passivo"].append(nome)
+            elif "advogado" in tipo or "representante" in tipo:
+                result["advogados"].append(nome)
+            elif "juiz" in tipo or "magistrad" in tipo or "relator" in tipo:
+                if not result["magistrado"]:
+                    result["magistrado"] = nome
+
+        # Valor da causa
+        result["valor_causa"] = processo.get("valor_causa") or processo.get("valorCausa")
+
+        # Buscar magistrado no texto das movimentações
+        if not result["magistrado"]:
+            movs = processo.get("movimentacoes") or processo.get("movimentos") or processo.get("andamentos") or []
+            for m in movs[:20]:
+                texto = ""
+                if isinstance(m, dict):
+                    texto = m.get("texto") or m.get("conteudo") or m.get("descricao") or m.get("nome") or ""
+                elif isinstance(m, str):
+                    texto = m
+                if texto:
+                    import re as _re
+                    match = _re.search(
+                        r'conclus[oa]s?\s+.*?\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])',
+                        texto, _re.IGNORECASE
+                    )
+                    if match:
+                        nome = match.group(1).strip()
+                        if len(nome) > 5 and ' ' in nome:
+                            result["magistrado"] = nome.title()
+                            break
+
+        return result
+
     def build_context(self, data: dict, tipo: str) -> str:
         """Constrói contexto textual para o GPT a partir dos dados do Escavador."""
         if not data:
