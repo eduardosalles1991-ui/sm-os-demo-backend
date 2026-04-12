@@ -162,6 +162,40 @@ class EscavadorClient:
         """Retorna detalhes de um processo pelo ID do Escavador."""
         return _get(f"processos/{processo_id}")
 
+    def buscar_processo_por_numero(self, numero_cnj: str) -> dict:
+        """
+        Busca processo pelo número CNJ.
+        Tenta V2 primeiro (mais detalhado), depois V1.
+        Retorna dados do processo incluindo partes.
+        """
+        import re as _re
+        numero_limpo = _re.sub(r'\D', '', numero_cnj)
+        # Formata com máscara CNJ
+        if len(numero_limpo) == 20:
+            numero_fmt = f"{numero_limpo[:7]}-{numero_limpo[7:9]}.{numero_limpo[9:13]}.{numero_limpo[13]}.{numero_limpo[14:16]}.{numero_limpo[16:]}"
+        else:
+            numero_fmt = numero_cnj
+
+        # V2: busca por número CNJ
+        try:
+            result = _get_v2(f"processos/numero_cnj/{numero_fmt}")
+            if result and not result.get("error"):
+                log.info(f"[Escavador] V2 processo encontrado: {numero_fmt}")
+                return result
+        except Exception as e:
+            log.debug(f"[Escavador] V2 processos/numero_cnj falhou: {e}")
+
+        # V1: busca genérica
+        try:
+            result = _get("processos", {"q": numero_fmt})
+            if result:
+                log.info(f"[Escavador] V1 processo encontrado: {numero_fmt}")
+                return result
+        except Exception as e:
+            log.debug(f"[Escavador] V1 processos?q= falhou: {e}")
+
+        return {"error": f"Processo {numero_cnj} não encontrado no Escavador"}
+
     def build_context(self, data: dict, tipo: str) -> str:
         """Constrói contexto textual para o GPT a partir dos dados do Escavador."""
         if not data:
