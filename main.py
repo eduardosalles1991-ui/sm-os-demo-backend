@@ -553,13 +553,19 @@ def enrich_with_tribunal(proc: dict, numero: str) -> dict:
         # Já disparamos antes — verificar resultado (1 tentativa, sem esperar)
         try:
             check = ESC._get(f"async/resultados/{async_id}")
+            log.info(f"[Tribunal] Async {async_id} resposta: {str(check)[:500]}")
+
             status = ""
             if isinstance(check, dict):
                 status = (check.get("status") or check.get("resposta", {}).get("status") or "").lower()
 
-            if status in ("sucesso", "finalizado"):
-                dados = check.get("resposta", {}).get("resposta") or check.get("resposta") or check
+            log.info(f"[Tribunal] Async {async_id} status: '{status}'")
+
+            if status in ("sucesso", "finalizado", "completed"):
+                dados = check.get("resposta", {}).get("resposta") or check.get("resposta") or check.get("resultado") or check
+                log.info(f"[Tribunal] Dados extraídos: {str(dados)[:500]}")
                 extraido = ESC.ESCAVADOR.extrair_dados_tribunal(dados)
+                log.info(f"[Tribunal] Extraído: mag={extraido.get('magistrado')}, pa={extraido.get('polo_ativo')}, pp={extraido.get('polo_passivo')}")
 
                 if extraido.get("magistrado"):
                     proc["magistrado"] = extraido["magistrado"]
@@ -577,14 +583,14 @@ def enrich_with_tribunal(proc: dict, numero: str) -> dict:
                 _tribunal_cache.pop(cache_key, None)
                 return proc
 
-            elif status in ("erro", "falha"):
-                log.warning(f"[Tribunal] Async falhou para {numero}")
+            elif status in ("erro", "falha", "failed"):
+                log.warning(f"[Tribunal] Async falhou para {numero}: {str(check)[:300]}")
                 _tribunal_cache.pop(cache_key, None)
             else:
-                log.info(f"[Tribunal] Async ainda pendente (ID {async_id}) para {numero}")
+                log.info(f"[Tribunal] Async ainda pendente (ID {async_id}, status='{status}') para {numero}")
 
         except Exception as e:
-            log.debug(f"[Tribunal] Erro ao verificar async {async_id}: {e}")
+            log.warning(f"[Tribunal] Erro ao verificar async {async_id}: {e}")
     else:
         # Primeira vez — disparar busca assíncrona (sem esperar)
         try:
