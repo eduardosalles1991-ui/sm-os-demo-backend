@@ -531,48 +531,80 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
 
 def enrich_with_tribunal(proc: dict, numero: str) -> dict:
     """
-    Último recurso: busca no site do tribunal via Escavador async.
-    Só executa se ainda falta magistrado (o dado mais difícil de obter).
-    Aguarda até 18 segundos pela resposta.
+    Busca no site do tribunal via Escavador async.
+    Estratégia fire-and-check:
+    - Se não tem async_id salvo → dispara busca (sem esperar)
+    - Se tem async_id salvo → verifica se resultado chegou
+    Só executa se falta o magistrado.
     """
     if not ESCAVADOR_OK or not ESC:
         return proc
 
-    # Só busca se falta o magistrado
     if proc.get("magistrado"):
         return proc
 
-    try:
-        dados = ESC.ESCAVADOR.buscar_processo_tribunal(numero, timeout=18)
+    numero_limpo = re.sub(r'\D', '', numero)
 
-        if not dados or dados.get("error"):
-            return proc
+    # Verifica se já temos resultado pendente
+    cache_key = f"tribunal_async_{numero_limpo}"
+    async_id = _tribunal_cache.get(cache_key)
 
-        extraido = ESC.ESCAVADOR.extrair_dados_tribunal(dados)
+    if async_id:
+        # Já disparamos antes — verificar resultado (1 tentativa, sem esperar)
+        try:
+            check = ESC._get(f"async/resultados/{async_id}")
+            status = ""
+            if isinstance(check, dict):
+                status = (check.get("status") or check.get("resposta", {}).get("status") or "").lower()
 
-        if extraido.get("magistrado") and not proc.get("magistrado"):
-            proc["magistrado"] = extraido["magistrado"]
-            proc["tribunal_enriched"] = True
-            log.info(f"[Tribunal] Magistrado encontrado: {extraido['magistrado']}")
+            if status in ("sucesso", "finalizado"):
+                dados = check.get("resposta", {}).get("resposta") or check.get("resposta") or check
+                extraido = ESC.ESCAVADOR.extrair_dados_tribunal(dados)
 
-        if extraido.get("polo_ativo") and not proc.get("polo_ativo"):
-            proc["polo_ativo"] = extraido["polo_ativo"]
-            proc["tribunal_enriched"] = True
+                if extraido.get("magistrado"):
+                    proc["magistrado"] = extraido["magistrado"]
+                    proc["tribunal_enriched"] = True
+                    log.info(f"[Tribunal] ✅ Magistrado encontrado: {extraido['magistrado']}")
 
-        if extraido.get("polo_passivo") and not proc.get("polo_passivo"):
-            proc["polo_passivo"] = extraido["polo_passivo"]
-            proc["tribunal_enriched"] = True
+                if extraido.get("polo_ativo") and not proc.get("polo_ativo"):
+                    proc["polo_ativo"] = extraido["polo_ativo"]
+                if extraido.get("polo_passivo") and not proc.get("polo_passivo"):
+                    proc["polo_passivo"] = extraido["polo_passivo"]
+                if extraido.get("advogados") and not proc.get("advogados"):
+                    proc["advogados"] = extraido["advogados"]
 
-        if extraido.get("advogados") and not proc.get("advogados"):
-            proc["advogados"] = extraido["advogados"]
+                # Limpa cache
+                _tribunal_cache.pop(cache_key, None)
+                return proc
 
-        if extraido.get("valor_causa") and not proc.get("valor_causa"):
-            proc["valor_causa"] = extraido["valor_causa"]
+            elif status in ("erro", "falha"):
+                log.warning(f"[Tribunal] Async falhou para {numero}")
+                _tribunal_cache.pop(cache_key, None)
+            else:
+                log.info(f"[Tribunal] Async ainda pendente (ID {async_id}) para {numero}")
 
-    except Exception as e:
-        log.warning(f"[Tribunal] enrich falhou para {numero}: {e}")
+        except Exception as e:
+            log.debug(f"[Tribunal] Erro ao verificar async {async_id}: {e}")
+    else:
+        # Primeira vez — disparar busca assíncrona (sem esperar)
+        try:
+            log.info(f"[Tribunal] Disparando busca async para {numero}")
+            result = ESC._post(f"processo-tribunal/{numero}/async", {})
+            new_id = None
+            if isinstance(result, dict):
+                new_id = result.get("id") or result.get("resposta", {}).get("id")
+            if new_id:
+                _tribunal_cache[cache_key] = new_id
+                log.info(f"[Tribunal] Async disparado ID={new_id} — resultado disponível na próxima consulta")
+            else:
+                log.warning(f"[Tribunal] Sem ID retornado: {str(result)[:200]}")
+        except Exception as e:
+            log.warning(f"[Tribunal] Erro ao disparar async: {e}")
 
     return proc
+
+# Cache global para IDs de busca assíncrona
+_tribunal_cache = {}
 
 # ═══════════════════════════════════════════════════════
 # DATAJUD
