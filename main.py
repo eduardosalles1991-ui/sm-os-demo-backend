@@ -507,10 +507,20 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
                         proc["polo_passivo"] = [nome]
                     elif "advogado" in tipo and not proc.get("advogados"):
                         proc.setdefault("advogados", []).append(nome)
+                    elif ("juiz" in tipo or "magistrad" in tipo or "relator" in tipo or "prolator" in tipo) and not proc.get("magistrado"):
+                        proc["magistrado"] = nome
 
-                if proc.get("polo_ativo") or proc.get("polo_passivo"):
+                # Magistrado do Escavador (campo direto)
+                if not proc.get("magistrado"):
+                    mag_esc = item.get("magistrado") or item.get("juiz") or item.get("relator") or ""
+                    if isinstance(mag_esc, dict):
+                        mag_esc = mag_esc.get("nome") or ""
+                    if mag_esc and len(str(mag_esc)) > 3:
+                        proc["magistrado"] = str(mag_esc)
+
+                if proc.get("polo_ativo") or proc.get("polo_passivo") or proc.get("magistrado"):
                     proc["escavador_enriched"] = True
-                    log.info(f"[Escavador] Processo {numero}: partes encontradas via Escavador")
+                    log.info(f"[Escavador] Processo {numero}: dados encontrados via Escavador (partes={bool(proc.get('polo_ativo'))}, juiz={bool(proc.get('magistrado'))})")
                 break
 
     except Exception as e:
@@ -542,11 +552,58 @@ def classif_mov(mov:dict)->str:
     return "outro"
 
 def extract_mag_datajud(movs:list)->Optional[str]:
+    """
+    Extrai nome do magistrado das movimentações DataJud.
+    Busca em: magistradoProlator, responsavelMovimento, complementos e texto das movimentações.
+    """
+    # 1. Campos estruturados (mais confiável)
     for m in movs:
         mag=m.get("magistradoProlator") or m.get("responsavelMovimento")
         if mag:
             nome=(mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag,dict) else str(mag)
             if nome and len(str(nome))>3: return str(nome)
+
+    # 2. Complementos tabelados
+    for m in movs:
+        for comp in (m.get("complementosTabelados") or []):
+            if isinstance(comp, dict):
+                desc = comp.get("descricao") or comp.get("nome") or ""
+                # "conclusos a NOME" ou "juntado por NOME"
+                match = re.search(r'(?:conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+\s+)?(?:a|ao)\s+|juntado\s+por\s+|prolator[a]?\s*[:\s]+|magistrad[oa]\s*[:\s]+)([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])', desc, re.IGNORECASE)
+                if match:
+                    nome = match.group(1).strip()
+                    if len(nome) > 5 and ' ' in nome:
+                        return nome.title()
+
+    # 3. Texto das movimentações (nome da movimentação)
+    for m in movs:
+        nome_mov = m.get("nome") or ""
+        # Padrões: "Conclusos os autos para X a NOME", "Juntado por NOME"
+        patterns = [
+            r'conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+[\s\w]*?)\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
+            r'juntado\s+por\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
+            r'intimação\s+a[o]?\s+(?:juiz|juíza|magistrad[oa])\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
+        ]
+        for pat in patterns:
+            match = re.search(pat, nome_mov, re.IGNORECASE)
+            if match:
+                nome = match.group(1).strip()
+                # Filtrar falsos positivos
+                if (len(nome) > 5 and ' ' in nome and
+                    not any(kw in nome.lower() for kw in ['recurso','processo','parte','autor','réu','reclamante','reclamado','documento','sentença'])):
+                    return nome.title()
+
+    # 4. Complementos de movimentações como strings
+    for m in movs:
+        for comp in (m.get("complementos") or []):
+            texto = comp if isinstance(comp, str) else (comp.get("descricao") or comp.get("valor") or "") if isinstance(comp, dict) else ""
+            if texto:
+                match = re.search(r'conclus[oa]s?\s+.*?\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])', texto, re.IGNORECASE)
+                if match:
+                    nome = match.group(1).strip()
+                    if len(nome) > 5 and ' ' in nome:
+                        return nome.title()
+
     return None
 
 class DataJudError(Exception): pass
