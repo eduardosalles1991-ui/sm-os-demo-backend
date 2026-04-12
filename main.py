@@ -712,7 +712,8 @@ def call_openai(messages:List[dict], temperature:float=0.15, max_tokens:int=None
     if not OPENAI_API_KEY: raise RuntimeError("OPENAI_API_KEY não configurado.")
     body = {"model":OPENAI_MODEL, "messages":messages, "temperature":temperature}
     if max_tokens:
-        body["max_tokens"] = max_tokens
+        # Modelos novos (gpt-4o, gpt-5+) usam max_completion_tokens
+        body["max_completion_tokens"] = max_tokens
     r=requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
