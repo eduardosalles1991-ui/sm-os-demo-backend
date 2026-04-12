@@ -57,6 +57,38 @@ def fmt_data(raw) -> str:
     return s[:10]
 
 
+def _md_to_rl(text: str) -> str:
+    """
+    Converte markdown básico para tags ReportLab XML.
+    **bold** → <b>bold</b>
+    *italic* → <i>italic</i>
+    Remove caracteres problemáticos para XML.
+    """
+    if not text:
+        return ""
+    t = str(text)
+    # Escape XML entities first
+    t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Restore ReportLab tags we'll create
+    # Bold: **text** → <b>text</b>
+    t = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', t)
+    # Italic: *text* → <i>text</i>
+    t = re.sub(r'\*(.+?)\*', r'<i>\1</i>', t)
+    # Remove markdown headers: ### text → text
+    t = re.sub(r'^#{1,4}\s*', '', t, flags=re.MULTILINE)
+    # Remove [FATO], [INF], [HIP] tags - just clean them
+    t = re.sub(r'\[FATO\]', '●', t)
+    t = re.sub(r'\[INF\]', '◦', t)
+    t = re.sub(r'\[HIP\]', '△', t)
+    # Clean bullet markers
+    t = re.sub(r'^\s*[-–•]\s*', '• ', t, flags=re.MULTILINE)
+    # Remove numbered prefixes like "1. " at start
+    t = re.sub(r'^\s*\d+\.\s*', '', t, flags=re.MULTILINE)
+    # Clean up double spaces
+    t = re.sub(r'  +', ' ', t)
+    return t.strip()
+
+
 # ── Estilos ───────────────────────────────────────────────
 def _styles():
     def ps(name, **kw):
@@ -430,16 +462,16 @@ def build_relatorio_pdf(
     _section(story, "2. Síntese e Análise Técnica", s)
     sintese = analise_os61.get("sintese", "")
     if sintese:
-        story.append(Paragraph(sintese, s["body"]))
+        story.append(Paragraph(_md_to_rl(sintese), s["body"]))
         story.append(Spacer(1, 0.2*cm))
     analise = analise_os61.get("analise_tecnica", "")
     if analise:
         story.append(Paragraph("Análise Técnica", s["subsection"]))
-        story.append(Paragraph(analise, s["body"]))
+        story.append(Paragraph(_md_to_rl(analise), s["body"]))
     questao = analise_os61.get("questao_juridica", "")
     if questao:
         story.append(Paragraph("Questão Jurídica Central", s["subsection"]))
-        story.append(Paragraph(questao, s["body"]))
+        story.append(Paragraph(_md_to_rl(questao), s["body"]))
 
     # ════════════════════════════════════════════════════
     # 3. SCORES
@@ -458,10 +490,10 @@ def build_relatorio_pdf(
         for r in riscos:
             nivel = (r.get("nivel") or "").upper()
             cor = {"CRÍTICO": RED_RISK, "ALTO": RED_RISK, "MÉDIO": ORANGE, "BAIXO": GREEN_OK}.get(nivel, WHITE)
+            desc = _md_to_rl(r.get("descricao","") or r.get("risco",""))
             story.append(KeepTogether([
                 Paragraph(
-                    f'<font color="#{cor.hexval()[2:]}"><b>[{nivel}]</b></font> '
-                    f'{r.get("descricao","") or r.get("risco","")}',
+                    f'<font color="#{cor.hexval()[2:]}"><b>[{nivel}]</b></font> {desc}',
                     s["bullet"]),
             ]))
 
@@ -475,16 +507,16 @@ def build_relatorio_pdf(
         if ataques:
             story.append(Paragraph("Ataques Prováveis", s["subsection"]))
             for a in ataques:
-                story.append(Paragraph(str(a), s["bullet"]))
+                story.append(Paragraph(_md_to_rl(str(a)), s["bullet"]))
         vulneravel = red_team.get("ponto_mais_vulneravel", "")
         if vulneravel:
             story.append(Paragraph("Ponto Mais Vulnerável", s["subsection"]))
-            story.append(Paragraph(vulneravel, s["body"]))
+            story.append(Paragraph(_md_to_rl(vulneravel), s["body"]))
         preventivas = red_team.get("medidas_preventivas", [])
         if preventivas:
             story.append(Paragraph("Medidas Preventivas", s["subsection"]))
             for p in preventivas:
-                story.append(Paragraph(str(p), s["bullet"]))
+                story.append(Paragraph(_md_to_rl(str(p)), s["bullet"]))
 
     # ════════════════════════════════════════════════════
     # 6. ESTRATÉGIA E AÇÕES
@@ -495,22 +527,22 @@ def build_relatorio_pdf(
         linha = estrategia.get("linha_principal", "")
         if linha:
             story.append(Paragraph("Linha Principal", s["subsection"]))
-            story.append(Paragraph(linha, s["body"]))
+            story.append(Paragraph(_md_to_rl(linha), s["body"]))
         subsidiarias = estrategia.get("linhas_subsidiarias", [])
         if subsidiarias:
             story.append(Paragraph("Linhas Subsidiárias", s["subsection"]))
             for ls in subsidiarias:
-                story.append(Paragraph(str(ls), s["bullet"]))
+                story.append(Paragraph(_md_to_rl(str(ls)), s["bullet"]))
         acoes = estrategia.get("acoes_prioritarias", [])
         if acoes:
             story.append(Paragraph("Ações Prioritárias", s["subsection"]))
             for i, a in enumerate(acoes, 1):
-                story.append(Paragraph(f"{i}. {a}", s["body"]))
+                story.append(Paragraph(_md_to_rl(f"{i}. {a}"), s["body"]))
         pendencias = analise_os61.get("pendencias", [])
         if pendencias:
             story.append(Paragraph("Pendências", s["subsection"]))
             for p in pendencias:
-                story.append(Paragraph(str(p), s["bullet"]))
+                story.append(Paragraph(_md_to_rl(str(p)), s["bullet"]))
 
     # ════════════════════════════════════════════════════
     # 7. MOVIMENTAÇÕES
@@ -535,8 +567,8 @@ def build_relatorio_pdf(
         _section(story, "8. Alertas", s)
         for alerta in alertas:
             nivel = (alerta.get("nivel_risco") or alerta.get("nivel") or "").upper()
-            desc  = alerta.get("descricao") or alerta.get("tipo") or str(alerta)
-            acao  = alerta.get("acao_recomendada", "")
+            desc  = _md_to_rl(alerta.get("descricao") or alerta.get("tipo") or str(alerta))
+            acao  = _md_to_rl(alerta.get("acao_recomendada", ""))
             cor   = {"CRÍTICO": RED_RISK, "ALTO": RED_RISK, "MÉDIO": ORANGE, "BAIXO": GREEN_OK}.get(nivel, WHITE)
             story.append(Paragraph(
                 f'<font color="#{cor.hexval()[2:]}"><b>[{nivel}]</b></font> {desc}'
