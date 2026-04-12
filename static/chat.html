@@ -931,13 +931,15 @@
           a.target="_blank"; a.rel="noopener";
           const href=a.getAttribute("href")||"";
           if(href.includes("/reports/") && href.endsWith(".pdf")){
+            // Build full URL — avoid doubling if already absolute
+            const fullUrl = href.startsWith("http") ? href : BACKEND+href;
             // Auto-trigger PDF download
             setTimeout(()=>{
               const dl=document.createElement("a");
-              dl.href=BACKEND+href; dl.download=""; dl.target="_blank";
+              dl.href=fullUrl; dl.download=""; dl.target="_blank";
               document.body.appendChild(dl); dl.click(); document.body.removeChild(dl);
             },500);
-            a.href=BACKEND+href;
+            a.href=fullUrl;
           }
         });
       }
