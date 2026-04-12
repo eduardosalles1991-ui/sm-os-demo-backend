@@ -1180,14 +1180,14 @@ def health():
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "bacen":{"ok":BACEN_OK},
         "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
-        "nl":{"ok":NL_OK if 'NL_OK' in dir() else False},
+        "nl":{"ok":NL_OK},
         "supabase":{
             "ok": SUPABASE_OK,
             "url": SUPABASE_URL[:30]+"..." if SUPABASE_URL else "não configurado",
             "service_key": "✅ configurado" if os.getenv("SUPABASE_SERVICE_KEY") else "❌ faltando",
             "jwt_secret":  "✅ configurado" if os.getenv("SUPABASE_JWT_SECRET") else "❌ faltando",
         },
-        "mercadopago":{"ok": MP_OK if 'MP_OK' in dir() else False, "configured": bool(os.getenv("MP_ACCESS_TOKEN"))},
+        "mercadopago":{"ok": MP_OK, "configured": bool(os.getenv("MP_ACCESS_TOKEN"))},
     }
 
 @app.get("/tribunais")
@@ -1443,9 +1443,29 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                                 for src in s2:
                                     p_tmp = DJ.normalize(src)
                                     for sent in (p_tmp.get("sentencas") or [])[:3]:
+                                        # Combinar todos os campos de texto disponíveis
+                                        partes_texto = []
+                                        partes_texto.append(sent.get("nome") or "")
+                                        # Complementos podem ter texto mais rico
+                                        for comp in (sent.get("complementosTabelados") or []):
+                                            partes_texto.append(comp.get("descricao") or comp.get("nome") or "")
+                                        for comp in (sent.get("complementos") or []):
+                                            if isinstance(comp, str):
+                                                partes_texto.append(comp)
+                                            elif isinstance(comp, dict):
+                                                partes_texto.append(comp.get("descricao") or comp.get("valor") or comp.get("nome") or "")
+                                        texto_completo = " | ".join(t for t in partes_texto if t and len(t) > 2)
+                                        if texto_completo:
+                                            decisoes_para_nl.append({
+                                                "numero_processo": p_tmp.get("numero_processo",""),
+                                                "texto": texto_completo,
+                                            })
+                                    # Também inclui última movimentação como contexto
+                                    ult = p_tmp.get("ultima_movimentacao_nome") or ""
+                                    if ult and len(ult) > 5:
                                         decisoes_para_nl.append({
                                             "numero_processo": p_tmp.get("numero_processo",""),
-                                            "texto": sent.get("nome",""),
+                                            "texto": ult,
                                         })
                                 if decisoes_para_nl:
                                     nl_analise = NL_MOD.NL.analisar_lote(decisoes_para_nl)
