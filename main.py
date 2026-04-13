@@ -1750,6 +1750,22 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     except: pass
 
                 ctx=build_ctx(proc,intent,alias)+extra
+
+                # Verificar tribunal async ANTES do GPT
+                # O async teve tempo de processar enquanto fazíamos banco/NL/temático
+                if _trib_async_id and not proc.get("magistrado"):
+                    import time as _time
+                    # Poll rápido: até 12 segundos esperando o resultado
+                    for _poll in range(4):
+                        _time.sleep(3)
+                        proc = check_tribunal_result(proc, _trib_async_id)
+                        if proc.get("magistrado"):
+                            # Rebuild context com magistrado
+                            ctx = build_ctx(proc, intent, alias) + extra
+                            s["last_process"]["magistrado"] = proc["magistrado"]
+                            log.info(f"[Tribunal] Magistrado injetado no contexto: {proc['magistrado']}")
+                            break
+
                 eff_lvl="os61" if plevel=="os61" else "juridico"
                 instruc=INSTRUCAO.get(intent,INSTRUCAO["resumo"])
                 fmt_hint=_FMT.get(plevel,_FMT["juridico"])
@@ -1759,29 +1775,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     if item["role"] in {"user","assistant"}: msgs.append(item)
                 msgs[-1]={"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
                 reply=call_openai(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL.get(eff_lvl, 1500))
-
-                # Verificar tribunal async DEPOIS do GPT (teve 10-15s para completar)
-                if _trib_async_id and not proc.get("magistrado"):
-                    import time as _time
-                    _time.sleep(2)  # espera extra curta
-                    proc = check_tribunal_result(proc, _trib_async_id)
-                    if proc.get("magistrado"):
-                        # Injeta magistrado no início da resposta
-                        reply = reply.replace(
-                            "não disponível", proc["magistrado"], 1
-                        ).replace(
-                            "Não disponível", proc["magistrado"], 1
-                        ).replace(
-                            "não consta", proc["magistrado"], 1
-                        ).replace(
-                            "Não consta", proc["magistrado"], 1
-                        ).replace(
-                            "não identificado", proc["magistrado"], 1
-                        )
-                        # Se nenhum replace funcionou, adiciona no início
-                        if proc["magistrado"] not in reply:
-                            reply = f"Juiz(a): {proc['magistrado']}. " + reply
-                        s["last_process"]["magistrado"] = proc["magistrado"]
 
                 s["messages"].append({"role":"assistant","content":reply})
                 if user_id and SUPABASE_OK:
