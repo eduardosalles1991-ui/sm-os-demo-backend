@@ -1241,6 +1241,208 @@ def get_me(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(500, str(e))
 
 # ═══════════════════════════════════════════════════════
+# JURIMETRIA — Análise Estatística
+# ═══════════════════════════════════════════════════════
+from nl_client import classificar_resultado_decisao
+
+KW_RESULTADO_MOV = {
+    "procedente": "procedente",
+    "procedência": "procedente",
+    "condeno": "procedente",
+    "condenar": "procedente",
+    "julgo procedente": "procedente",
+    "improcedente": "improcedente",
+    "improcedência": "improcedente",
+    "julgo improcedente": "improcedente",
+    "parcialmente procedente": "parcial",
+    "parcial procedência": "parcial",
+    "acordo": "acordo",
+    "homologação": "acordo",
+    "homologo": "acordo",
+    "conciliação": "acordo",
+    "arquivamento": "arquivado",
+    "arquivado": "arquivado",
+    "extinto": "extinto",
+    "extinção": "extinto",
+}
+
+def _classificar_processo(proc: dict) -> str:
+    """Classifica resultado do processo pelas movimentações."""
+    movs = proc.get("movimentos_todos") or []
+    for m in movs:
+        nome = (m.get("nome") or "").lower()
+        # Checar keywords
+        for kw, resultado in KW_RESULTADO_MOV.items():
+            if kw in nome:
+                return resultado
+        # Checar complementos
+        for comp in (m.get("complementosTabelados") or []):
+            desc = (comp.get("descricao") or comp.get("nome") or "").lower()
+            for kw, resultado in KW_RESULTADO_MOV.items():
+                if kw in desc:
+                    return resultado
+    return "indeterminado"
+
+def _calcular_duracao_dias(proc: dict) -> Optional[int]:
+    """Calcula duração do processo em dias (ajuizamento até sentença ou última mov)."""
+    from datetime import datetime as _dt
+    data_inicio = proc.get("data_ajuizamento") or ""
+    if not data_inicio:
+        return None
+    try:
+        inicio = _dt.fromisoformat(data_inicio[:10])
+    except:
+        return None
+    # Procura data da sentença
+    for s in (proc.get("sentencas") or []):
+        ds = (s.get("dataHora") or "")[:10]
+        if ds:
+            try:
+                return (_dt.fromisoformat(ds) - inicio).days
+            except:
+                pass
+    # Fallback: última movimentação
+    ult = proc.get("ultima_movimentacao_data") or ""
+    if ult:
+        try:
+            return (_dt.fromisoformat(ult[:10]) - inicio).days
+        except:
+            pass
+    return None
+
+@app.get("/api/jurimetria")
+def api_jurimetria(
+    assunto: str = "Horas Extras",
+    tribunal: str = DATAJUD_DEFAULT_ALIAS,
+    vara: str = "",
+    limit: int = 50,
+):
+    """Endpoint de jurimetria — análise estatística de processos similares."""
+    if not DATAJUD_ENABLED:
+        raise HTTPException(503, "DataJud não habilitado")
+
+    # Construir query
+    must = []
+    # Assunto
+    ass_map = {
+        "horas extras": ASS_HE,
+        "periculosidade": ASS_PERI,
+        "insalubridade": ASS_INS,
+    }
+    ass_lower = assunto.lower()
+    codigos = ass_map.get(ass_lower)
+    if codigos:
+        should = [{"match": {"assuntos.codigo": c}} for c in codigos]
+        must.append({"bool": {"should": should, "minimum_should_match": 1}})
+    else:
+        must.append({"match": {"assuntos.nome": assunto}})
+
+    # Vara
+    if vara:
+        must.append({"match_phrase": {"orgaoJulgador.nome": vara}})
+
+    try:
+        size = min(limit, 100)
+        r = DJ.search(tribunal, {"bool": {"must": must}}, size=size, sort=[{"dataAjuizamento": {"order": "desc"}}])
+        items = DJ.sources(r)
+    except Exception as e:
+        raise HTTPException(500, f"Erro DataJud: {e}")
+
+    # Analisar cada processo
+    resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
+    duracoes = []
+    valores = []
+    por_vara = {}
+    por_ano = {}
+    processos_analisados = []
+
+    for item in items:
+        proc = DJ.normalize(item)
+        resultado = _classificar_processo(proc)
+        resultados[resultado] = resultados.get(resultado, 0) + 1
+
+        duracao = _calcular_duracao_dias(proc)
+        if duracao and duracao > 0:
+            duracoes.append(duracao)
+
+        vc = proc.get("valor_causa")
+        if vc and isinstance(vc, (int, float)) and vc > 0:
+            valores.append(vc)
+
+        # Por vara
+        vara_nome = proc.get("orgao_julgador") or "Não identificada"
+        if vara_nome not in por_vara:
+            por_vara[vara_nome] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+        por_vara[vara_nome]["total"] += 1
+        if resultado in por_vara[vara_nome]:
+            por_vara[vara_nome][resultado] += 1
+
+        # Por ano
+        ano = (proc.get("data_ajuizamento") or "")[:4]
+        if ano and ano.isdigit():
+            if ano not in por_ano:
+                por_ano[ano] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+            por_ano[ano]["total"] += 1
+            if resultado in por_ano[ano]:
+                por_ano[ano][resultado] += 1
+
+        processos_analisados.append({
+            "numero": proc.get("numero_processo"),
+            "resultado": resultado,
+            "duracao_dias": duracao,
+            "valor_causa": vc,
+            "vara": vara_nome,
+            "data_ajuizamento": (proc.get("data_ajuizamento") or "")[:10],
+            "assuntos": proc.get("assuntos", []),
+        })
+
+    total = len(items)
+    favoraveis = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
+    taxa_exito = round(favoraveis / total * 100, 1) if total > 0 else 0
+
+    # Top 10 varas por volume
+    varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
+    varas_stats = []
+    for v_nome, v_data in varas_sorted:
+        v_total = v_data["total"]
+        v_fav = v_data["procedente"] + v_data["parcial"] + v_data["acordo"]
+        varas_stats.append({
+            "vara": v_nome,
+            "total": v_total,
+            "taxa_exito": round(v_fav / v_total * 100, 1) if v_total > 0 else 0,
+            **v_data,
+        })
+
+    return {
+        "assunto": assunto,
+        "tribunal": tribunal,
+        "total_processos": total,
+        "resultados": resultados,
+        "taxa_exito_geral": taxa_exito,
+        "duracao": {
+            "media_dias": round(sum(duracoes) / len(duracoes)) if duracoes else None,
+            "minima_dias": min(duracoes) if duracoes else None,
+            "maxima_dias": max(duracoes) if duracoes else None,
+            "mediana_dias": sorted(duracoes)[len(duracoes)//2] if duracoes else None,
+        },
+        "valores_causa": {
+            "medio": round(sum(valores) / len(valores), 2) if valores else None,
+            "minimo": min(valores) if valores else None,
+            "maximo": max(valores) if valores else None,
+            "total_com_valor": len(valores),
+        },
+        "por_vara": varas_stats,
+        "por_ano": dict(sorted(por_ano.items())),
+        "processos": processos_analisados[:20],
+    }
+
+
+@app.get("/jurimetria")
+def serve_jurimetria():
+    return FileResponse("static/jurimetria.html")
+
+
+# ═══════════════════════════════════════════════════════
 # ADMIN ROUTES
 # ═══════════════════════════════════════════════════════
 ADMIN_EMAILS = {"eduardo.salles1991@gmail.com", "paxelbr177@gmail.com"}
