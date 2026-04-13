@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jurimetrix — Jurimetria</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0B1019;--bg2:#111827;--bg3:#1A2332;--bg4:#243044;
+  --gold:#C8A84B;--gold-light:#F0D999;--gold-dim:rgba(200,168,75,.15);
+  --teal:#2DD4BF;--teal-dim:rgba(45,212,191,.12);
+  --blue:#3B82F6;--red:#EF4444;--orange:#F59E0B;--green:#22C55E;--purple:#A78BFA;
+  --text:#E5E7EB;--text2:#9CA3AF;--text3:#6B7280;
+  --border:#1E293B;--radius:12px;
+}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--gold);text-decoration:none}
+
+/* Header */
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between}
+.header-brand{display:flex;align-items:center;gap:12px}
+.header-brand h1{font-size:22px;font-weight:700;letter-spacing:1px;color:var(--gold)}
+.header-brand span{font-size:12px;color:var(--text3);letter-spacing:2px;text-transform:uppercase}
+.header-nav{display:flex;gap:12px}
+.header-nav a{padding:8px 16px;border-radius:8px;font-size:13px;color:var(--text2);transition:.2s}
+.header-nav a:hover,.header-nav a.active{background:var(--gold-dim);color:var(--gold)}
+
+/* Filters */
+.filters{padding:20px 32px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;border-bottom:1px solid var(--border)}
+.filter-group{display:flex;flex-direction:column;gap:4px}
+.filter-group label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px}
+.filter-group select,.filter-group input{
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:14px;font-family:inherit;min-width:180px}
+.filter-group select:focus,.filter-group input:focus{outline:none;border-color:var(--gold)}
+.btn-search{
+  padding:10px 28px;background:linear-gradient(135deg,var(--gold),#B8942F);color:#0B1019;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.2s;align-self:flex-end}
+.btn-search:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(200,168,75,.3)}
+.btn-search:disabled{opacity:.5;cursor:wait}
+
+/* Metrics */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:24px 32px}
+.metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;position:relative;overflow:hidden}
+.metric::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--gold);opacity:.6}
+.metric.teal::before{background:var(--teal)}
+.metric.blue::before{background:var(--blue)}
+.metric.green::before{background:var(--green)}
+.metric.orange::before{background:var(--orange)}
+.metric-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px}
+.metric-value{font-size:32px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.metric-sub{font-size:12px;color:var(--text2);margin-top:4px}
+
+/* Charts grid */
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:0 32px 24px}
+.chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.chart-card h3{font-size:14px;font-weight:600;color:var(--text2);margin-bottom:16px;text-transform:uppercase;letter-spacing:1px}
+.chart-card canvas{width:100%!important;max-height:280px}
+
+/* Table */
+.table-section{padding:0 32px 32px}
+.table-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.table-card h3{font-size:14px;font-weight:600;color:var(--text2);padding:16px 20px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:1px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 16px;color:var(--text3);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border)}
+td{padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.03)}
+tr:hover td{background:rgba(255,255,255,.02)}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.badge-proc{background:rgba(34,197,94,.15);color:#22C55E}
+.badge-imp{background:rgba(239,68,68,.15);color:#EF4444}
+.badge-parc{background:rgba(245,158,11,.15);color:#F59E0B}
+.badge-acordo{background:rgba(59,130,246,.15);color:#3B82F6}
+.badge-indet{background:rgba(107,114,128,.15);color:#9CA3AF}
+
+/* Loading */
+.loading{display:none;text-align:center;padding:60px;color:var(--text3)}
+.loading.active{display:block}
+.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 16px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.results{display:none}.results.active{display:block}
+.empty-state{text-align:center;padding:80px 32px;color:var(--text3)}
+.empty-state h2{font-size:28px;color:var(--text2);margin-bottom:8px}
+
+/* Responsive */
+@media(max-width:768px){
+  .header{padding:12px 16px}
+  .filters{padding:16px}
+  .metrics{padding:16px;grid-template-columns:1fr 1fr}
+  .charts{grid-template-columns:1fr;padding:0 16px 16px}
+  .table-section{padding:0 16px 16px}
+  .filter-group select,.filter-group input{min-width:140px}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-brand">
+    <h1>JURIMETRIX</h1>
+    <span>Jurimetria</span>
+  </div>
+  <div class="header-nav">
+    <a href="/chat-app">Chat</a>
+    <a href="/painel">Painel</a>
+    <a href="/jurimetria" class="active">Jurimetria</a>
+  </div>
+</div>
+
+<div class="filters">
+  <div class="filter-group">
+    <label>Assunto</label>
+    <select id="assunto">
+      <option value="Horas Extras">Horas Extras</option>
+      <option value="Periculosidade">Adicional de Periculosidade</option>
+      <option value="Insalubridade">Adicional de Insalubridade</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Tribunal</label>
+    <select id="tribunal">
+      <option value="api_publica_trt1">TRT1 — Rio de Janeiro</option>
+      <option value="api_publica_trt2" selected>TRT2 — São Paulo</option>
+      <option value="api_publica_trt3">TRT3 — Minas Gerais</option>
+      <option value="api_publica_trt4">TRT4 — Rio Grande do Sul</option>
+      <option value="api_publica_trt5">TRT5 — Bahia</option>
+      <option value="api_publica_trt6">TRT6 — Pernambuco</option>
+      <option value="api_publica_trt7">TRT7 — Ceará</option>
+      <option value="api_publica_trt8">TRT8 — Pará</option>
+      <option value="api_publica_trt9">TRT9 — Paraná</option>
+      <option value="api_publica_trt10">TRT10 — Distrito Federal</option>
+      <option value="api_publica_trt11">TRT11 — Amazonas</option>
+      <option value="api_publica_trt12">TRT12 — Santa Catarina</option>
+      <option value="api_publica_trt13">TRT13 — Paraíba</option>
+      <option value="api_publica_trt14">TRT14 — Rondônia</option>
+      <option value="api_publica_trt15">TRT15 — Campinas</option>
+      <option value="api_publica_trt16">TRT16 — Maranhão</option>
+      <option value="api_publica_trt17">TRT17 — Espírito Santo</option>
+      <option value="api_publica_trt18">TRT18 — Goiás</option>
+      <option value="api_publica_trt19">TRT19 — Alagoas</option>
+      <option value="api_publica_trt20">TRT20 — Sergipe</option>
+      <option value="api_publica_trt21">TRT21 — Rio Grande do Norte</option>
+      <option value="api_publica_trt22">TRT22 — Piauí</option>
+      <option value="api_publica_trt23">TRT23 — Mato Grosso</option>
+      <option value="api_publica_trt24">TRT24 — Mato Grosso do Sul</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Vara (opcional)</label>
+    <input type="text" id="vara" placeholder="Ex: 25ª Vara">
+  </div>
+  <div class="filter-group">
+    <label>Processos</label>
+    <select id="limit">
+      <option value="30">30</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+    </select>
+  </div>
+  <button class="btn-search" id="btnSearch" onclick="runAnalysis()">ANALISAR</button>
+</div>
+
+<div class="empty-state" id="emptyState">
+  <h2>Análise Jurimetrica</h2>
+  <p>Selecione os filtros acima e clique em <strong>ANALISAR</strong> para gerar estatísticas.</p>
+</div>
+
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <p>Analisando processos no DataJud...</p>
+</div>
+
+<div class="results" id="results">
+  <div class="metrics" id="metricsGrid"></div>
+  <div class="charts">
+    <div class="chart-card"><h3>Resultado das decisões</h3><canvas id="chartResultados"></canvas></div>
+    <div class="chart-card"><h3>Taxa de êxito por vara</h3><canvas id="chartVaras"></canvas></div>
+    <div class="chart-card"><h3>Processos por ano</h3><canvas id="chartAnos"></canvas></div>
+    <div class="chart-card"><h3>Distribuição de duração (dias)</h3><canvas id="chartDuracao"></canvas></div>
+  </div>
+  <div class="table-section">
+    <div class="table-card">
+      <h3>Processos analisados</h3>
+      <table><thead><tr>
+        <th>Processo</th><th>Resultado</th><th>Vara</th><th>Duração</th><th>Ajuizamento</th>
+      </tr></thead><tbody id="tableBody"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script>
+const BACKEND = "https://sm-os-demo-backend.onrender.com";
+let charts = {};
+
+function destroyCharts(){
+  Object.values(charts).forEach(c => { if(c && c.destroy) c.destroy() });
+  charts = {};
+}
+
+async function runAnalysis(){
+  const btn = document.getElementById("btnSearch");
+  btn.disabled = true; btn.textContent = "ANALISANDO...";
+  document.getElementById("emptyState").style.display = "none";
+  document.getElementById("results").classList.remove("active");
+  document.getElementById("loading").classList.add("active");
+
+  const params = new URLSearchParams({
+    assunto: document.getElementById("assunto").value,
+    tribunal: document.getElementById("tribunal").value,
+    vara: document.getElementById("vara").value,
+    limit: document.getElementById("limit").value,
+  });
+
+  try {
+    const r = await fetch(`${BACKEND}/api/jurimetria?${params}`);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    renderDashboard(data);
+  } catch(e) {
+    alert("Erro ao analisar: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "ANALISAR";
+    document.getElementById("loading").classList.remove("active");
+  }
+}
+
+function renderDashboard(d){
+  destroyCharts();
+  document.getElementById("results").classList.add("active");
+
+  // Metrics
+  const dur = d.duracao || {};
+  const val = d.valores_causa || {};
+  document.getElementById("metricsGrid").innerHTML = `
+    <div class="metric">
+      <div class="metric-label">Processos analisados</div>
+      <div class="metric-value">${d.total_processos}</div>
+      <div class="metric-sub">${d.assunto} — ${d.tribunal.replace("api_publica_","").toUpperCase()}</div>
+    </div>
+    <div class="metric teal">
+      <div class="metric-label">Taxa de êxito</div>
+      <div class="metric-value" style="color:${d.taxa_exito_geral >= 50 ? 'var(--teal)' : 'var(--red)'}">${d.taxa_exito_geral}%</div>
+      <div class="metric-sub">Procedente + Parcial + Acordo</div>
+    </div>
+    <div class="metric blue">
+      <div class="metric-label">Duração média</div>
+      <div class="metric-value">${dur.media_dias ? Math.round(dur.media_dias/30) + ' meses' : 'N/D'}</div>
+      <div class="metric-sub">${dur.media_dias ? dur.media_dias + ' dias' : ''} ${dur.mediana_dias ? '(mediana: ' + dur.mediana_dias + 'd)' : ''}</div>
+    </div>
+    <div class="metric orange">
+      <div class="metric-label">Valor médio da causa</div>
+      <div class="metric-value">${val.medio ? 'R$ ' + Number(val.medio).toLocaleString('pt-BR') : 'N/D'}</div>
+      <div class="metric-sub">${val.total_com_valor || 0} processos com valor informado</div>
+    </div>
+  `;
+
+  // Chart: Resultados (doughnut)
+  const res = d.resultados || {};
+  charts.resultados = new Chart(document.getElementById("chartResultados"), {
+    type: "doughnut",
+    data: {
+      labels: ["Procedente","Improcedente","Parcial","Acordo","Arquivado/Extinto","Indeterminado"],
+      datasets: [{
+        data: [res.procedente||0, res.improcedente||0, res.parcial||0, res.acordo||0,
+               (res.arquivado||0)+(res.extinto||0), res.indeterminado||0],
+        backgroundColor: ["#22C55E","#EF4444","#F59E0B","#3B82F6","#6B7280","#374151"],
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "right", labels: { color: "#9CA3AF", font: { size: 12 }, padding: 12 } },
+      },
+    }
+  });
+
+  // Chart: Varas (horizontal bar)
+  const varas = d.por_vara || [];
+  charts.varas = new Chart(document.getElementById("chartVaras"), {
+    type: "bar",
+    data: {
+      labels: varas.map(v => v.vara.length > 30 ? v.vara.slice(0,30)+'…' : v.vara),
+      datasets: [{
+        label: "Taxa de êxito %",
+        data: varas.map(v => v.taxa_exito),
+        backgroundColor: varas.map(v => v.taxa_exito >= 50 ? "rgba(45,212,191,.7)" : "rgba(239,68,68,.7)"),
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      indexAxis: "y", responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { max: 100, grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280", callback: v => v+"%" } },
+        y: { grid: { display: false }, ticks: { color: "#9CA3AF", font: { size: 11 } } },
+      },
+    }
+  });
+
+  // Chart: Por ano (line)
+  const anos = d.por_ano || {};
+  const anosKeys = Object.keys(anos).sort();
+  charts.anos = new Chart(document.getElementById("chartAnos"), {
+    type: "line",
+    data: {
+      labels: anosKeys,
+      datasets: [
+        { label: "Total", data: anosKeys.map(a => anos[a].total), borderColor: "#C8A84B", backgroundColor: "rgba(200,168,75,.1)", fill: true, tension: .3 },
+        { label: "Procedente", data: anosKeys.map(a => anos[a].procedente), borderColor: "#22C55E", tension: .3, borderDash: [4,4] },
+        { label: "Improcedente", data: anosKeys.map(a => anos[a].improcedente), borderColor: "#EF4444", tension: .3, borderDash: [4,4] },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: "#9CA3AF", font: { size: 11 } } } },
+      scales: {
+        x: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
+        y: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
+      },
+    }
+  });
+
+  // Chart: Duração (bar histogram)
+  const procs = d.processos || [];
+  const durs = procs.map(p => p.duracao_dias).filter(d => d && d > 0);
+  const buckets = {"<6m":0,"6m-1a":0,"1-2a":0,"2-3a":0,"3-5a":0,">5a":0};
+  durs.forEach(d => {
+    if(d < 180) buckets["<6m"]++;
+    else if(d < 365) buckets["6m-1a"]++;
+    else if(d < 730) buckets["1-2a"]++;
+    else if(d < 1095) buckets["2-3a"]++;
+    else if(d < 1825) buckets["3-5a"]++;
+    else buckets[">5a"]++;
+  });
+  charts.duracao = new Chart(document.getElementById("chartDuracao"), {
+    type: "bar",
+    data: {
+      labels: Object.keys(buckets),
+      datasets: [{ data: Object.values(buckets), backgroundColor: ["#3B82F6","#2DD4BF","#22C55E","#F59E0B","#EF4444","#A78BFA"], borderRadius: 6 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: "#9CA3AF" } },
+        y: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
+      },
+    }
+  });
+
+  // Table
+  const badges = {
+    procedente: "badge-proc", improcedente: "badge-imp", parcial: "badge-parc",
+    acordo: "badge-acordo", indeterminado: "badge-indet", arquivado: "badge-indet", extinto: "badge-indet",
+  };
+  document.getElementById("tableBody").innerHTML = procs.map(p => `<tr>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.numero || 'N/D'}</td>
+    <td><span class="badge ${badges[p.resultado] || 'badge-indet'}">${p.resultado}</span></td>
+    <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.vara || ''}</td>
+    <td>${p.duracao_dias ? p.duracao_dias + 'd' : '—'}</td>
+    <td>${p.data_ajuizamento || ''}</td>
+  </tr>`).join("");
+}
+</script>
+</body>
+</html>
