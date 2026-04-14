@@ -133,28 +133,170 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <div id="tab-assunto" class="filters hidden">
   <div class="filter-group">
     <label>Assunto</label>
-    <select id="assunto">
-      <option value="Horas Extras">Horas Extras</option>
-      <option value="Periculosidade">Adicional de Periculosidade</option>
-      <option value="Insalubridade">Adicional de Insalubridade</option>
-    </select>
+    <input type="text" id="assunto" list="assuntosList" placeholder="Digite ou selecione..." value="Horas Extras" style="min-width:260px">
+    <datalist id="assuntosList">
+      <!-- TRABALHISTA -->
+      <option value="Horas Extras">
+      <option value="Adicional de Horas Extras">
+      <option value="Adicional de Insalubridade">
+      <option value="Adicional de Periculosidade">
+      <option value="Adicional Noturno">
+      <option value="Aviso Prévio">
+      <option value="FGTS">
+      <option value="Multa de 40% do FGTS">
+      <option value="Férias Proporcionais">
+      <option value="Décimo Terceiro Salário">
+      <option value="Rescisão Indireta">
+      <option value="Reconhecimento de Relação de Emprego">
+      <option value="Assédio Moral">
+      <option value="Assédio Sexual">
+      <option value="Dano Moral">
+      <option value="Intervalo Intrajornada">
+      <option value="Acúmulo de Função">
+      <option value="Equiparação Salarial">
+      <option value="Desvio de Função">
+      <option value="Terceirização">
+      <option value="Estabilidade Provisória">
+      <option value="Gestante">
+      <option value="Acidente de Trabalho">
+      <option value="Doença Ocupacional">
+      <!-- CÍVEL -->
+      <option value="Indenização por Dano Moral">
+      <option value="Indenização por Dano Material">
+      <option value="Obrigação de Fazer">
+      <option value="Obrigação de Não Fazer">
+      <option value="Cobrança">
+      <option value="Despejo por Falta de Pagamento">
+      <option value="Ação de Despejo">
+      <option value="Revisão Contratual">
+      <option value="Responsabilidade Civil">
+      <option value="Enriquecimento sem Causa">
+      <option value="Usucapião">
+      <option value="Inventário">
+      <option value="Divórcio">
+      <option value="Alimentos">
+      <option value="Guarda">
+      <option value="Investigação de Paternidade">
+      <option value="Alienação Parental">
+      <!-- CONSUMIDOR -->
+      <option value="Direito do Consumidor">
+      <option value="Inclusão Indevida em Cadastro de Inadimplentes">
+      <option value="Vício do Produto">
+      <option value="Falha na Prestação do Serviço">
+      <option value="Cobrança Indevida">
+      <option value="Plano de Saúde">
+      <option value="Seguro">
+      <option value="Telefonia">
+      <option value="Transporte Aéreo">
+      <option value="Compra Online">
+      <!-- PENAL -->
+      <option value="Furto">
+      <option value="Roubo">
+      <option value="Homicídio">
+      <option value="Tráfico de Drogas">
+      <option value="Estelionato">
+      <option value="Lesão Corporal">
+      <option value="Violência Doméstica">
+      <option value="Crimes Contra a Honra">
+      <option value="Ameaça">
+      <!-- TRIBUTÁRIO -->
+      <option value="ICMS">
+      <option value="ISS">
+      <option value="IPTU">
+      <option value="IPVA">
+      <option value="Imposto de Renda">
+      <option value="Contribuição Previdenciária">
+      <option value="Execução Fiscal">
+      <option value="Exclusão do Simples Nacional">
+      <option value="Repetição de Indébito">
+      <!-- ADMINISTRATIVO -->
+      <option value="Concurso Público">
+      <option value="Servidor Público">
+      <option value="Improbidade Administrativa">
+      <option value="Licitação">
+      <option value="Desapropriação">
+      <option value="Mandado de Segurança">
+      <!-- PREVIDENCIÁRIO -->
+      <option value="Aposentadoria por Idade">
+      <option value="Aposentadoria por Invalidez">
+      <option value="Aposentadoria por Tempo de Contribuição">
+      <option value="Auxílio-Doença">
+      <option value="Benefício Assistencial">
+      <option value="Pensão por Morte">
+      <option value="Salário-Maternidade">
+    </datalist>
   </div>
   <div class="filter-group">
     <label>Tribunal</label>
     <select id="tribunal">
-      <option value="api_publica_trt1">TRT1 — Rio de Janeiro</option>
-      <option value="api_publica_trt2" selected>TRT2 — São Paulo</option>
-      <option value="api_publica_trt3">TRT3 — Minas Gerais</option>
-      <option value="api_publica_trt4">TRT4 — Rio Grande do Sul</option>
-      <option value="api_publica_trt5">TRT5 — Bahia</option>
-      <option value="api_publica_trt6">TRT6 — Pernambuco</option>
-      <option value="api_publica_trt7">TRT7 — Ceará</option>
-      <option value="api_publica_trt9">TRT9 — Paraná</option>
-      <option value="api_publica_trt10">TRT10 — Distrito Federal</option>
-      <option value="api_publica_trt12">TRT12 — Santa Catarina</option>
-      <option value="api_publica_trt15">TRT15 — Campinas</option>
-      <option value="api_publica_trt18">TRT18 — Goiás</option>
-      <option value="api_publica_trt24">TRT24 — Mato Grosso do Sul</option>
+      <optgroup label="Justiça do Trabalho">
+        <option value="api_publica_tst">TST — Tribunal Superior</option>
+        <option value="api_publica_trt1">TRT1 — Rio de Janeiro</option>
+        <option value="api_publica_trt2" selected>TRT2 — São Paulo</option>
+        <option value="api_publica_trt3">TRT3 — Minas Gerais</option>
+        <option value="api_publica_trt4">TRT4 — Rio Grande do Sul</option>
+        <option value="api_publica_trt5">TRT5 — Bahia</option>
+        <option value="api_publica_trt6">TRT6 — Pernambuco</option>
+        <option value="api_publica_trt7">TRT7 — Ceará</option>
+        <option value="api_publica_trt8">TRT8 — Pará</option>
+        <option value="api_publica_trt9">TRT9 — Paraná</option>
+        <option value="api_publica_trt10">TRT10 — Distrito Federal</option>
+        <option value="api_publica_trt11">TRT11 — Amazonas</option>
+        <option value="api_publica_trt12">TRT12 — Santa Catarina</option>
+        <option value="api_publica_trt13">TRT13 — Paraíba</option>
+        <option value="api_publica_trt14">TRT14 — Rondônia</option>
+        <option value="api_publica_trt15">TRT15 — Campinas</option>
+        <option value="api_publica_trt16">TRT16 — Maranhão</option>
+        <option value="api_publica_trt17">TRT17 — Espírito Santo</option>
+        <option value="api_publica_trt18">TRT18 — Goiás</option>
+        <option value="api_publica_trt19">TRT19 — Alagoas</option>
+        <option value="api_publica_trt20">TRT20 — Sergipe</option>
+        <option value="api_publica_trt21">TRT21 — Rio G. do Norte</option>
+        <option value="api_publica_trt22">TRT22 — Piauí</option>
+        <option value="api_publica_trt23">TRT23 — Mato Grosso</option>
+        <option value="api_publica_trt24">TRT24 — Mato G. do Sul</option>
+      </optgroup>
+      <optgroup label="Justiça Estadual">
+        <option value="api_publica_tjsp">TJSP — São Paulo</option>
+        <option value="api_publica_tjrj">TJRJ — Rio de Janeiro</option>
+        <option value="api_publica_tjmg">TJMG — Minas Gerais</option>
+        <option value="api_publica_tjrs">TJRS — Rio Grande do Sul</option>
+        <option value="api_publica_tjpr">TJPR — Paraná</option>
+        <option value="api_publica_tjsc">TJSC — Santa Catarina</option>
+        <option value="api_publica_tjba">TJBA — Bahia</option>
+        <option value="api_publica_tjpe">TJPE — Pernambuco</option>
+        <option value="api_publica_tjce">TJCE — Ceará</option>
+        <option value="api_publica_tjgo">TJGO — Goiás</option>
+        <option value="api_publica_tjdft">TJDFT — Distrito Federal</option>
+        <option value="api_publica_tjes">TJES — Espírito Santo</option>
+        <option value="api_publica_tjpa">TJPA — Pará</option>
+        <option value="api_publica_tjam">TJAM — Amazonas</option>
+        <option value="api_publica_tjma">TJMA — Maranhão</option>
+        <option value="api_publica_tjms">TJMS — Mato G. do Sul</option>
+        <option value="api_publica_tjmt">TJMT — Mato Grosso</option>
+        <option value="api_publica_tjal">TJAL — Alagoas</option>
+        <option value="api_publica_tjse">TJSE — Sergipe</option>
+        <option value="api_publica_tjpb">TJPB — Paraíba</option>
+        <option value="api_publica_tjrn">TJRN — Rio G. do Norte</option>
+        <option value="api_publica_tjpi">TJPI — Piauí</option>
+        <option value="api_publica_tjro">TJRO — Rondônia</option>
+        <option value="api_publica_tjto">TJTO — Tocantins</option>
+        <option value="api_publica_tjac">TJAC — Acre</option>
+        <option value="api_publica_tjap">TJAP — Amapá</option>
+        <option value="api_publica_tjrr">TJRR — Roraima</option>
+      </optgroup>
+      <optgroup label="Justiça Federal">
+        <option value="api_publica_trf1">TRF1 — 1ª Região</option>
+        <option value="api_publica_trf2">TRF2 — 2ª Região</option>
+        <option value="api_publica_trf3">TRF3 — 3ª Região</option>
+        <option value="api_publica_trf4">TRF4 — 4ª Região</option>
+        <option value="api_publica_trf5">TRF5 — 5ª Região</option>
+        <option value="api_publica_trf6">TRF6 — 6ª Região</option>
+      </optgroup>
+      <optgroup label="Tribunais Superiores">
+        <option value="api_publica_stj">STJ — Superior Tribunal</option>
+        <option value="api_publica_stf">STF — Supremo Tribunal</option>
+      </optgroup>
     </select>
   </div>
   <div class="filter-group">
