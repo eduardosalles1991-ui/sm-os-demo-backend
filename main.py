@@ -1344,7 +1344,7 @@ def api_jurimetria(
 
     try:
         size = min(limit, 100)
-        r = DJ.search(tribunal, {"bool": {"must": must}}, size=size, sort=[{"dataAjuizamento": {"order": "desc"}}])
+        r = DJ.search(tribunal, {"bool": {"must": must}}, size=size)
         items = DJ.sources(r)
     except Exception as e:
         raise HTTPException(500, f"Erro DataJud: {e}")
