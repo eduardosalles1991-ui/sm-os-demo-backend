@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -1439,7 +1440,13 @@ def api_jurimetria(
 
 @app.get("/jurimetria")
 def serve_jurimetria():
-    return FileResponse("static/jurimetria.html")
+    from fastapi.responses import FileResponse, HTMLResponse
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "static", "jurimetria.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return HTMLResponse("<h1>jurimetria.html não encontrado em /static/</h1>", status_code=404)
 
 
 # ═══════════════════════════════════════════════════════
