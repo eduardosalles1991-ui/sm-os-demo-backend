@@ -1553,6 +1553,7 @@ def api_jurimetria_processo(numero: str):
     resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
     duracoes = []
     valores = []
+    por_vara = {}
     por_ano = {}
     processos_analisados = []
 
@@ -1565,9 +1566,10 @@ def api_jurimetria_processo(numero: str):
         if duracao and duracao > 0:
             duracoes.append(duracao)
 
-        vc = p.get("valor_causa")
+        # Valor da causa — múltiplos formatos
+        vc = p.get("valor_causa") or item.get("valorCausa")
         if isinstance(vc, dict):
-            vc = vc.get("valor")
+            vc = vc.get("valor") or vc.get("amount") or vc.get("valorCausa")
         if isinstance(vc, str):
             try:
                 vc = float(re.sub(r'[^\d.,]', '', vc).replace(',', '.'))
@@ -1575,6 +1577,16 @@ def api_jurimetria_processo(numero: str):
                 vc = None
         if vc and isinstance(vc, (int, float)) and vc > 0:
             valores.append(float(vc))
+        else:
+            vc = None
+
+        # Por vara
+        vara_nome = p.get("orgao_julgador") or "Não identificada"
+        if vara_nome not in por_vara:
+            por_vara[vara_nome] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+        por_vara[vara_nome]["total"] += 1
+        if resultado in por_vara[vara_nome]:
+            por_vara[vara_nome][resultado] += 1
 
         ano_date = _parse_datajud_date(p.get("data_ajuizamento"))
         ano = ano_date[:4] if ano_date else ""
@@ -1590,7 +1602,7 @@ def api_jurimetria_processo(numero: str):
             "resultado": resultado,
             "duracao_dias": duracao,
             "valor_causa": vc,
-            "vara": p.get("orgao_julgador") or "",
+            "vara": vara_nome,
             "data_ajuizamento": _format_date_br(_parse_datajud_date(p.get("data_ajuizamento"))),
             "assuntos": p.get("assuntos", []),
             "magistrado": p.get("magistrado"),
@@ -1605,6 +1617,19 @@ def api_jurimetria_processo(numero: str):
     determinados = total - resultados["indeterminado"]
     prob_favoravel = round(favoraveis / determinados * 100, 1) if determinados > 0 else None
     prob_desfavoravel = round(desfavoraveis / determinados * 100, 1) if determinados > 0 else None
+
+    # Top 10 varas por volume
+    varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
+    varas_stats = []
+    for v_nome, v_data in varas_sorted:
+        v_total = v_data["total"]
+        v_fav = v_data["procedente"] + v_data["parcial"] + v_data["acordo"]
+        varas_stats.append({
+            "vara": v_nome,
+            "total": v_total,
+            "taxa_exito": round(v_fav / v_total * 100, 1) if v_total > 0 else 0,
+            **v_data,
+        })
 
     return {
         "processo": {
@@ -1637,6 +1662,7 @@ def api_jurimetria_processo(numero: str):
                 "medio": round(sum(valores) / len(valores), 2) if valores else None,
                 "total_com_valor": len(valores),
             },
+            "por_vara": varas_stats,
             "por_ano": dict(sorted(por_ano.items())),
         },
         "processos_similares": processos_analisados[:20],
