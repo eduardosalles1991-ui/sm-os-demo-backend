@@ -1324,28 +1324,27 @@ def api_jurimetria(
 
     # Construir query
     must = []
-    # Assunto
-    ass_map = {
-        "horas extras": ASS_HE,
-        "periculosidade": ASS_PERI,
-        "insalubridade": ASS_INS,
+    # Assunto — busca por nome (mais confiável que código)
+    ass_names = {
+        "horas extras": "Horas Extras",
+        "periculosidade": "Adicional de Periculosidade",
+        "insalubridade": "Adicional de Insalubridade",
     }
     ass_lower = assunto.lower()
-    codigos = ass_map.get(ass_lower)
-    if codigos:
-        should = [{"match": {"assuntos.codigo": c}} for c in codigos]
-        must.append({"bool": {"should": should, "minimum_should_match": 1}})
-    else:
-        must.append({"match": {"assuntos.nome": assunto}})
+    nome_assunto = ass_names.get(ass_lower, assunto)
+    must.append({"match_phrase": {"assuntos.nome": nome_assunto}})
 
     # Vara
     if vara:
         must.append({"match_phrase": {"orgaoJulgador.nome": vara}})
 
     try:
-        size = min(limit, 100)
-        r = DJ.search(tribunal, {"bool": {"must": must}}, size=size)
+        size = min(limit, 50)
+        query = {"bool": {"must": must}}
+        log.info(f"[Jurimetria] Query: {json.dumps(query)} | tribunal={tribunal} | size={size}")
+        r = DJ.search(tribunal, query, size=size)
         items = DJ.sources(r)
+        log.info(f"[Jurimetria] Resultados: {len(items)} processos encontrados")
     except Exception as e:
         raise HTTPException(500, f"Erro DataJud: {e}")
 
