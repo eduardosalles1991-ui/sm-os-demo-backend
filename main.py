@@ -1284,29 +1284,67 @@ def _classificar_processo(proc: dict) -> str:
                     return resultado
     return "indeterminado"
 
+def _parse_datajud_date(raw) -> Optional[str]:
+    """Parseia datas DataJud em múltiplos formatos → YYYY-MM-DD."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    # ISO: 2019-10-21T10:00:00
+    if len(s) >= 10 and s[4] == '-':
+        return s[:10]
+    # Compact: 20191021 ou 20191021100000
+    digits = re.sub(r'\D', '', s)
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return None
+
+def _format_cnj(numero) -> str:
+    """Formata número de processo no padrão CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO."""
+    if not numero:
+        return ""
+    digits = re.sub(r'\D', '', str(numero))
+    if len(digits) == 20:
+        return f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:]}"
+    return str(numero)
+
+def _format_date_br(iso_date) -> str:
+    """Converte YYYY-MM-DD → DD/MM/YYYY."""
+    if not iso_date or len(str(iso_date)) < 10:
+        return ""
+    s = str(iso_date)[:10]
+    parts = s.split("-")
+    if len(parts) == 3:
+        return f"{parts[2]}/{parts[1]}/{parts[0]}"
+    return s
+
 def _calcular_duracao_dias(proc: dict) -> Optional[int]:
     """Calcula duração do processo em dias (ajuizamento até sentença ou última mov)."""
     from datetime import datetime as _dt
-    data_inicio = proc.get("data_ajuizamento") or ""
+    data_inicio = _parse_datajud_date(proc.get("data_ajuizamento"))
     if not data_inicio:
         return None
     try:
-        inicio = _dt.fromisoformat(data_inicio[:10])
+        inicio = _dt.fromisoformat(data_inicio)
     except:
         return None
     # Procura data da sentença
     for s in (proc.get("sentencas") or []):
-        ds = (s.get("dataHora") or "")[:10]
+        ds = _parse_datajud_date(s.get("dataHora"))
         if ds:
             try:
-                return (_dt.fromisoformat(ds) - inicio).days
+                dias = (_dt.fromisoformat(ds) - inicio).days
+                if dias > 0:
+                    return dias
             except:
                 pass
     # Fallback: última movimentação
-    ult = proc.get("ultima_movimentacao_data") or ""
+    ult_raw = proc.get("ultima_movimentacao_data") or ""
+    ult = _parse_datajud_date(ult_raw)
     if ult:
         try:
-            return (_dt.fromisoformat(ult[:10]) - inicio).days
+            dias = (_dt.fromisoformat(ult) - inicio).days
+            if dias > 0:
+                return dias
         except:
             pass
     return None
@@ -1366,8 +1404,16 @@ def api_jurimetria(
             duracoes.append(duracao)
 
         vc = proc.get("valor_causa")
+        # DataJud pode retornar como dict, string ou número
+        if isinstance(vc, dict):
+            vc = vc.get("valor") or vc.get("amount")
+        if isinstance(vc, str):
+            try:
+                vc = float(re.sub(r'[^\d.,]', '', vc).replace(',', '.'))
+            except:
+                vc = None
         if vc and isinstance(vc, (int, float)) and vc > 0:
-            valores.append(vc)
+            valores.append(float(vc))
 
         # Por vara
         vara_nome = proc.get("orgao_julgador") or "Não identificada"
@@ -1378,7 +1424,8 @@ def api_jurimetria(
             por_vara[vara_nome][resultado] += 1
 
         # Por ano
-        ano = (proc.get("data_ajuizamento") or "")[:4]
+        ano_date = _parse_datajud_date(proc.get("data_ajuizamento"))
+        ano = ano_date[:4] if ano_date else ""
         if ano and ano.isdigit():
             if ano not in por_ano:
                 por_ano[ano] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
@@ -1387,12 +1434,12 @@ def api_jurimetria(
                 por_ano[ano][resultado] += 1
 
         processos_analisados.append({
-            "numero": proc.get("numero_processo"),
+            "numero": _format_cnj(proc.get("numero_processo")),
             "resultado": resultado,
             "duracao_dias": duracao,
             "valor_causa": vc,
             "vara": vara_nome,
-            "data_ajuizamento": (proc.get("data_ajuizamento") or "")[:10],
+            "data_ajuizamento": _format_date_br(_parse_datajud_date(proc.get("data_ajuizamento"))),
             "assuntos": proc.get("assuntos", []),
         })
 
@@ -1424,6 +1471,7 @@ def api_jurimetria(
             "minima_dias": min(duracoes) if duracoes else None,
             "maxima_dias": max(duracoes) if duracoes else None,
             "mediana_dias": sorted(duracoes)[len(duracoes)//2] if duracoes else None,
+            "total_com_duracao": len(duracoes),
         },
         "valores_causa": {
             "medio": round(sum(valores) / len(valores), 2) if valores else None,
@@ -1434,6 +1482,164 @@ def api_jurimetria(
         "por_vara": varas_stats,
         "por_ano": dict(sorted(por_ano.items())),
         "processos": processos_analisados[:20],
+    }
+
+
+@app.get("/api/jurimetria/processo/{numero}")
+def api_jurimetria_processo(numero: str):
+    """
+    Jurimetria personalizada: busca processo, identifica vara/juiz/assunto,
+    e analisa casos similares para calcular probabilidades.
+    """
+    if not DATAJUD_ENABLED:
+        raise HTTPException(503, "DataJud não habilitado")
+
+    # 1. Buscar o processo
+    alias = infer_alias(numero) or DATAJUD_DEFAULT_ALIAS
+    try:
+        raw = DJ.get_process(numero, alias)
+        items = DJ.sources(raw)
+        if not items:
+            raise HTTPException(404, f"Processo {numero} não encontrado")
+        proc = DJ.normalize(items[0])
+        proc = enrich_with_escavador(proc, numero)
+    except DataJudError as e:
+        raise HTTPException(502, f"Erro DataJud: {e}")
+
+    orgao = proc.get("orgao_julgador") or ""
+    assuntos = proc.get("assuntos") or []
+    assunto_principal = assuntos[0] if assuntos else ""
+    assuntos_codigos = proc.get("assuntos_codigos") or []
+
+    # 2. Buscar processos similares (mesma vara + mesmo assunto)
+    similares_items = []
+
+    # 2a. Por vara + assunto (mais específico)
+    if orgao and assuntos_codigos:
+        try:
+            must = [{"match": {"orgaoJulgador.nome": orgao}}]
+            should_ass = [{"match": {"assuntos.codigo": c}} for c in assuntos_codigos[:3]]
+            must.append({"bool": {"should": should_ass, "minimum_should_match": 1}})
+            r = DJ.search(alias, {"bool": {"must": must}}, size=50)
+            similares_items = [s for s in DJ.sources(r) if norm_num(s.get("numeroProcesso","")) != norm_num(numero)]
+        except:
+            pass
+
+    # 2b. Se poucos resultados, busca só por vara
+    if len(similares_items) < 10 and orgao:
+        try:
+            r2 = DJ.search(alias, {"match_phrase": {"orgaoJulgador.nome": orgao}}, size=50)
+            existing_nums = {norm_num(s.get("numeroProcesso","")) for s in similares_items}
+            for s in DJ.sources(r2):
+                if norm_num(s.get("numeroProcesso","")) not in existing_nums and norm_num(s.get("numeroProcesso","")) != norm_num(numero):
+                    similares_items.append(s)
+                    existing_nums.add(norm_num(s.get("numeroProcesso","")))
+        except:
+            pass
+
+    # 2c. Se ainda poucos, busca por assunto no tribunal
+    if len(similares_items) < 10 and assunto_principal:
+        try:
+            r3 = DJ.search(alias, {"match_phrase": {"assuntos.nome": assunto_principal}}, size=30)
+            existing_nums = {norm_num(s.get("numeroProcesso","")) for s in similares_items}
+            for s in DJ.sources(r3):
+                if norm_num(s.get("numeroProcesso","")) not in existing_nums and norm_num(s.get("numeroProcesso","")) != norm_num(numero):
+                    similares_items.append(s)
+                    existing_nums.add(norm_num(s.get("numeroProcesso","")))
+        except:
+            pass
+
+    # 3. Analisar similares
+    resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
+    duracoes = []
+    valores = []
+    por_ano = {}
+    processos_analisados = []
+
+    for item in similares_items[:50]:
+        p = DJ.normalize(item)
+        resultado = _classificar_processo(p)
+        resultados[resultado] = resultados.get(resultado, 0) + 1
+
+        duracao = _calcular_duracao_dias(p)
+        if duracao and duracao > 0:
+            duracoes.append(duracao)
+
+        vc = p.get("valor_causa")
+        if isinstance(vc, dict):
+            vc = vc.get("valor")
+        if isinstance(vc, str):
+            try:
+                vc = float(re.sub(r'[^\d.,]', '', vc).replace(',', '.'))
+            except:
+                vc = None
+        if vc and isinstance(vc, (int, float)) and vc > 0:
+            valores.append(float(vc))
+
+        ano_date = _parse_datajud_date(p.get("data_ajuizamento"))
+        ano = ano_date[:4] if ano_date else ""
+        if ano and ano.isdigit():
+            if ano not in por_ano:
+                por_ano[ano] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+            por_ano[ano]["total"] += 1
+            if resultado in por_ano[ano]:
+                por_ano[ano][resultado] += 1
+
+        processos_analisados.append({
+            "numero": _format_cnj(p.get("numero_processo")),
+            "resultado": resultado,
+            "duracao_dias": duracao,
+            "valor_causa": vc,
+            "vara": p.get("orgao_julgador") or "",
+            "data_ajuizamento": _format_date_br(_parse_datajud_date(p.get("data_ajuizamento"))),
+            "assuntos": p.get("assuntos", []),
+            "magistrado": p.get("magistrado"),
+        })
+
+    total = len(similares_items[:50])
+    favoraveis = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
+    taxa_exito = round(favoraveis / total * 100, 1) if total > 0 else 0
+
+    # Probabilidade calculada
+    desfavoraveis = resultados["improcedente"]
+    determinados = total - resultados["indeterminado"]
+    prob_favoravel = round(favoraveis / determinados * 100, 1) if determinados > 0 else None
+    prob_desfavoravel = round(desfavoraveis / determinados * 100, 1) if determinados > 0 else None
+
+    return {
+        "processo": {
+            "numero": _format_cnj(proc.get("numero_processo")),
+            "classe": proc.get("classe_nome"),
+            "vara": orgao,
+            "tribunal": alias_nome(alias),
+            "assuntos": assuntos,
+            "magistrado": proc.get("magistrado"),
+            "polo_ativo": proc.get("polo_ativo", []),
+            "polo_passivo": proc.get("polo_passivo", []),
+            "data_ajuizamento": _format_date_br(_parse_datajud_date(proc.get("data_ajuizamento"))),
+            "valor_causa": proc.get("valor_causa"),
+            "movimentos_total": proc.get("movimentos_total", 0),
+            "ultima_movimentacao": proc.get("ultima_movimentacao_nome"),
+            "ultima_data": _format_date_br(_parse_datajud_date(proc.get("ultima_movimentacao_data"))),
+        },
+        "analise": {
+            "total_similares": total,
+            "resultados": resultados,
+            "taxa_exito_geral": taxa_exito,
+            "probabilidade_favoravel": prob_favoravel,
+            "probabilidade_desfavoravel": prob_desfavoravel,
+            "duracao": {
+                "media_dias": round(sum(duracoes) / len(duracoes)) if duracoes else None,
+                "mediana_dias": sorted(duracoes)[len(duracoes)//2] if duracoes else None,
+                "total_com_duracao": len(duracoes),
+            },
+            "valores_causa": {
+                "medio": round(sum(valores) / len(valores), 2) if valores else None,
+                "total_com_valor": len(valores),
+            },
+            "por_ano": dict(sorted(por_ano.items())),
+        },
+        "processos_similares": processos_analisados[:20],
     }
 
 
