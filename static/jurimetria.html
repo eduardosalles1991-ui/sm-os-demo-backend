@@ -291,7 +291,7 @@ function renderProcesso(d){
     resultados: a.resultados,
     taxa_exito_geral: a.taxa_exito_geral,
     duracao: a.duracao, valores_causa: a.valores_causa,
-    por_vara: [], por_ano: a.por_ano,
+    por_vara: a.por_vara || [], por_ano: a.por_ano,
     processos: d.processos_similares,
     assunto: (p.assuntos||[])[0] || '', tribunal: p.tribunal,
   });
