@@ -19,7 +19,6 @@
 body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 a{color:var(--gold);text-decoration:none}
 
-/* Header */
 .header{background:var(--bg2);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between}
 .header-brand{display:flex;align-items:center;gap:12px}
 .header-brand h1{font-size:22px;font-weight:700;letter-spacing:1px;color:var(--gold)}
@@ -28,37 +27,53 @@ a{color:var(--gold);text-decoration:none}
 .header-nav a{padding:8px 16px;border-radius:8px;font-size:13px;color:var(--text2);transition:.2s}
 .header-nav a:hover,.header-nav a.active{background:var(--gold-dim);color:var(--gold)}
 
-/* Filters */
+.tabs{display:flex;gap:0;padding:0 32px;background:var(--bg2)}
+.tab{padding:14px 24px;font-size:14px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:.2s}
+.tab:hover{color:var(--text2)}.tab.active{color:var(--gold);border-bottom-color:var(--gold)}
+
 .filters{padding:20px 32px;display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;border-bottom:1px solid var(--border)}
 .filter-group{display:flex;flex-direction:column;gap:4px}
 .filter-group label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px}
-.filter-group select,.filter-group input{
-  background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:14px;font-family:inherit;min-width:180px}
+.filter-group select,.filter-group input{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:8px;font-size:14px;font-family:inherit;min-width:180px}
 .filter-group select:focus,.filter-group input:focus{outline:none;border-color:var(--gold)}
-.btn-search{
-  padding:10px 28px;background:linear-gradient(135deg,var(--gold),#B8942F);color:#0B1019;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.2s;align-self:flex-end}
-.btn-search:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(200,168,75,.3)}
-.btn-search:disabled{opacity:.5;cursor:wait}
+.filter-group input.wide{min-width:360px;font-family:'JetBrains Mono',monospace}
+.btn{padding:10px 28px;background:linear-gradient(135deg,var(--gold),#B8942F);color:#0B1019;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(200,168,75,.3)}
+.btn:disabled{opacity:.5;cursor:wait}
+.hidden{display:none}
 
-/* Metrics */
+/* Process card */
+.proc-card{margin:24px 32px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;display:none}
+.proc-card.active{display:block}
+.pc-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;flex-wrap:wrap}
+.pc-num{font-size:22px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono',monospace}
+.pc-sub{color:var(--text2);margin-top:4px;font-size:14px}
+.pc-badge{background:var(--gold-dim);color:var(--gold);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap}
+.pc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+.pc-field label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:2px}
+.pc-field span{font-size:14px;color:var(--text);display:block}
+.pc-probs{display:flex;gap:16px;margin-top:20px;padding-top:18px;border-top:1px solid var(--border)}
+.prob{flex:1;background:var(--bg3);border-radius:var(--radius);padding:18px;text-align:center}
+.prob-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.prob-val{font-size:40px;font-weight:700;font-family:'JetBrains Mono',monospace;line-height:1}
+.prob-sub{font-size:12px;color:var(--text3);margin-top:4px}
+.prob-fav .prob-val{color:var(--teal)}
+.prob-des .prob-val{color:var(--red)}
+.prob-dur .prob-val{color:var(--blue);font-size:30px}
+
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding:24px 32px}
 .metric{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;position:relative;overflow:hidden}
 .metric::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--gold);opacity:.6}
-.metric.teal::before{background:var(--teal)}
-.metric.blue::before{background:var(--blue)}
-.metric.green::before{background:var(--green)}
-.metric.orange::before{background:var(--orange)}
+.metric.teal::before{background:var(--teal)}.metric.blue::before{background:var(--blue)}.metric.orange::before{background:var(--orange)}
 .metric-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px}
 .metric-value{font-size:32px;font-weight:700;font-family:'JetBrains Mono',monospace}
 .metric-sub{font-size:12px;color:var(--text2);margin-top:4px}
 
-/* Charts grid */
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:0 32px 24px}
 .chart-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
 .chart-card h3{font-size:14px;font-weight:600;color:var(--text2);margin-bottom:16px;text-transform:uppercase;letter-spacing:1px}
 .chart-card canvas{width:100%!important;max-height:280px}
 
-/* Table */
 .table-section{padding:0 32px 32px}
 .table-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
 .table-card h3{font-size:14px;font-weight:600;color:var(--text2);padding:16px 20px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:1px}
@@ -73,7 +88,6 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .badge-acordo{background:rgba(59,130,246,.15);color:#3B82F6}
 .badge-indet{background:rgba(107,114,128,.15);color:#9CA3AF}
 
-/* Loading */
 .loading{display:none;text-align:center;padding:60px;color:var(--text3)}
 .loading.active{display:block}
 .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 16px}
@@ -82,24 +96,18 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .empty-state{text-align:center;padding:80px 32px;color:var(--text3)}
 .empty-state h2{font-size:28px;color:var(--text2);margin-bottom:8px}
 
-/* Responsive */
 @media(max-width:768px){
-  .header{padding:12px 16px}
-  .filters{padding:16px}
-  .metrics{padding:16px;grid-template-columns:1fr 1fr}
-  .charts{grid-template-columns:1fr;padding:0 16px 16px}
-  .table-section{padding:0 16px 16px}
-  .filter-group select,.filter-group input{min-width:140px}
+  .header{padding:12px 16px}.filters{padding:16px}.metrics{padding:16px;grid-template-columns:1fr 1fr}
+  .charts{grid-template-columns:1fr;padding:0 16px 16px}.table-section{padding:0 16px 16px}
+  .proc-card{margin:16px}.pc-probs{flex-direction:column}
+  .filter-group select,.filter-group input{min-width:140px}.filter-group input.wide{min-width:240px}
 }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <div class="header-brand">
-    <h1>JURIMETRIX</h1>
-    <span>Jurimetria</span>
-  </div>
+  <div class="header-brand"><h1>JURIMETRIX</h1><span>Jurimetria</span></div>
   <div class="header-nav">
     <a href="/chat-app">Chat</a>
     <a href="/painel">Painel</a>
@@ -107,7 +115,22 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
 </div>
 
-<div class="filters">
+<div class="tabs">
+  <div class="tab active" data-tab="processo" onclick="switchTab('processo')">📋 Por processo</div>
+  <div class="tab" data-tab="assunto" onclick="switchTab('assunto')">📊 Por assunto</div>
+</div>
+
+<!-- Tab: Por Processo -->
+<div id="tab-processo" class="filters">
+  <div class="filter-group">
+    <label>Número do processo (CNJ)</label>
+    <input type="text" id="procNumero" class="wide" placeholder="Ex: 1001624-10.2023.5.02.0025">
+  </div>
+  <button class="btn" id="btnProc" onclick="runProcesso()">ANALISAR PROCESSO</button>
+</div>
+
+<!-- Tab: Por Assunto -->
+<div id="tab-assunto" class="filters hidden">
   <div class="filter-group">
     <label>Assunto</label>
     <select id="assunto">
@@ -126,22 +149,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
       <option value="api_publica_trt5">TRT5 — Bahia</option>
       <option value="api_publica_trt6">TRT6 — Pernambuco</option>
       <option value="api_publica_trt7">TRT7 — Ceará</option>
-      <option value="api_publica_trt8">TRT8 — Pará</option>
       <option value="api_publica_trt9">TRT9 — Paraná</option>
       <option value="api_publica_trt10">TRT10 — Distrito Federal</option>
-      <option value="api_publica_trt11">TRT11 — Amazonas</option>
       <option value="api_publica_trt12">TRT12 — Santa Catarina</option>
-      <option value="api_publica_trt13">TRT13 — Paraíba</option>
-      <option value="api_publica_trt14">TRT14 — Rondônia</option>
       <option value="api_publica_trt15">TRT15 — Campinas</option>
-      <option value="api_publica_trt16">TRT16 — Maranhão</option>
-      <option value="api_publica_trt17">TRT17 — Espírito Santo</option>
       <option value="api_publica_trt18">TRT18 — Goiás</option>
-      <option value="api_publica_trt19">TRT19 — Alagoas</option>
-      <option value="api_publica_trt20">TRT20 — Sergipe</option>
-      <option value="api_publica_trt21">TRT21 — Rio Grande do Norte</option>
-      <option value="api_publica_trt22">TRT22 — Piauí</option>
-      <option value="api_publica_trt23">TRT23 — Mato Grosso</option>
       <option value="api_publica_trt24">TRT24 — Mato Grosso do Sul</option>
     </select>
   </div>
@@ -151,24 +163,22 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
   <div class="filter-group">
     <label>Processos</label>
-    <select id="limit">
-      <option value="30">30</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
-    </select>
+    <select id="limit"><option value="30">30</option><option value="50" selected>50</option></select>
   </div>
-  <button class="btn-search" id="btnSearch" onclick="runAnalysis()">ANALISAR</button>
+  <button class="btn" id="btnSearch" onclick="runAssunto()">ANALISAR</button>
 </div>
 
 <div class="empty-state" id="emptyState">
-  <h2>Análise Jurimetrica</h2>
-  <p>Selecione os filtros acima e clique em <strong>ANALISAR</strong> para gerar estatísticas.</p>
+  <h2>Análise Jurimétrica</h2>
+  <p>Insira o número do processo para ver probabilidades baseadas em casos similares do mesmo juiz e vara.</p>
 </div>
 
 <div class="loading" id="loading">
   <div class="spinner"></div>
   <p>Analisando processos no DataJud...</p>
 </div>
+
+<div class="proc-card" id="procCard"></div>
 
 <div class="results" id="results">
   <div class="metrics" id="metricsGrid"></div>
@@ -180,188 +190,232 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
   <div class="table-section">
     <div class="table-card">
-      <h3>Processos analisados</h3>
+      <h3 id="tableTitle">Processos analisados</h3>
       <table><thead><tr>
-        <th>Processo</th><th>Resultado</th><th>Vara</th><th>Duração</th><th>Ajuizamento</th>
+        <th>Processo</th><th>Resultado</th><th>Vara</th><th>Duração</th><th>Valor</th><th>Ajuizamento</th>
       </tr></thead><tbody id="tableBody"></tbody></table>
     </div>
   </div>
 </div>
 
 <script>
-const BACKEND = "https://sm-os-demo-backend.onrender.com";
+const BACKEND = location.origin;
 let charts = {};
 
-function destroyCharts(){
-  Object.values(charts).forEach(c => { if(c && c.destroy) c.destroy() });
-  charts = {};
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('tab-processo').classList.toggle('hidden', tab !== 'processo');
+  document.getElementById('tab-assunto').classList.toggle('hidden', tab !== 'assunto');
+  document.getElementById('procCard').classList.remove('active');
+  document.getElementById('results').classList.remove('active');
+  const es = document.getElementById('emptyState');
+  es.style.display = 'block';
+  es.querySelector('p').textContent = tab === 'processo'
+    ? 'Insira o número do processo para ver probabilidades baseadas em casos similares do mesmo juiz e vara.'
+    : 'Selecione os filtros e clique em ANALISAR para gerar estatísticas.';
 }
 
-async function runAnalysis(){
-  const btn = document.getElementById("btnSearch");
-  btn.disabled = true; btn.textContent = "ANALISANDO...";
-  document.getElementById("emptyState").style.display = "none";
-  document.getElementById("results").classList.remove("active");
-  document.getElementById("loading").classList.add("active");
+function destroyCharts(){ Object.values(charts).forEach(c => { if(c&&c.destroy) c.destroy() }); charts = {}; }
 
-  const params = new URLSearchParams({
-    assunto: document.getElementById("assunto").value,
-    tribunal: document.getElementById("tribunal").value,
-    vara: document.getElementById("vara").value,
-    limit: document.getElementById("limit").value,
+function showLoading(btn, label){
+  btn.disabled = true; btn.textContent = 'ANALISANDO...';
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('results').classList.remove('active');
+  document.getElementById('procCard').classList.remove('active');
+  document.getElementById('loading').classList.add('active');
+}
+function hideLoading(btn, label){
+  btn.disabled = false; btn.textContent = label;
+  document.getElementById('loading').classList.remove('active');
+}
+
+// ══════════════════════════════════════════════
+// POR PROCESSO
+// ══════════════════════════════════════════════
+async function runProcesso(){
+  const num = document.getElementById('procNumero').value.trim();
+  if(!num){ alert('Informe o número do processo'); return; }
+  const btn = document.getElementById('btnProc');
+  showLoading(btn);
+  try {
+    const r = await fetch(`${BACKEND}/api/jurimetria/processo/${encodeURIComponent(num)}`);
+    if(!r.ok){ const e = await r.json().catch(()=>({})); throw new Error(e.detail || 'Erro ' + r.status); }
+    const data = await r.json();
+    renderProcesso(data);
+  } catch(e){ alert('Erro: ' + e.message); }
+  finally { hideLoading(btn, 'ANALISAR PROCESSO'); }
+}
+
+function renderProcesso(d){
+  const p = d.processo, a = d.analise;
+  const card = document.getElementById('procCard');
+  card.classList.add('active');
+  card.innerHTML = `
+    <div class="pc-head">
+      <div>
+        <div class="pc-num">${p.numero}</div>
+        <div class="pc-sub">${p.classe || ''} — ${p.tribunal}</div>
+      </div>
+      <span class="pc-badge">${a.total_similares} caso${a.total_similares !== 1 ? 's' : ''} similar${a.total_similares !== 1 ? 'es' : ''}</span>
+    </div>
+    <div class="pc-grid">
+      <div class="pc-field"><label>Vara / Órgão Julgador</label><span>${p.vara || 'N/D'}</span></div>
+      <div class="pc-field"><label>Magistrado / Juiz</label><span>${p.magistrado || 'N/D'}</span></div>
+      <div class="pc-field"><label>Polo Ativo (Reclamante)</label><span>${(p.polo_ativo||[]).join(', ') || 'N/D'}</span></div>
+      <div class="pc-field"><label>Polo Passivo (Reclamado)</label><span>${(p.polo_passivo||[]).join(', ') || 'N/D'}</span></div>
+      <div class="pc-field"><label>Assuntos</label><span>${(p.assuntos||[]).join(', ') || 'N/D'}</span></div>
+      <div class="pc-field"><label>Ajuizamento</label><span>${p.data_ajuizamento || 'N/D'}</span></div>
+      <div class="pc-field"><label>Última movimentação</label><span>${p.ultima_movimentacao || 'N/D'} ${p.ultima_data ? '(' + p.ultima_data + ')' : ''}</span></div>
+      <div class="pc-field"><label>Total movimentações</label><span>${p.movimentos_total || 0}</span></div>
+    </div>
+    <div class="pc-probs">
+      <div class="prob prob-fav">
+        <div class="prob-label">Prob. favorável</div>
+        <div class="prob-val">${a.probabilidade_favoravel != null ? a.probabilidade_favoravel + '%' : 'N/D'}</div>
+        <div class="prob-sub">Procedente + Parcial + Acordo</div>
+      </div>
+      <div class="prob prob-des">
+        <div class="prob-label">Prob. desfavorável</div>
+        <div class="prob-val">${a.probabilidade_desfavoravel != null ? a.probabilidade_desfavoravel + '%' : 'N/D'}</div>
+        <div class="prob-sub">Improcedente</div>
+      </div>
+      <div class="prob prob-dur">
+        <div class="prob-label">Duração média estimada</div>
+        <div class="prob-val">${a.duracao.media_dias ? Math.round(a.duracao.media_dias/30) + ' meses' : 'N/D'}</div>
+        <div class="prob-sub">${a.duracao.media_dias ? a.duracao.media_dias + ' dias' : ''}</div>
+      </div>
+    </div>`;
+
+  renderCharts({
+    total_processos: a.total_similares,
+    resultados: a.resultados,
+    taxa_exito_geral: a.taxa_exito_geral,
+    duracao: a.duracao, valores_causa: a.valores_causa,
+    por_vara: [], por_ano: a.por_ano,
+    processos: d.processos_similares,
+    assunto: (p.assuntos||[])[0] || '', tribunal: p.tribunal,
   });
+  document.getElementById('tableTitle').textContent = `Processos similares (${a.total_similares})`;
+}
 
+// ══════════════════════════════════════════════
+// POR ASSUNTO
+// ══════════════════════════════════════════════
+async function runAssunto(){
+  const btn = document.getElementById('btnSearch');
+  showLoading(btn);
+  const params = new URLSearchParams({
+    assunto: document.getElementById('assunto').value,
+    tribunal: document.getElementById('tribunal').value,
+    vara: document.getElementById('vara').value,
+    limit: document.getElementById('limit').value,
+  });
   try {
     const r = await fetch(`${BACKEND}/api/jurimetria?${params}`);
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    renderDashboard(data);
-  } catch(e) {
-    alert("Erro ao analisar: " + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = "ANALISAR";
-    document.getElementById("loading").classList.remove("active");
-  }
+    document.getElementById('tableTitle').textContent = `Processos analisados (${data.total_processos})`;
+    renderCharts(data);
+  } catch(e){ alert('Erro: ' + e.message); }
+  finally { hideLoading(btn, 'ANALISAR'); }
 }
 
-function renderDashboard(d){
+// ══════════════════════════════════════════════
+// SHARED CHART RENDERER
+// ══════════════════════════════════════════════
+function renderCharts(d){
   destroyCharts();
-  document.getElementById("results").classList.add("active");
+  document.getElementById('results').classList.add('active');
+  const dur = d.duracao || {}, val = d.valores_causa || {};
 
-  // Metrics
-  const dur = d.duracao || {};
-  const val = d.valores_causa || {};
-  document.getElementById("metricsGrid").innerHTML = `
+  document.getElementById('metricsGrid').innerHTML = `
     <div class="metric">
       <div class="metric-label">Processos analisados</div>
       <div class="metric-value">${d.total_processos}</div>
-      <div class="metric-sub">${d.assunto} — ${d.tribunal.replace("api_publica_","").toUpperCase()}</div>
+      <div class="metric-sub">${d.assunto || ''} — ${(d.tribunal||'').replace('api_publica_','').toUpperCase()}</div>
     </div>
     <div class="metric teal">
       <div class="metric-label">Taxa de êxito</div>
-      <div class="metric-value" style="color:${d.taxa_exito_geral >= 50 ? 'var(--teal)' : 'var(--red)'}">${d.taxa_exito_geral}%</div>
+      <div class="metric-value" style="color:${d.taxa_exito_geral>=50?'var(--teal)':'var(--red)'}">${d.taxa_exito_geral}%</div>
       <div class="metric-sub">Procedente + Parcial + Acordo</div>
     </div>
     <div class="metric blue">
       <div class="metric-label">Duração média</div>
-      <div class="metric-value">${dur.media_dias ? Math.round(dur.media_dias/30) + ' meses' : 'N/D'}</div>
-      <div class="metric-sub">${dur.media_dias ? dur.media_dias + ' dias' : ''} ${dur.mediana_dias ? '(mediana: ' + dur.mediana_dias + 'd)' : ''}</div>
+      <div class="metric-value">${dur.media_dias ? Math.round(dur.media_dias/30)+' meses' : 'N/D'}</div>
+      <div class="metric-sub">${dur.media_dias ? dur.media_dias+' dias' : ''} ${dur.total_com_duracao ? '('+dur.total_com_duracao+' com dado)' : ''}</div>
     </div>
     <div class="metric orange">
       <div class="metric-label">Valor médio da causa</div>
-      <div class="metric-value">${val.medio ? 'R$ ' + Number(val.medio).toLocaleString('pt-BR') : 'N/D'}</div>
-      <div class="metric-sub">${val.total_com_valor || 0} processos com valor informado</div>
-    </div>
-  `;
+      <div class="metric-value">${val.medio ? 'R$ '+Number(val.medio).toLocaleString('pt-BR') : 'N/D'}</div>
+      <div class="metric-sub">${val.total_com_valor||0} processos com valor</div>
+    </div>`;
 
-  // Chart: Resultados (doughnut)
-  const res = d.resultados || {};
-  charts.resultados = new Chart(document.getElementById("chartResultados"), {
-    type: "doughnut",
-    data: {
-      labels: ["Procedente","Improcedente","Parcial","Acordo","Arquivado/Extinto","Indeterminado"],
-      datasets: [{
-        data: [res.procedente||0, res.improcedente||0, res.parcial||0, res.acordo||0,
-               (res.arquivado||0)+(res.extinto||0), res.indeterminado||0],
-        backgroundColor: ["#22C55E","#EF4444","#F59E0B","#3B82F6","#6B7280","#374151"],
-        borderWidth: 0,
-      }]
+  // Donut
+  const res = d.resultados||{};
+  charts.resultados = new Chart(document.getElementById('chartResultados'),{
+    type:'doughnut',
+    data:{
+      labels:['Procedente','Improcedente','Parcial','Acordo','Arquivado/Extinto','Indeterminado'],
+      datasets:[{data:[res.procedente||0,res.improcedente||0,res.parcial||0,res.acordo||0,(res.arquivado||0)+(res.extinto||0),res.indeterminado||0],
+        backgroundColor:['#22C55E','#EF4444','#F59E0B','#3B82F6','#6B7280','#374151'],borderWidth:0}]
     },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { position: "right", labels: { color: "#9CA3AF", font: { size: 12 }, padding: 12 } },
-      },
-    }
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{color:'#9CA3AF',font:{size:12},padding:12}}}}
   });
 
-  // Chart: Varas (horizontal bar)
-  const varas = d.por_vara || [];
-  charts.varas = new Chart(document.getElementById("chartVaras"), {
-    type: "bar",
-    data: {
-      labels: varas.map(v => v.vara.length > 30 ? v.vara.slice(0,30)+'…' : v.vara),
-      datasets: [{
-        label: "Taxa de êxito %",
-        data: varas.map(v => v.taxa_exito),
-        backgroundColor: varas.map(v => v.taxa_exito >= 50 ? "rgba(45,212,191,.7)" : "rgba(239,68,68,.7)"),
-        borderRadius: 4,
-      }]
-    },
-    options: {
-      indexAxis: "y", responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { max: 100, grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280", callback: v => v+"%" } },
-        y: { grid: { display: false }, ticks: { color: "#9CA3AF", font: { size: 11 } } },
-      },
-    }
-  });
+  // Varas
+  const varas = d.por_vara||[];
+  if(varas.length){
+    charts.varas = new Chart(document.getElementById('chartVaras'),{
+      type:'bar',
+      data:{labels:varas.map(v=>v.vara.length>30?v.vara.slice(0,30)+'…':v.vara),
+        datasets:[{label:'Taxa %',data:varas.map(v=>v.taxa_exito),backgroundColor:varas.map(v=>v.taxa_exito>=50?'rgba(45,212,191,.7)':'rgba(239,68,68,.7)'),borderRadius:4}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+        scales:{x:{max:100,grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#6B7280',callback:v=>v+'%'}},y:{grid:{display:false},ticks:{color:'#9CA3AF',font:{size:11}}}}}
+    });
+  }
 
-  // Chart: Por ano (line)
-  const anos = d.por_ano || {};
-  const anosKeys = Object.keys(anos).sort();
-  charts.anos = new Chart(document.getElementById("chartAnos"), {
-    type: "line",
-    data: {
-      labels: anosKeys,
-      datasets: [
-        { label: "Total", data: anosKeys.map(a => anos[a].total), borderColor: "#C8A84B", backgroundColor: "rgba(200,168,75,.1)", fill: true, tension: .3 },
-        { label: "Procedente", data: anosKeys.map(a => anos[a].procedente), borderColor: "#22C55E", tension: .3, borderDash: [4,4] },
-        { label: "Improcedente", data: anosKeys.map(a => anos[a].improcedente), borderColor: "#EF4444", tension: .3, borderDash: [4,4] },
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: "#9CA3AF", font: { size: 11 } } } },
-      scales: {
-        x: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
-        y: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
-      },
-    }
-  });
+  // Anos
+  const anos = d.por_ano||{}, ak = Object.keys(anos).sort();
+  if(ak.length){
+    charts.anos = new Chart(document.getElementById('chartAnos'),{
+      type:'line',
+      data:{labels:ak,datasets:[
+        {label:'Total',data:ak.map(a=>anos[a].total),borderColor:'#C8A84B',backgroundColor:'rgba(200,168,75,.1)',fill:true,tension:.3},
+        {label:'Procedente',data:ak.map(a=>anos[a].procedente),borderColor:'#22C55E',tension:.3,borderDash:[4,4]},
+        {label:'Improcedente',data:ak.map(a=>anos[a].improcedente),borderColor:'#EF4444',tension:.3,borderDash:[4,4]}
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:'#9CA3AF',font:{size:11}}}},
+        scales:{x:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#6B7280'}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#6B7280'}}}}
+    });
+  }
 
-  // Chart: Duração (bar histogram)
-  const procs = d.processos || [];
-  const durs = procs.map(p => p.duracao_dias).filter(d => d && d > 0);
-  const buckets = {"<6m":0,"6m-1a":0,"1-2a":0,"2-3a":0,"3-5a":0,">5a":0};
-  durs.forEach(d => {
-    if(d < 180) buckets["<6m"]++;
-    else if(d < 365) buckets["6m-1a"]++;
-    else if(d < 730) buckets["1-2a"]++;
-    else if(d < 1095) buckets["2-3a"]++;
-    else if(d < 1825) buckets["3-5a"]++;
-    else buckets[">5a"]++;
-  });
-  charts.duracao = new Chart(document.getElementById("chartDuracao"), {
-    type: "bar",
-    data: {
-      labels: Object.keys(buckets),
-      datasets: [{ data: Object.values(buckets), backgroundColor: ["#3B82F6","#2DD4BF","#22C55E","#F59E0B","#EF4444","#A78BFA"], borderRadius: 6 }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: false }, ticks: { color: "#9CA3AF" } },
-        y: { grid: { color: "rgba(255,255,255,.05)" }, ticks: { color: "#6B7280" } },
-      },
-    }
+  // Duration histogram
+  const procs = d.processos||[];
+  const durs = procs.map(p=>p.duracao_dias).filter(d=>d&&d>0);
+  const bk = {'<6m':0,'6m-1a':0,'1-2a':0,'2-3a':0,'3-5a':0,'>5a':0};
+  durs.forEach(d=>{if(d<180)bk['<6m']++;else if(d<365)bk['6m-1a']++;else if(d<730)bk['1-2a']++;else if(d<1095)bk['2-3a']++;else if(d<1825)bk['3-5a']++;else bk['>5a']++});
+  charts.duracao = new Chart(document.getElementById('chartDuracao'),{
+    type:'bar',
+    data:{labels:Object.keys(bk),datasets:[{data:Object.values(bk),backgroundColor:['#3B82F6','#2DD4BF','#22C55E','#F59E0B','#EF4444','#A78BFA'],borderRadius:6}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{grid:{display:false},ticks:{color:'#9CA3AF'}},y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#6B7280'}}}}
   });
 
   // Table
-  const badges = {
-    procedente: "badge-proc", improcedente: "badge-imp", parcial: "badge-parc",
-    acordo: "badge-acordo", indeterminado: "badge-indet", arquivado: "badge-indet", extinto: "badge-indet",
-  };
-  document.getElementById("tableBody").innerHTML = procs.map(p => `<tr>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.numero || 'N/D'}</td>
-    <td><span class="badge ${badges[p.resultado] || 'badge-indet'}">${p.resultado}</span></td>
-    <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.vara || ''}</td>
-    <td>${p.duracao_dias ? p.duracao_dias + 'd' : '—'}</td>
-    <td>${p.data_ajuizamento || ''}</td>
-  </tr>`).join("");
+  const badges={procedente:'badge-proc',improcedente:'badge-imp',parcial:'badge-parc',acordo:'badge-acordo',indeterminado:'badge-indet',arquivado:'badge-indet',extinto:'badge-indet'};
+  const fD=d=>{if(!d)return'—';if(d>365)return Math.round(d/30)+'m ('+d+'d)';return d+'d'};
+  const fV=v=>{if(!v)return'';return'R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2})};
+  document.getElementById('tableBody').innerHTML = procs.map(p=>`<tr>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${p.numero||'N/D'}</td>
+    <td><span class="badge ${badges[p.resultado]||'badge-indet'}">${p.resultado}</span></td>
+    <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.vara||''}</td>
+    <td>${fD(p.duracao_dias)}</td>
+    <td style="font-size:12px">${fV(p.valor_causa)}</td>
+    <td>${p.data_ajuizamento||''}</td>
+  </tr>`).join('');
 }
+
+document.getElementById('procNumero').addEventListener('keypress',e=>{if(e.key==='Enter')runProcesso()});
 </script>
 </body>
 </html>
