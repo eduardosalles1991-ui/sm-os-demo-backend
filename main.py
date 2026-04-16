@@ -637,59 +637,120 @@ def classif_mov(mov:dict)->str:
     if any(w in n for w in ["decisão","despacho","liminar","tutela"]):           return "decisao_interlocutoria"
     return "outro"
 
-def extract_mag_datajud(movs:list)->Optional[str]:
+def extract_mag_datajud(movs:list, src:dict=None)->Optional[str]:
     """
     Extrai nome do magistrado das movimentações DataJud.
-    Busca em: magistradoProlator, responsavelMovimento, complementos e texto das movimentações.
+    Busca em: campos do source, magistradoProlator, responsavelMovimento, 
+    orgaoJulgador, complementos e texto das movimentações.
     """
-    # 1. Campos estruturados (mais confiável)
-    for m in movs:
-        mag=m.get("magistradoProlator") or m.get("responsavelMovimento")
-        if mag:
-            nome=(mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag,dict) else str(mag)
-            if nome and len(str(nome))>3: return str(nome)
+    # 0. Campos diretos no source (top-level)
+    if src:
+        for field in ("magistrado", "juiz", "magistradoProlator", "relator"):
+            mag = src.get(field)
+            if mag:
+                nome = (mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag, dict) else str(mag)
+                if nome and len(str(nome).strip()) > 3:
+                    return str(nome).strip()
+        # orgaoJulgador pode ter codigoMunicipioIBGE e nome do juiz
+        orgao = src.get("orgaoJulgador") or {}
+        orgao_cod = orgao.get("codigoMunicipioIBGE") or ""
+        # Algumas instâncias incluem magistrado no orgaoJulgador
+        for field in ("magistrado", "juiz", "nomeJuiz"):
+            mag = orgao.get(field)
+            if mag and len(str(mag).strip()) > 3:
+                return str(mag).strip()
 
-    # 2. Complementos tabelados
+    # 1. Campos estruturados nas movimentações (mais confiável)
+    for m in movs:
+        for field in ("magistradoProlator", "responsavelMovimento", "magistrado", "juiz"):
+            mag = m.get(field)
+            if mag:
+                nome = (mag.get("nome") or mag.get("nomeServidor") or mag.get("nomeCompleto")) if isinstance(mag, dict) else str(mag)
+                if nome and len(str(nome).strip()) > 3:
+                    return str(nome).strip()
+
+    # 2. Complementos tabelados — patterns expandidos
     for m in movs:
         for comp in (m.get("complementosTabelados") or []):
             if isinstance(comp, dict):
-                desc = comp.get("descricao") or comp.get("nome") or ""
-                # "conclusos a NOME" ou "juntado por NOME"
-                match = re.search(r'(?:conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+\s+)?(?:a|ao)\s+|juntado\s+por\s+|prolator[a]?\s*[:\s]+|magistrad[oa]\s*[:\s]+)([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])', desc, re.IGNORECASE)
-                if match:
-                    nome = match.group(1).strip()
-                    if len(nome) > 5 and ' ' in nome:
-                        return nome.title()
+                # Check all text fields in the complement
+                for fld in ("descricao", "nome", "valor", "texto"):
+                    desc = comp.get(fld) or ""
+                    if not desc or len(desc) < 5:
+                        continue
+                    match = re.search(
+                        r'(?:conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+\s+)?(?:a[o]?\s+)|'
+                        r'juntado\s+por\s+|prolator[a]?\s*[:\s]+|magistrad[oa]\s*[:\s]+|'
+                        r'ju[ií]z[a]?\s*[:\s]+|relator[a]?\s*[:\s]+|'
+                        r'distribuído\s+(?:a[o]?\s+)?|remetido\s+(?:a[o]?\s+)?)'
+                        r'([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
+                        desc, re.IGNORECASE
+                    )
+                    if match:
+                        nome = match.group(1).strip()
+                        if (len(nome) > 5 and ' ' in nome and
+                            not any(kw in nome.lower() for kw in ['recurso','processo','parte','autor','réu','reclamante','reclamado','documento','sentença','despacho','vara','tribunal','seção','turma'])):
+                            return nome.title()
 
     # 3. Texto das movimentações (nome da movimentação)
     for m in movs:
         nome_mov = m.get("nome") or ""
-        # Padrões: "Conclusos os autos para X a NOME", "Juntado por NOME"
         patterns = [
-            r'conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+[\s\w]*?)\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
-            r'juntado\s+por\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
-            r'intimação\s+a[o]?\s+(?:juiz|juíza|magistrad[oa])\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+)',
+            r'conclus[oa]s?\s+(?:os\s+autos\s+)?(?:para\s+\w+[\s\w]*?)\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
+            r'juntado\s+por\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
+            r'intimação\s+a[o]?\s+(?:juiz|juíza|magistrad[oa])\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
+            r'(?:prolatou|proferiu|sentenciou|julgou)\s+(?:por\s+)?([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
         ]
         for pat in patterns:
             match = re.search(pat, nome_mov, re.IGNORECASE)
             if match:
                 nome = match.group(1).strip()
-                # Filtrar falsos positivos
                 if (len(nome) > 5 and ' ' in nome and
-                    not any(kw in nome.lower() for kw in ['recurso','processo','parte','autor','réu','reclamante','reclamado','documento','sentença'])):
+                    not any(kw in nome.lower() for kw in ['recurso','processo','parte','autor','réu','reclamante','reclamado','documento','sentença','despacho','vara'])):
                     return nome.title()
 
     # 4. Complementos de movimentações como strings
     for m in movs:
         for comp in (m.get("complementos") or []):
-            texto = comp if isinstance(comp, str) else (comp.get("descricao") or comp.get("valor") or "") if isinstance(comp, dict) else ""
-            if texto:
-                match = re.search(r'conclus[oa]s?\s+.*?\s+(?:a|ao)\s+([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇ\s]+[A-ZÁÀÂÃÉÊÍÓÔÕÚÇ])', texto, re.IGNORECASE)
+            texto = comp if isinstance(comp, str) else (comp.get("descricao") or comp.get("valor") or comp.get("texto") or "") if isinstance(comp, dict) else ""
+            if texto and len(texto) > 5:
+                match = re.search(
+                    r'(?:conclus[oa]s?\s+.*?\s+(?:a|ao)\s+|ju[ií]z[a]?\s*[:\s]+|magistrad[oa]\s*[:\s]+)'
+                    r'([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][A-ZÁÀÂÃÉÊÍÓÔÕÚÇa-záàâãéêíóôõúç\s]+)',
+                    texto, re.IGNORECASE
+                )
                 if match:
                     nome = match.group(1).strip()
                     if len(nome) > 5 and ' ' in nome:
                         return nome.title()
 
+    return None
+
+
+def extract_valor_from_movs(movs: list) -> Optional[float]:
+    """Tenta extrair valor de condenação das movimentações."""
+    for m in movs:
+        for comp in (m.get("complementosTabelados") or []) + (m.get("complementos") or []):
+            texto = ""
+            if isinstance(comp, str):
+                texto = comp
+            elif isinstance(comp, dict):
+                texto = comp.get("descricao") or comp.get("valor") or comp.get("texto") or comp.get("nome") or ""
+            if not texto:
+                continue
+            # Padrões de valor: R$ 50.000,00 ou R$50000
+            match = re.search(r'R\$\s*([\d.,]+)', texto)
+            if match:
+                try:
+                    val_str = match.group(1).strip()
+                    # "50.000,00" → 50000.00
+                    if ',' in val_str:
+                        val_str = val_str.replace('.', '').replace(',', '.')
+                    val = float(val_str)
+                    if val > 100:  # Filtrar valores muito pequenos (provavelmente custas)
+                        return val
+                except:
+                    pass
     return None
 
 class DataJudError(Exception): pass
@@ -745,14 +806,14 @@ class DataJudService:
             "grau":             src.get("grau"),
             "data_ajuizamento": src.get("dataAjuizamento"),
             "ultima_atualizacao": src.get("dataHoraUltimaAtualizacao"),
-            "valor_causa":      src.get("valorCausa"),
+            "valor_causa":      src.get("valorCausa") or extract_valor_from_movs(movs_s),
             "classe_nome":      classe.get("nome"),
             "orgao_julgador":   orgao.get("nome"),
             "orgao_codigo":     orgao.get("codigo"),
             "assuntos":         [a.get("nome") for a in asts if a.get("nome")],
             "assuntos_codigos": [a.get("codigo") for a in asts if a.get("codigo")],
             "movimentos_total": len(movs),
-            "magistrado":       extract_mag_datajud(movs_s),
+            "magistrado":       extract_mag_datajud(movs_s, src),
             "polo_ativo":       pa,
             "polo_passivo":     pp,
             "advogados":        advs,
@@ -1419,11 +1480,15 @@ def api_jurimetria(
             vc = vc.get("valor") or vc.get("amount")
         if isinstance(vc, str):
             try:
-                vc = float(re.sub(r'[^\d.,]', '', vc).replace(',', '.'))
+                vc = float(re.sub(r'[^\d.,]', '', vc).replace('.', '').replace(',', '.') if ',' in vc else re.sub(r'[^\d.]', '', vc))
             except:
                 vc = None
+        if not vc or vc == 0:
+            vc = extract_valor_from_movs(proc.get("movimentos_todos") or [])
         if vc and isinstance(vc, (int, float)) and vc > 0:
             valores.append(float(vc))
+        else:
+            vc = None
 
         # Por vara
         vara_nome = proc.get("orgao_julgador") or "Não identificada"
@@ -1585,9 +1650,11 @@ def api_jurimetria_processo(numero: str):
             vc = vc.get("valor") or vc.get("amount") or vc.get("valorCausa")
         if isinstance(vc, str):
             try:
-                vc = float(re.sub(r'[^\d.,]', '', vc).replace(',', '.'))
+                vc = float(re.sub(r'[^\d.,]', '', vc).replace('.', '').replace(',', '.') if ',' in str(vc) else re.sub(r'[^\d.]', '', str(vc)))
             except:
                 vc = None
+        if not vc or vc == 0:
+            vc = extract_valor_from_movs(p.get("movimentos_todos") or [])
         if vc and isinstance(vc, (int, float)) and vc > 0:
             vc = float(vc)
             valores.append(vc)
