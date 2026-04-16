@@ -978,6 +978,16 @@ except Exception as _pje_e:
     PJE_OK = False
     log.warning(f"⚠️  pje_scraper não carregado: {_pje_e}")
 
+# ── STF Jurisprudência (API pública) ──────────────────────────────
+try:
+    import stf_client as STF_MOD
+    STF_OK = STF_MOD.is_configured()
+    log.info("✅ STF Jurisprudência configurado (API pública)")
+except Exception as _stf_e:
+    STF_MOD = None
+    STF_OK = False
+    log.warning(f"⚠️ stf_client não carregado: {_stf_e}")
+
 # ── Auth + planos + pagamentos ───────────────────────────────────────
 from database import criar_tabelas
 from rotas_auth_planos import registrar_rotas
@@ -1553,8 +1563,11 @@ def api_jurimetria_processo(numero: str):
     resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
     duracoes = []
     valores = []
+    valores_por_resultado = {"procedente": [], "improcedente": [], "parcial": [], "acordo": [], "extinto": [], "arquivado": []}
     por_vara = {}
     por_ano = {}
+    por_assunto = {}
+    por_magistrado = {}
     processos_analisados = []
 
     for item in similares_items[:50]:
@@ -1576,17 +1589,47 @@ def api_jurimetria_processo(numero: str):
             except:
                 vc = None
         if vc and isinstance(vc, (int, float)) and vc > 0:
-            valores.append(float(vc))
+            vc = float(vc)
+            valores.append(vc)
+            if resultado in valores_por_resultado:
+                valores_por_resultado[resultado].append(vc)
         else:
             vc = None
 
-        # Por vara
+        # Por vara — enriquecido com magistrado, valores, duração
         vara_nome = p.get("orgao_julgador") or "Não identificada"
         if vara_nome not in por_vara:
-            por_vara[vara_nome] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+            por_vara[vara_nome] = {
+                "total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0,
+                "valores": [], "duracoes": [], "magistrados": set(),
+            }
         por_vara[vara_nome]["total"] += 1
         if resultado in por_vara[vara_nome]:
             por_vara[vara_nome][resultado] += 1
+        if vc:
+            por_vara[vara_nome]["valores"].append(vc)
+        if duracao and duracao > 0:
+            por_vara[vara_nome]["duracoes"].append(duracao)
+        mag = p.get("magistrado")
+        if mag:
+            por_vara[vara_nome]["magistrados"].add(mag)
+
+        # Por magistrado
+        if mag:
+            if mag not in por_magistrado:
+                por_magistrado[mag] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "vara": vara_nome}
+            por_magistrado[mag]["total"] += 1
+            if resultado in por_magistrado[mag]:
+                por_magistrado[mag][resultado] += 1
+
+        # Por assunto (tese)
+        for ass in (p.get("assuntos") or []):
+            if ass:
+                if ass not in por_assunto:
+                    por_assunto[ass] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+                por_assunto[ass]["total"] += 1
+                if resultado in por_assunto[ass]:
+                    por_assunto[ass][resultado] += 1
 
         ano_date = _parse_datajud_date(p.get("data_ajuizamento"))
         ano = ano_date[:4] if ano_date else ""
@@ -1618,20 +1661,66 @@ def api_jurimetria_processo(numero: str):
     prob_favoravel = round(favoraveis / determinados * 100, 1) if determinados > 0 else None
     prob_desfavoravel = round(desfavoraveis / determinados * 100, 1) if determinados > 0 else None
 
-    # Top 10 varas por volume
+    # Top 10 varas — estruturadas com valor médio, duração média, magistrado
     varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
     varas_stats = []
     for v_nome, v_data in varas_sorted:
         v_total = v_data["total"]
         v_fav = v_data["procedente"] + v_data["parcial"] + v_data["acordo"]
+        v_vals = v_data["valores"]
+        v_durs = v_data["duracoes"]
         varas_stats.append({
             "vara": v_nome,
             "total": v_total,
             "taxa_exito": round(v_fav / v_total * 100, 1) if v_total > 0 else 0,
-            **v_data,
+            "procedente": v_data["procedente"],
+            "improcedente": v_data["improcedente"],
+            "parcial": v_data["parcial"],
+            "acordo": v_data["acordo"],
+            "valor_medio": round(sum(v_vals) / len(v_vals), 2) if v_vals else None,
+            "duracao_media": round(sum(v_durs) / len(v_durs)) if v_durs else None,
+            "magistrados": list(v_data["magistrados"])[:3],
         })
 
-    return {
+    # Valores por resultado
+    def _val_stats(lst):
+        if not lst:
+            return None
+        return {"medio": round(sum(lst)/len(lst), 2), "minimo": min(lst), "maximo": max(lst), "total": len(lst)}
+
+    valores_resultado = {}
+    for k, v in valores_por_resultado.items():
+        if v:
+            valores_resultado[k] = _val_stats(v)
+
+    # Top assuntos (teses)
+    assuntos_sorted = sorted(por_assunto.items(), key=lambda x: x[1]["total"], reverse=True)[:15]
+    teses_stats = []
+    for a_nome, a_data in assuntos_sorted:
+        a_total = a_data["total"]
+        a_fav = a_data["procedente"] + a_data["parcial"] + a_data["acordo"]
+        teses_stats.append({
+            "assunto": a_nome,
+            "total": a_total,
+            "taxa_exito": round(a_fav / a_total * 100, 1) if a_total > 0 else 0,
+            **a_data,
+        })
+
+    # Top magistrados
+    mag_sorted = sorted(por_magistrado.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
+    magistrados_stats = []
+    for m_nome, m_data in mag_sorted:
+        m_total = m_data["total"]
+        m_fav = m_data["procedente"] + m_data["parcial"] + m_data["acordo"]
+        magistrados_stats.append({
+            "magistrado": m_nome,
+            "vara": m_data["vara"],
+            "total": m_total,
+            "taxa_exito": round(m_fav / m_total * 100, 1) if m_total > 0 else 0,
+            **{k: v for k, v in m_data.items() if k not in ("vara",)},
+        })
+
+    response = {
         "processo": {
             "numero": _format_cnj(proc.get("numero_processo")),
             "classe": proc.get("classe_nome"),
@@ -1662,11 +1751,154 @@ def api_jurimetria_processo(numero: str):
                 "medio": round(sum(valores) / len(valores), 2) if valores else None,
                 "total_com_valor": len(valores),
             },
+            "valores_por_resultado": valores_resultado,
             "por_vara": varas_stats,
             "por_ano": dict(sorted(por_ano.items())),
+            "teses": teses_stats,
+            "magistrados": magistrados_stats,
         },
         "processos_similares": processos_analisados[:20],
     }
+
+    # Enriquecer com jurisprudência STF quando disponível
+    if STF_OK and assunto_principal:
+        try:
+            stf_result = STF_MOD.STF.search(assunto_principal, base="acordaos", page_size=5)
+            if stf_result.get("ok") and stf_result.get("results"):
+                response["jurisprudencia_stf"] = stf_result["results"][:5]
+                log.info(f"[STF] {len(stf_result['results'])} acórdãos encontrados para '{assunto_principal}'")
+        except Exception as e:
+            log.warning(f"[STF] Erro ao buscar jurisprudência: {e}")
+
+    return response
+
+
+@app.get("/api/jurisprudencia")
+def api_jurisprudencia(
+    query: str = "dano moral",
+    base: str = "acordaos",
+    limit: int = 10,
+):
+    """Busca jurisprudência no STF (API pública)."""
+    if not STF_OK:
+        raise HTTPException(503, "STF client não configurado")
+    result = STF_MOD.STF.search(query, base=base, page_size=min(limit, 20))
+    return result
+
+
+class InsightsIn(BaseModel):
+    processo_numero: str = ""
+    classe: str = ""
+    vara: str = ""
+    tribunal: str = ""
+    assuntos: List[str] = []
+    magistrado: str = ""
+    polo_ativo: List[str] = []
+    polo_passivo: List[str] = []
+    total_similares: int = 0
+    resultados: Dict[str, int] = {}
+    taxa_exito: float = 0
+    prob_favoravel: Optional[float] = None
+    prob_desfavoravel: Optional[float] = None
+    duracao_media: Optional[int] = None
+    teses: List[Dict[str, Any]] = []
+    magistrados: List[Dict[str, Any]] = []
+    varas: List[Dict[str, Any]] = []
+    valores_por_resultado: Dict[str, Any] = {}
+
+
+@app.post("/api/jurimetria/insights")
+def api_jurimetria_insights(body: InsightsIn):
+    """Gera insights estratégicos com IA baseado nos dados jurimétricos."""
+    if not OPENAI_API_KEY:
+        raise HTTPException(503, "OpenAI não configurado")
+
+    # Build context from analysis data
+    ctx_lines = [
+        "DADOS JURIMÉTRICOS PARA ANÁLISE ESTRATÉGICA:",
+        f"Processo: {body.processo_numero} | {body.classe}",
+        f"Vara: {body.vara} | Tribunal: {body.tribunal}",
+        f"Assuntos: {', '.join(body.assuntos[:5])}",
+        f"Magistrado: {body.magistrado or 'N/D'}",
+        f"Partes: {', '.join(body.polo_ativo[:2])} vs {', '.join(body.polo_passivo[:2])}",
+        "",
+        f"ANÁLISE DE {body.total_similares} PROCESSOS SIMILARES:",
+        f"  Taxa de êxito geral: {body.taxa_exito}%",
+        f"  Probabilidade favorável: {body.prob_favoravel}%",
+        f"  Probabilidade desfavorável: {body.prob_desfavoravel}%",
+        f"  Duração média: {body.duracao_media or 'N/D'} dias",
+        "",
+        "RESULTADOS:",
+    ]
+    for k, v in body.resultados.items():
+        if v > 0:
+            ctx_lines.append(f"  {k}: {v} processos")
+
+    if body.valores_por_resultado:
+        ctx_lines.append("\nVALORES POR RESULTADO:")
+        for k, v in body.valores_por_resultado.items():
+            if isinstance(v, dict):
+                ctx_lines.append(f"  {k}: média R${v.get('medio',0):,.2f} (min R${v.get('minimo',0):,.2f} / max R${v.get('maximo',0):,.2f}) — {v.get('total',0)} proc.")
+
+    if body.teses:
+        ctx_lines.append("\nTESES/ASSUNTOS MAIS FREQUENTES:")
+        for t in body.teses[:8]:
+            ctx_lines.append(f"  {t.get('assunto','')}: {t.get('total',0)} proc., taxa êxito {t.get('taxa_exito',0)}%")
+
+    if body.magistrados:
+        ctx_lines.append("\nMAGISTRADOS:")
+        for m in body.magistrados[:5]:
+            ctx_lines.append(f"  {m.get('magistrado','')}: {m.get('total',0)} proc., taxa êxito {m.get('taxa_exito',0)}%")
+
+    if body.varas:
+        ctx_lines.append("\nVARAS (detalhe):")
+        for v in body.varas[:5]:
+            ctx_lines.append(f"  {v.get('vara','')}: {v.get('total',0)} proc., êxito {v.get('taxa_exito',0)}%, valor médio R${v.get('valor_medio') or 0:,.2f}, duração {v.get('duracao_media') or 'N/D'}d")
+
+    contexto = "\n".join(ctx_lines)
+
+    prompt = """Com base nos dados jurimétricos acima, gere uma ANÁLISE ESTRATÉGICA COMPLETA em português formal.
+
+Use EXATAMENTE estas seções com markdown:
+
+## 📊 Panorama Geral
+Resumo da situação processual e contexto estatístico (2-3 frases).
+
+## ✅ Pontos Fortes da Tese
+Liste 3-4 pontos fortes baseados nos dados (taxa de êxito, tendências favoráveis, precedentes).
+
+## ⚠️ Pontos de Atenção / Riscos
+Liste 3-4 riscos ou vulnerabilidades identificados nos dados.
+
+## 🎯 Recomendação Estratégica
+Sugira a melhor estratégia processual baseada nos dados (acordo vs litigância, argumentos prioritários, timing).
+
+## 📈 Tendência do Tribunal
+Analise como o tribunal/vara vem decidindo e se há tendência favorável ou desfavorável.
+
+## 💰 Análise de Valores
+Comente os valores encontrados e expectativa de condenação/acordo se disponível.
+
+REGRAS:
+- Use APENAS os dados fornecidos, não invente números
+- Seja direto e objetivo
+- Foque em insights acionáveis para o advogado
+- Nunca prometa resultados
+- Máximo 500 palavras"""
+
+    try:
+        reply = call_openai(
+            [
+                {"role": "system", "content": "Você é um jurimetrista sênior especializado em análise estratégica processual. Analise dados estatísticos e gere insights acionáveis para advogados."},
+                {"role": "user", "content": f"{contexto}\n\n{prompt}"},
+            ],
+            temperature=0.15,
+            max_tokens=2000,
+        )
+        return {"ok": True, "insights": reply}
+    except Exception as e:
+        log.error(f"[Insights] Erro: {e}")
+        raise HTTPException(500, f"Erro ao gerar insights: {e}")
 
 
 @app.get("/jurimetria")
@@ -1869,6 +2101,7 @@ def health():
         "tribunais":len(ALIAS_MAP),
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "pje_scraper":{"ok":PJE_OK},
+        "stf_jurisprudencia":{"ok":STF_OK},
         "bacen":{"ok":BACEN_OK},
         "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
         "nl":{"ok":NL_OK},
