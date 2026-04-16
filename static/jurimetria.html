@@ -96,11 +96,36 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .empty-state{text-align:center;padding:80px 32px;color:var(--text3)}
 .empty-state h2{font-size:28px;color:var(--text2);margin-bottom:8px}
 
+.ementa-card{padding:16px 0;border-bottom:1px solid var(--border)}
+.ementa-card:last-child{border-bottom:none}
+.ementa-header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px}
+.ementa-proc{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--gold);font-weight:500}
+.ementa-rg{background:rgba(245,158,11,.15);color:#F59E0B;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;white-space:nowrap}
+.ementa-meta{font-size:12px;color:var(--text3);margin-bottom:6px}
+.ementa-text{font-size:13px;color:var(--text);line-height:1.6;max-height:100px;overflow:hidden}
+.ementa-text.expanded{max-height:none}
+.ementa-tese{font-size:12px;color:var(--teal);margin-top:6px;padding:8px;background:rgba(45,212,191,.05);border-radius:6px;border-left:3px solid var(--teal)}
+.ementa-leg{font-size:11px;color:var(--text3);margin-top:4px}
+.ementa-toggle{font-size:12px;color:var(--gold);cursor:pointer;margin-top:4px;display:inline-block}
+.extra-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+
+/* Insights */
+#insightsBody h2{font-size:16px;font-weight:600;margin:16px 0 8px;color:var(--gold)}
+#insightsBody h2:first-child{margin-top:4px}
+#insightsBody p{margin:4px 0;color:var(--text)}
+#insightsBody ul,#insightsBody ol{margin:4px 0 8px 20px;color:var(--text)}
+#insightsBody li{margin:2px 0}
+#insightsBody strong{color:var(--gold-light)}
+.insights-loading{display:flex;align-items:center;gap:12px;padding:20px 0;color:var(--text3)}
+.insights-spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite}
+
 @media(max-width:768px){
   .header{padding:12px 16px}.filters{padding:16px}.metrics{padding:16px;grid-template-columns:1fr 1fr}
   .charts{grid-template-columns:1fr;padding:0 16px 16px}.table-section{padding:0 16px 16px}
   .proc-card{margin:16px}.pc-probs{flex-direction:column}
   .filter-group select,.filter-group input{min-width:140px}.filter-group input.wide{min-width:240px}
+  .extra-grid{grid-template-columns:1fr}
+  #extraAnalysis{padding:0 16px 16px!important}
 }
 </style>
 </head>
@@ -322,6 +347,27 @@ tr:hover td{background:rgba(255,255,255,.02)}
 
 <div class="proc-card" id="procCard"></div>
 
+<div id="insightsSection" style="display:none;padding:0 32px">
+  <div class="table-card" style="border-color:var(--gold);position:relative;overflow:hidden">
+    <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--gold),var(--teal))"></div>
+    <h3 style="display:flex;justify-content:space-between;align-items:center">
+      <span>🧠 Insights Estratégicos com IA</span>
+      <span id="insightsStatus" style="font-size:11px;color:var(--gold);font-weight:400">Gerando análise...</span>
+    </h3>
+    <div id="insightsBody" style="padding:4px 20px 20px;line-height:1.7;font-size:14px"></div>
+  </div>
+</div>
+
+<div id="stfSection" class="table-section" style="display:none;padding-top:24px">
+  <div class="table-card">
+    <h3 id="stfTitle" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Jurisprudência STF relevante</span>
+      <span style="font-size:11px;color:var(--gold);font-weight:400">API pública — acórdãos</span>
+    </h3>
+    <div id="stfBody" style="padding:0 20px 20px"></div>
+  </div>
+</div>
+
 <div class="results" id="results">
   <div class="metrics" id="metricsGrid"></div>
   <div class="charts">
@@ -329,6 +375,32 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="chart-card"><h3>Taxa de êxito por vara</h3><canvas id="chartVaras"></canvas></div>
     <div class="chart-card"><h3>Processos por ano</h3><canvas id="chartAnos"></canvas></div>
     <div class="chart-card"><h3>Distribuição de duração (dias)</h3><canvas id="chartDuracao"></canvas></div>
+  </div>
+  <!-- Teses e Magistrados -->
+  <div id="extraAnalysis" style="display:none;padding:0 32px 24px">
+    <div class="extra-grid">
+      <div class="table-card">
+        <h3>Teses / Assuntos mais frequentes</h3>
+        <table><thead><tr><th>Assunto</th><th>Processos</th><th>Taxa êxito</th></tr></thead>
+        <tbody id="tesesBody"></tbody></table>
+      </div>
+      <div class="table-card">
+        <h3>Valores por tipo de resultado</h3>
+        <div id="valoresResultado" style="padding:16px 20px"></div>
+      </div>
+    </div>
+    <div class="extra-grid" style="margin-top:20px">
+      <div class="table-card">
+        <h3>Magistrados identificados</h3>
+        <table><thead><tr><th>Magistrado</th><th>Vara</th><th>Processos</th><th>Taxa êxito</th></tr></thead>
+        <tbody id="magistradosBody"></tbody></table>
+      </div>
+      <div class="table-card">
+        <h3>Varas — detalhe</h3>
+        <table><thead><tr><th>Vara</th><th>Proc.</th><th>Êxito</th><th>Valor médio</th><th>Duração</th><th>Magistrado</th></tr></thead>
+        <tbody id="varasBody"></tbody></table>
+      </div>
+    </div>
   </div>
   <div class="table-section">
     <div class="table-card">
@@ -350,6 +422,9 @@ function switchTab(tab){
   document.getElementById('tab-assunto').classList.toggle('hidden', tab !== 'assunto');
   document.getElementById('procCard').classList.remove('active');
   document.getElementById('results').classList.remove('active');
+  document.getElementById('stfSection').style.display = 'none';
+  document.getElementById('extraAnalysis').style.display = 'none';
+  document.getElementById('insightsSection').style.display = 'none';
   const es = document.getElementById('emptyState');
   es.style.display = 'block';
   es.querySelector('p').textContent = tab === 'processo'
@@ -364,6 +439,9 @@ function showLoading(btn, label){
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('results').classList.remove('active');
   document.getElementById('procCard').classList.remove('active');
+  document.getElementById('stfSection').style.display = 'none';
+  document.getElementById('extraAnalysis').style.display = 'none';
+  document.getElementById('insightsSection').style.display = 'none';
   document.getElementById('loading').classList.add('active');
 }
 function hideLoading(btn, label){
@@ -433,11 +511,119 @@ function renderProcesso(d){
     resultados: a.resultados,
     taxa_exito_geral: a.taxa_exito_geral,
     duracao: a.duracao, valores_causa: a.valores_causa,
+    valores_por_resultado: a.valores_por_resultado || {},
     por_vara: a.por_vara || [], por_ano: a.por_ano,
+    teses: a.teses || [],
+    magistrados: a.magistrados || [],
     processos: d.processos_similares,
     assunto: (p.assuntos||[])[0] || '', tribunal: p.tribunal,
   });
   document.getElementById('tableTitle').textContent = `Processos similares (${a.total_similares})`;
+
+  // Render STF jurisprudência
+  const stfSection = document.getElementById('stfSection');
+  const stfBody = document.getElementById('stfBody');
+  const stfResults = d.jurisprudencia_stf || [];
+  if (stfResults.length > 0) {
+    stfSection.style.display = 'block';
+    stfBody.innerHTML = stfResults.map((r, i) => `
+      <div class="ementa-card">
+        <div class="ementa-header">
+          <span class="ementa-proc">${r.classe || ''} ${r.processo || ''}</span>
+          ${r.repercussao_geral ? '<span class="ementa-rg">⚖️ REPERCUSSÃO GERAL</span>' : ''}
+        </div>
+        <div class="ementa-meta">
+          Rel. ${r.relator || 'N/D'} · ${r.orgao_julgador || ''} · Julg. ${r.data_julgamento || ''}
+          ${r.url ? ' · <a href="'+r.url+'" target="_blank" style="color:var(--gold)">Inteiro teor ↗</a>' : ''}
+        </div>
+        <div class="ementa-text" id="ementa-${i}">${(r.ementa||'').replace(/\\n/g,'<br>')}</div>
+        <span class="ementa-toggle" onclick="toggleEmenta(${i})">ver mais ▼</span>
+        ${r.tese ? '<div class="ementa-tese"><strong>Tese:</strong> '+r.tese+'</div>' : ''}
+        ${r.legislacao_citada ? '<div class="ementa-leg">📜 '+r.legislacao_citada+'</div>' : ''}
+      </div>
+    `).join('');
+  } else {
+    stfSection.style.display = 'none';
+  }
+
+  // ── Fetch AI Insights (async — loads after dashboard) ──
+  fetchInsights(p, a);
+}
+
+async function fetchInsights(p, a) {
+  const section = document.getElementById('insightsSection');
+  const body = document.getElementById('insightsBody');
+  const status = document.getElementById('insightsStatus');
+  section.style.display = 'block';
+  body.innerHTML = '<div class="insights-loading"><div class="insights-spinner"></div> Analisando dados com IA...</div>';
+  status.textContent = 'Gerando análise...';
+
+  try {
+    const payload = {
+      processo_numero: p.numero,
+      classe: p.classe || '',
+      vara: p.vara || '',
+      tribunal: p.tribunal || '',
+      assuntos: p.assuntos || [],
+      magistrado: p.magistrado || '',
+      polo_ativo: p.polo_ativo || [],
+      polo_passivo: p.polo_passivo || [],
+      total_similares: a.total_similares || 0,
+      resultados: a.resultados || {},
+      taxa_exito: a.taxa_exito_geral || 0,
+      prob_favoravel: a.probabilidade_favoravel,
+      prob_desfavoravel: a.probabilidade_desfavoravel,
+      duracao_media: a.duracao ? a.duracao.media_dias : null,
+      teses: a.teses || [],
+      magistrados: a.magistrados || [],
+      varas: a.por_vara || [],
+      valores_por_resultado: a.valores_por_resultado || {},
+    };
+
+    const r = await fetch(`${BACKEND}/api/jurimetria/insights`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+
+    if (data.ok && data.insights) {
+      body.innerHTML = mdToHtml(data.insights);
+      status.textContent = 'Análise completa';
+    } else {
+      body.innerHTML = '<p style="color:var(--text3)">Não foi possível gerar insights.</p>';
+      status.textContent = 'Erro';
+    }
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--red)">Erro ao gerar insights: ${e.message}</p>`;
+    status.textContent = 'Erro';
+  }
+}
+
+function mdToHtml(md) {
+  return md
+    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/^- (.*$)/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>')
+    .replace(/^/, '<p>').replace(/$/, '</p>')
+    .replace(/<p><h2>/g, '<h2>').replace(/<\/h2><\/p>/g, '</h2>')
+    .replace(/<p><h3>/g, '<h3>').replace(/<\/h3><\/p>/g, '</h3>')
+    .replace(/<p><ul>/g, '<ul>').replace(/<\/ul><\/p>/g, '</ul>')
+    .replace(/<p><\/p>/g, '');
+}
+
+function toggleEmenta(i) {
+  const el = document.getElementById('ementa-' + i);
+  el.classList.toggle('expanded');
+  const toggle = el.nextElementSibling;
+  toggle.textContent = el.classList.contains('expanded') ? 'ver menos ▲' : 'ver mais ▼';
 }
 
 // ══════════════════════════════════════════════
@@ -555,6 +741,57 @@ function renderCharts(d){
     <td style="font-size:12px">${fV(p.valor_causa)}</td>
     <td>${p.data_ajuizamento||''}</td>
   </tr>`).join('');
+
+  // ── Extra analysis (teses, magistrados, varas detalhe, valores) ──
+  const extra = document.getElementById('extraAnalysis');
+  const teses = d.teses || [];
+  const mags = d.magistrados || [];
+  const vpr = d.valores_por_resultado || {};
+  const varasDet = d.por_vara || [];
+
+  if (teses.length || mags.length || Object.keys(vpr).length || varasDet.length) {
+    extra.style.display = 'block';
+
+    // Teses
+    document.getElementById('tesesBody').innerHTML = teses.map(t => `<tr>
+      <td style="font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.assunto}">${t.assunto}</td>
+      <td>${t.total}</td>
+      <td style="color:${t.taxa_exito >= 50 ? 'var(--teal)' : 'var(--red)'}; font-weight:600">${t.taxa_exito}%</td>
+    </tr>`).join('') || '<tr><td colspan="3" style="color:var(--text3)">Sem dados</td></tr>';
+
+    // Valores por resultado
+    const vprHtml = Object.entries(vpr).map(([k, v]) => `
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span><span class="badge ${badges[k]||'badge-indet'}">${k}</span></span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:13px">
+          Médio: <strong>${fV(v.medio)}</strong>
+          <span style="color:var(--text3);margin-left:8px">Min: ${fV(v.minimo)} · Max: ${fV(v.maximo)}</span>
+          <span style="color:var(--text3);margin-left:8px">(${v.total} proc.)</span>
+        </span>
+      </div>
+    `).join('');
+    document.getElementById('valoresResultado').innerHTML = vprHtml || '<p style="color:var(--text3)">Nenhum processo com valor da causa informado</p>';
+
+    // Magistrados
+    document.getElementById('magistradosBody').innerHTML = mags.map(m => `<tr>
+      <td style="font-size:12px">${m.magistrado}</td>
+      <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.vara||''}</td>
+      <td>${m.total}</td>
+      <td style="color:${m.taxa_exito >= 50 ? 'var(--teal)' : 'var(--red)'}; font-weight:600">${m.taxa_exito}%</td>
+    </tr>`).join('') || '<tr><td colspan="4" style="color:var(--text3)">Sem dados de magistrados</td></tr>';
+
+    // Varas detalhe
+    document.getElementById('varasBody').innerHTML = varasDet.map(v => `<tr>
+      <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${v.vara}">${v.vara}</td>
+      <td>${v.total}</td>
+      <td style="color:${v.taxa_exito >= 50 ? 'var(--teal)' : 'var(--red)'}; font-weight:600">${v.taxa_exito}%</td>
+      <td style="font-size:12px">${fV(v.valor_medio)}</td>
+      <td style="font-size:12px">${v.duracao_media ? fD(v.duracao_media) : '—'}</td>
+      <td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(v.magistrados||[]).join(', ') || '—'}</td>
+    </tr>`).join('') || '<tr><td colspan="6" style="color:var(--text3)">Sem dados</td></tr>';
+  } else {
+    extra.style.display = 'none';
+  }
 }
 
 document.getElementById('procNumero').addEventListener('keypress',e=>{if(e.key==='Enter')runProcesso()});
