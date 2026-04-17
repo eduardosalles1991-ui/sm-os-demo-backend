@@ -1480,11 +1480,17 @@ def api_jurimetria(
             vc = vc.get("valor") or vc.get("amount")
         if isinstance(vc, str):
             try:
-                vc = float(re.sub(r'[^\d.,]', '', vc).replace('.', '').replace(',', '.') if ',' in vc else re.sub(r'[^\d.]', '', vc))
+                cleaned = re.sub(r'[^\d.,]', '', str(vc))
+                if ',' in cleaned:
+                    cleaned = cleaned.replace('.', '').replace(',', '.')
+                vc = float(cleaned) if cleaned else None
             except:
                 vc = None
-        if not vc or vc == 0:
-            vc = extract_valor_from_movs(proc.get("movimentos_todos") or [])
+        try:
+            if not vc or float(vc) == 0:
+                vc = extract_valor_from_movs(proc.get("movimentos_todos") or [])
+        except:
+            vc = None
         if vc and isinstance(vc, (int, float)) and vc > 0:
             valores.append(float(vc))
         else:
@@ -1650,11 +1656,17 @@ def api_jurimetria_processo(numero: str):
             vc = vc.get("valor") or vc.get("amount") or vc.get("valorCausa")
         if isinstance(vc, str):
             try:
-                vc = float(re.sub(r'[^\d.,]', '', vc).replace('.', '').replace(',', '.') if ',' in str(vc) else re.sub(r'[^\d.]', '', str(vc)))
+                cleaned = re.sub(r'[^\d.,]', '', str(vc))
+                if ',' in cleaned:
+                    cleaned = cleaned.replace('.', '').replace(',', '.')
+                vc = float(cleaned) if cleaned else None
             except:
                 vc = None
-        if not vc or vc == 0:
-            vc = extract_valor_from_movs(p.get("movimentos_todos") or [])
+        try:
+            if not vc or float(vc) == 0:
+                vc = extract_valor_from_movs(p.get("movimentos_todos") or [])
+        except:
+            vc = None
         if vc and isinstance(vc, (int, float)) and vc > 0:
             vc = float(vc)
             valores.append(vc)
@@ -1798,7 +1810,7 @@ def api_jurimetria_processo(numero: str):
             "polo_ativo": proc.get("polo_ativo", []),
             "polo_passivo": proc.get("polo_passivo", []),
             "data_ajuizamento": _format_date_br(_parse_datajud_date(proc.get("data_ajuizamento"))),
-            "valor_causa": proc.get("valor_causa"),
+            "valor_causa": float(proc.get("valor_causa")) if proc.get("valor_causa") and isinstance(proc.get("valor_causa"), (int, float)) else None,
             "movimentos_total": proc.get("movimentos_total", 0),
             "ultima_movimentacao": proc.get("ultima_movimentacao_nome"),
             "ultima_data": _format_date_br(_parse_datajud_date(proc.get("ultima_movimentacao_data"))),
