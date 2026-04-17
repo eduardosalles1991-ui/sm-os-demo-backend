@@ -675,7 +675,7 @@ def extract_mag_datajud(movs:list, src:dict=None)->Optional[str]:
             if isinstance(comp, dict):
                 # Check all text fields in the complement
                 for fld in ("descricao", "nome", "valor", "texto"):
-                    desc = comp.get(fld) or ""
+                    desc = str(comp.get(fld) or "")
                     if not desc or len(desc) < 5:
                         continue
                     match = re.search(
