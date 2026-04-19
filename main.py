@@ -1420,6 +1420,158 @@ def _calcular_duracao_dias(proc: dict) -> Optional[int]:
             pass
     return None
 
+# ═══════════════════════════════════════════════════════
+# SUPABASE PROCESSOS_BASE — Consultas instantâneas
+# ═══════════════════════════════════════════════════════
+ALIAS_TO_TRIBUNAL = {
+    "api_publica_trt2": "TRT2-SP", "api_publica_tjsp": "TJSP",
+    "api_publica_trt1": "TRT1-RJ", "api_publica_tjrj": "TJRJ",
+    "api_publica_trt3": "TRT3-MG", "api_publica_tjmg": "TJMG",
+    "api_publica_trt4": "TRT4-RS", "api_publica_trt5": "TRT5-BA",
+    "api_publica_trt9": "TRT9-PR", "api_publica_trt15": "TRT15-Camp",
+    "api_publica_stj": "STJ", "api_publica_stf": "STF",
+    "api_publica_tst": "TST",
+}
+# Gerar automaticamente para os restantes
+for i in range(1, 25):
+    k = f"api_publica_trt{i}"
+    if k not in ALIAS_TO_TRIBUNAL:
+        ALIAS_TO_TRIBUNAL[k] = f"TRT{i}"
+for uf in ["ac","al","am","ap","ba","ce","dft","es","go","ma","mg","ms","mt","pa","pb","pe","pi","pr","rj","rn","ro","rr","rs","sc","se","sp","to"]:
+    k = f"api_publica_tj{uf}"
+    if k not in ALIAS_TO_TRIBUNAL:
+        ALIAS_TO_TRIBUNAL[k] = f"TJ{uf.upper()}"
+
+
+def _sb_headers():
+    return {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def query_processos_base(assunto: str, tribunal_alias: str = "", vara: str = "", limit: int = 500) -> list:
+    """Consulta processos_base no Supabase. Retorna lista de dicts."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return []
+
+    try:
+        # Montar filtros
+        filters = []
+        if assunto:
+            filters.append(f"assuntos=cs.{{{json.dumps(assunto)}}}")
+        if tribunal_alias:
+            tribunal_nome = ALIAS_TO_TRIBUNAL.get(tribunal_alias, tribunal_alias.replace("api_publica_", "").upper())
+            filters.append(f"tribunal=eq.{tribunal_nome}")
+        if vara:
+            filters.append(f"orgao_julgador=ilike.*{vara}*")
+
+        url = f"{SUPABASE_URL}/rest/v1/processos_base?{'&'.join(filters)}&limit={limit}&order=data_ajuizamento.desc.nullslast"
+        r = requests.get(url, headers=_sb_headers(), timeout=10)
+
+        if r.status_code == 200:
+            data = r.json()
+            log.info(f"[Base] Supabase: {len(data)} processos para '{assunto}' em {tribunal_alias}")
+            return data
+        else:
+            log.warning(f"[Base] Supabase error {r.status_code}: {r.text[:100]}")
+            return []
+    except Exception as e:
+        log.warning(f"[Base] Supabase query error: {e}")
+        return []
+
+
+def _analyze_base_processos(rows: list, assunto: str, tribunal: str, vara: str) -> dict:
+    """Analisa processos da base Supabase e retorna resultado no mesmo formato."""
+    resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
+    duracoes = []
+    valores = []
+    por_vara = {}
+    por_ano = {}
+    processos_list = []
+
+    for row in rows:
+        resultado = row.get("resultado") or "indeterminado"
+        resultados[resultado] = resultados.get(resultado, 0) + 1
+
+        dur = row.get("duracao_dias")
+        if dur and dur > 0:
+            duracoes.append(dur)
+
+        vc = row.get("valor_causa")
+        if vc and float(vc) > 0:
+            valores.append(float(vc))
+
+        vara_nome = row.get("orgao_julgador") or "Não identificada"
+        if vara_nome not in por_vara:
+            por_vara[vara_nome] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+        por_vara[vara_nome]["total"] += 1
+        if resultado in por_vara[vara_nome]:
+            por_vara[vara_nome][resultado] += 1
+
+        data_aj = str(row.get("data_ajuizamento") or "")
+        ano = data_aj[:4] if len(data_aj) >= 4 and data_aj[:4].isdigit() else ""
+        if ano:
+            if ano not in por_ano:
+                por_ano[ano] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+            por_ano[ano]["total"] += 1
+            if resultado in por_ano[ano]:
+                por_ano[ano][resultado] += 1
+
+        processos_list.append({
+            "numero": row.get("numero_cnj") or "",
+            "resultado": resultado,
+            "duracao_dias": dur,
+            "valor_causa": float(vc) if vc else None,
+            "vara": vara_nome,
+            "data_ajuizamento": _format_date_br(str(data_aj)[:10]) if data_aj else "",
+            "assuntos": row.get("assuntos") or [],
+            "magistrado": row.get("magistrado"),
+        })
+
+    total = len(rows)
+    favoraveis = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
+    taxa_exito = round(favoraveis / total * 100, 1) if total > 0 else 0
+
+    varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
+    varas_stats = []
+    for v_nome, v_data in varas_sorted:
+        v_total = v_data["total"]
+        v_fav = v_data["procedente"] + v_data["parcial"] + v_data["acordo"]
+        varas_stats.append({
+            "vara": v_nome,
+            "total": v_total,
+            "taxa_exito": round(v_fav / v_total * 100, 1) if v_total > 0 else 0,
+            **v_data,
+        })
+
+    return {
+        "assunto": assunto,
+        "tribunal": tribunal,
+        "fonte": "base_supabase",
+        "total_processos": total,
+        "resultados": resultados,
+        "taxa_exito_geral": taxa_exito,
+        "duracao": {
+            "media_dias": round(sum(duracoes) / len(duracoes)) if duracoes else None,
+            "minima_dias": min(duracoes) if duracoes else None,
+            "maxima_dias": max(duracoes) if duracoes else None,
+            "mediana_dias": sorted(duracoes)[len(duracoes)//2] if duracoes else None,
+            "total_com_duracao": len(duracoes),
+        },
+        "valores_causa": {
+            "medio": round(sum(valores) / len(valores), 2) if valores else None,
+            "minimo": min(valores) if valores else None,
+            "maximo": max(valores) if valores else None,
+            "total_com_valor": len(valores),
+        },
+        "por_vara": varas_stats,
+        "por_ano": dict(sorted(por_ano.items())),
+        "processos": processos_list[:50],
+    }
+
+
 @app.get("/api/jurimetria")
 def api_jurimetria(
     assunto: str = "Horas Extras",
@@ -1427,9 +1579,18 @@ def api_jurimetria(
     vara: str = "",
     limit: int = 50,
 ):
-    """Endpoint de jurimetria — análise estatística de processos similares."""
+    """Endpoint de jurimetria — tenta base Supabase primeiro, fallback DataJud."""
+
+    # 1. Tentar Supabase (instantâneo)
+    rows = query_processos_base(assunto, tribunal, vara, limit=500)
+    if len(rows) >= 5:
+        return _analyze_base_processos(rows, assunto, tribunal, vara)
+
+    # 2. Fallback: DataJud ao vivo
     if not DATAJUD_ENABLED:
-        raise HTTPException(503, "DataJud não habilitado")
+        if rows:
+            return _analyze_base_processos(rows, assunto, tribunal, vara)
+        raise HTTPException(503, "DataJud não habilitado e base vazia")
 
     # Construir query
     must = []
