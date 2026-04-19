@@ -16,7 +16,7 @@ PLANOS = {
 }
 
 PRECOS = {
-    "mensal": {"plus": 109.99, "pro": 549.99, "unlimited": 999.99},
+    "mensal": {"plus": 60.00, "pro": 549.99, "unlimited": 999.99},
     "anual":  {"plus": 999.99, "pro": 4999.99, "unlimited": 9999.99},
 }
 
