@@ -660,7 +660,7 @@ function renderCharts(d){
     <div class="metric">
       <div class="metric-label">Processos analisados</div>
       <div class="metric-value">${d.total_processos}</div>
-      <div class="metric-sub">${d.assunto || ''} — ${(d.tribunal||'').replace('api_publica_','').toUpperCase()}</div>
+      <div class="metric-sub">${d.assunto || ''} — ${(d.tribunal||'').replace('api_publica_','').toUpperCase()}${d.fonte === 'base_supabase' ? ' <span style="color:var(--gold);font-size:10px">⚡ BASE PRÓPRIA</span>' : ' <span style="color:var(--text3);font-size:10px">🌐 DataJud</span>'}</div>
     </div>
     <div class="metric teal">
       <div class="metric-label">Taxa de êxito</div>
