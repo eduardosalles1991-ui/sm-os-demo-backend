@@ -2141,6 +2141,131 @@ REGRAS:
         raise HTTPException(500, f"Erro ao gerar insights: {e}")
 
 
+@app.get("/api/jurimetria/magistrado")
+def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
+    """Estatísticas detalhadas de um magistrado — histórico de decisões."""
+    if not nome:
+        raise HTTPException(400, "Parâmetro 'nome' é obrigatório")
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        raise HTTPException(503, "Base de dados não configurada")
+
+    try:
+        # Buscar processos deste magistrado na base
+        filters = [f"magistrado=ilike.*{nome}*"]
+        if tribunal:
+            tribunal_nome = ALIAS_TO_TRIBUNAL.get(tribunal, tribunal.replace("api_publica_", "").upper())
+            filters.append(f"tribunal=eq.{tribunal_nome}")
+
+        url = f"{SUPABASE_URL}/rest/v1/processos_base?{'&'.join(filters)}&limit=1000&order=data_ajuizamento.desc.nullslast"
+        r = requests.get(url, headers=_sb_headers(), timeout=10)
+
+        if r.status_code != 200:
+            raise HTTPException(500, f"Erro ao consultar base: {r.status_code}")
+
+        rows = r.json()
+        if not rows:
+            return {"ok": False, "message": "Magistrado não encontrado na base", "nome": nome}
+
+        # Analisar
+        resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
+        por_ano = {}
+        por_assunto = {}
+        por_vara = {}
+        duracoes = []
+        valores = []
+
+        for row in rows:
+            res = row.get("resultado") or "indeterminado"
+            resultados[res] = resultados.get(res, 0) + 1
+
+            dur = row.get("duracao_dias")
+            if dur and dur > 0:
+                duracoes.append(dur)
+
+            vc = row.get("valor_causa")
+            if vc and float(vc) > 0:
+                valores.append(float(vc))
+
+            # Por ano
+            data_aj = str(row.get("data_ajuizamento") or "")
+            ano = data_aj[:4] if len(data_aj) >= 4 and data_aj[:4].isdigit() else ""
+            if ano:
+                if ano not in por_ano:
+                    por_ano[ano] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+                por_ano[ano]["total"] += 1
+                if res in por_ano[ano]:
+                    por_ano[ano][res] += 1
+
+            # Por assunto
+            for ass in (row.get("assuntos") or []):
+                if ass:
+                    if ass not in por_assunto:
+                        por_assunto[ass] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
+                    por_assunto[ass]["total"] += 1
+                    if res in por_assunto[ass]:
+                        por_assunto[ass][res] += 1
+
+            # Por vara
+            vara = row.get("orgao_julgador") or ""
+            if vara:
+                if vara not in por_vara:
+                    por_vara[vara] = {"total": 0, "procedente": 0, "improcedente": 0}
+                por_vara[vara]["total"] += 1
+                if res in por_vara[vara]:
+                    por_vara[vara][res] += 1
+
+        total = len(rows)
+        fav = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
+        det = total - resultados["indeterminado"]
+        taxa_favoravel = round(fav / det * 100, 1) if det > 0 else 0
+        taxa_contrario = round(resultados["improcedente"] / det * 100, 1) if det > 0 else 0
+
+        # Top assuntos
+        assuntos_sorted = sorted(por_assunto.items(), key=lambda x: x[1]["total"], reverse=True)[:15]
+        assuntos_stats = []
+        for a_nome, a_data in assuntos_sorted:
+            a_total = a_data["total"]
+            a_fav = a_data["procedente"] + a_data["parcial"] + a_data["acordo"]
+            assuntos_stats.append({
+                "assunto": a_nome,
+                "total": a_total,
+                "taxa_exito": round(a_fav / a_total * 100, 1) if a_total > 0 else 0,
+            })
+
+        # Varas
+        varas_list = [{"vara": v, "total": d["total"]} for v, d in sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:5]]
+
+        return {
+            "ok": True,
+            "nome": nome,
+            "total_processos": total,
+            "taxa_favoravel": taxa_favoravel,
+            "taxa_contrario": taxa_contrario,
+            "resultados": resultados,
+            "duracao_media": round(sum(duracoes) / len(duracoes)) if duracoes else None,
+            "valor_medio": round(sum(valores) / len(valores), 2) if valores else None,
+            "por_ano": dict(sorted(por_ano.items())),
+            "assuntos": assuntos_stats,
+            "varas": varas_list,
+            "processos": [
+                {
+                    "numero": row.get("numero_cnj"),
+                    "resultado": row.get("resultado"),
+                    "assuntos": row.get("assuntos", []),
+                    "vara": row.get("orgao_julgador"),
+                    "data": str(row.get("data_ajuizamento") or "")[:10],
+                    "valor": float(row["valor_causa"]) if row.get("valor_causa") else None,
+                }
+                for row in rows[:30]
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"[Magistrado] Erro: {e}")
+        raise HTTPException(500, f"Erro: {e}")
+
+
 @app.get("/jurimetria")
 def serve_jurimetria():
     from fastapi.responses import FileResponse, HTMLResponse
