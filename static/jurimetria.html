@@ -119,6 +119,23 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .insights-loading{display:flex;align-items:center;gap:12px;padding:20px 0;color:var(--text3)}
 .insights-spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite}
 
+/* Magistrado Modal */
+.mag-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:1000;display:none;justify-content:center;align-items:center;padding:20px}
+.mag-overlay.active{display:flex}
+.mag-modal{background:var(--bg2);border:1px solid var(--border);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;position:relative}
+.mag-modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.mag-modal-header h2{font-size:18px;color:var(--gold);margin:0}
+.mag-close{background:none;border:none;color:var(--text3);font-size:24px;cursor:pointer;padding:4px 8px}
+.mag-close:hover{color:var(--text)}
+.mag-body{padding:24px}
+.mag-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.mag-stat{text-align:center;padding:16px;background:var(--bg);border-radius:8px;border:1px solid var(--border)}
+.mag-stat-value{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.mag-stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;margin-top:4px}
+.mag-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px}
+.mag-link{color:var(--gold);cursor:pointer;text-decoration:underline;font-size:12px}
+.mag-link:hover{color:var(--gold-light)}
+
 @media(max-width:768px){
   .header{padding:12px 16px}.filters{padding:16px}.metrics{padding:16px;grid-template-columns:1fr 1fr}
   .charts{grid-template-columns:1fr;padding:0 16px 16px}.table-section{padding:0 16px 16px}
@@ -774,7 +791,7 @@ function renderCharts(d){
 
     // Magistrados
     document.getElementById('magistradosBody').innerHTML = mags.map(m => `<tr>
-      <td style="font-size:12px">${m.magistrado}</td>
+      <td style="font-size:12px"><span class="mag-link" onclick="openMagistrado('${m.magistrado}')">${m.magistrado}</span></td>
       <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.vara||''}</td>
       <td>${m.total}</td>
       <td style="color:${m.taxa_exito >= 50 ? 'var(--teal)' : 'var(--red)'}; font-weight:600">${m.taxa_exito}%</td>
@@ -787,7 +804,7 @@ function renderCharts(d){
       <td style="color:${v.taxa_exito >= 50 ? 'var(--teal)' : 'var(--red)'}; font-weight:600">${v.taxa_exito}%</td>
       <td style="font-size:12px">${fV(v.valor_medio)}</td>
       <td style="font-size:12px">${v.duracao_media ? fD(v.duracao_media) : '—'}</td>
-      <td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(v.magistrados||[]).join(', ') || '—'}</td>
+      <td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${(v.magistrados||[]).map(m=>'<span class="mag-link" onclick="openMagistrado(\''+m+'\')">'+m+'</span>').join(', ') || '—'}</td>
     </tr>`).join('') || '<tr><td colspan="6" style="color:var(--text3)">Sem dados</td></tr>';
   } else {
     extra.style.display = 'none';
@@ -795,6 +812,114 @@ function renderCharts(d){
 }
 
 document.getElementById('procNumero').addEventListener('keypress',e=>{if(e.key==='Enter')runProcesso()});
+
+// ══════════════════════════════════════════════
+// MAGISTRADO MODAL
+// ══════════════════════════════════════════════
+async function openMagistrado(nome) {
+  const overlay = document.getElementById('magOverlay');
+  const body = document.getElementById('magBody');
+  const title = document.getElementById('magTitle');
+  overlay.classList.add('active');
+  title.textContent = nome;
+  body.innerHTML = '<div class="insights-loading"><div class="insights-spinner"></div> Carregando estatísticas...</div>';
+
+  try {
+    const r = await fetch(`${BACKEND}/api/jurimetria/magistrado?nome=${encodeURIComponent(nome)}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+
+    if (!d.ok) {
+      body.innerHTML = '<p style="color:var(--text3)">Magistrado não encontrado na base de dados.</p>';
+      return;
+    }
+
+    const badges = {procedente:'badge-proc',improcedente:'badge-imp',parcial:'badge-parc',acordo:'badge-acordo',indeterminado:'badge-indet',arquivado:'badge-indet',extinto:'badge-indet'};
+    const fV = v => v ? 'R$ '+Number(v).toLocaleString('pt-BR',{minimumFractionDigits:2}) : '—';
+
+    body.innerHTML = `
+      <div class="mag-stats">
+        <div class="mag-stat">
+          <div class="mag-stat-value">${d.total_processos}</div>
+          <div class="mag-stat-label">Processos</div>
+        </div>
+        <div class="mag-stat">
+          <div class="mag-stat-value" style="color:var(--teal)">${d.taxa_favoravel}%</div>
+          <div class="mag-stat-label">Favorável</div>
+        </div>
+        <div class="mag-stat">
+          <div class="mag-stat-value" style="color:var(--red)">${d.taxa_contrario}%</div>
+          <div class="mag-stat-label">Contrário</div>
+        </div>
+        <div class="mag-stat">
+          <div class="mag-stat-value">${d.duracao_media ? Math.round(d.duracao_media/30)+'m' : '—'}</div>
+          <div class="mag-stat-label">Duração média</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(${Object.keys(d.resultados).filter(k=>d.resultados[k]>0).length},1fr);gap:8px;margin-bottom:20px">
+        ${Object.entries(d.resultados).filter(([k,v])=>v>0).map(([k,v])=>`
+          <div style="text-align:center;padding:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+            <span class="badge ${badges[k]||'badge-indet'}">${k}</span>
+            <div style="font-size:18px;font-weight:600;margin-top:4px">${v}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="mag-grid">
+        <div>
+          <h3 style="font-size:14px;color:var(--gold);margin-bottom:8px">Assuntos mais frequentes</h3>
+          <table><thead><tr><th>Assunto</th><th>Proc.</th><th>Êxito</th></tr></thead><tbody>
+          ${(d.assuntos||[]).map(a=>`<tr>
+            <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.assunto}</td>
+            <td>${a.total}</td>
+            <td style="color:${a.taxa_exito>=50?'var(--teal)':'var(--red)'};font-weight:600">${a.taxa_exito}%</td>
+          </tr>`).join('')}
+          </tbody></table>
+        </div>
+        <div>
+          <h3 style="font-size:14px;color:var(--gold);margin-bottom:8px">Últimos processos</h3>
+          <table><thead><tr><th>Processo</th><th>Resultado</th><th>Data</th></tr></thead><tbody>
+          ${(d.processos||[]).slice(0,15).map(p=>`<tr>
+            <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${p.numero||''}</td>
+            <td><span class="badge ${badges[p.resultado]||'badge-indet'}">${p.resultado}</span></td>
+            <td style="font-size:11px">${p.data||''}</td>
+          </tr>`).join('')}
+          </tbody></table>
+        </div>
+      </div>
+
+      ${d.varas && d.varas.length ? `
+        <div style="margin-top:16px">
+          <h3 style="font-size:14px;color:var(--gold);margin-bottom:8px">Varas de atuação</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${d.varas.map(v=>`<span style="background:var(--bg);padding:4px 10px;border-radius:12px;font-size:12px;border:1px solid var(--border)">${v.vara} (${v.total})</span>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      ${d.valor_medio ? `<p style="margin-top:12px;font-size:13px;color:var(--text3)">Valor médio das causas: <strong style="color:var(--gold)">${fV(d.valor_medio)}</strong></p>` : ''}
+    `;
+  } catch(e) {
+    body.innerHTML = `<p style="color:var(--red)">Erro: ${e.message}</p>`;
+  }
+}
+
+function closeMagModal() {
+  document.getElementById('magOverlay').classList.remove('active');
+}
 </script>
+
+<!-- Magistrado Modal -->
+<div class="mag-overlay" id="magOverlay" onclick="if(event.target===this)closeMagModal()">
+  <div class="mag-modal">
+    <div class="mag-modal-header">
+      <h2>📊 Estatística do Magistrado: <span id="magTitle"></span></h2>
+      <button class="mag-close" onclick="closeMagModal()">&times;</button>
+    </div>
+    <div class="mag-body" id="magBody"></div>
+  </div>
+</div>
+
 </body>
 </html>
