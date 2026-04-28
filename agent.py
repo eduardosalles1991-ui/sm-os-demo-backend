@@ -162,25 +162,36 @@ def _build_processos_filters(args: Dict[str, Any]) -> List[str]:
     return filters
 
 
-def execute_query_processos(args: Dict[str, Any]) -> Dict[str, Any]:
+def _fetch_processos(args: Dict[str, Any], hard_max: int) -> Dict[str, Any]:
+    """
+    Função interna que busca processos no Supabase.
+    hard_max: teto absoluto de linhas (100 para chamadas diretas do Claude,
+    5000 para uso interno do aggregate).
+    """
     if not SUPABASE_URL or not SUPABASE_KEY:
         return {"error": "Supabase não configurado"}
 
     filters = _build_processos_filters(args)
-    limit = max(1, min(int(args.get("limit") or 50), 100))
+    requested = int(args.get("limit") or 50)
+    limit = max(1, min(requested, hard_max))
 
     fields = "numero_cnj,tribunal,orgao_julgador,magistrado,data_ajuizamento,valor_causa,assuntos,resultado,duracao_dias"
     qs = "&".join(filters + [f"select={fields}", f"limit={limit}", "order=data_ajuizamento.desc.nullslast"])
     url = f"{SUPABASE_URL}/rest/v1/processos_base?{qs}"
 
     try:
-        r = requests.get(url, headers=_sb_headers(), timeout=15)
+        r = requests.get(url, headers=_sb_headers(), timeout=30)
         if 200 <= r.status_code < 300:
             results = r.json()
             return {"ok": True, "count": len(results), "results": results}
         return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
     except Exception as e:
         return {"error": f"Erro ao consultar processos_base: {e}"}
+
+
+def execute_query_processos(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Tool pública chamada pelo Claude. Limita a 100 para proteger contexto."""
+    return _fetch_processos(args, hard_max=100)
 
 
 def execute_query_jurisprudencia(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -219,12 +230,12 @@ def execute_query_jurisprudencia(args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def execute_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
-    """Trae até 1000 processos com filtros e agrega em Python."""
+    """Trae até 5000 processos com filtros e agrega em Python."""
     args_copy = dict(args)
     group_by = args_copy.pop("group_by", "tribunal")
-    args_copy["limit"] = 1000
+    args_copy["limit"] = 5000  # amostra grande para agregação
 
-    raw = execute_query_processos(args_copy)
+    raw = _fetch_processos(args_copy, hard_max=5000)
     if raw.get("error"):
         return raw
 
@@ -269,10 +280,18 @@ def execute_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
         })
     groups.sort(key=lambda x: x["total"], reverse=True)
 
+    # Aviso para Claude saber contextualizar a resposta
+    nota_amostra = (
+        f"Esta agregação foi feita sobre uma amostra de {len(rows)} processos "
+        f"(ordenados por data de ajuizamento descendente). A base completa tem ~284 mil processos. "
+        f"Para contagens exatas globais sem amostragem, seria necessário criar uma RPC function no Supabase."
+    )
+
     return {
         "ok": True,
         "group_by": group_by,
         "total_amostra": len(rows),
+        "nota_amostragem": nota_amostra,
         "groups": groups[:30],
     }
 
