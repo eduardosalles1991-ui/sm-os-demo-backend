@@ -29,7 +29,6 @@ def _sb_headers() -> Dict[str, str]:
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "count=exact",
     }
 
 
@@ -176,7 +175,7 @@ def execute_query_processos(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         r = requests.get(url, headers=_sb_headers(), timeout=15)
-        if r.status_code == 200:
+        if 200 <= r.status_code < 300:
             results = r.json()
             return {"ok": True, "count": len(results), "results": results}
         return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
@@ -206,7 +205,7 @@ def execute_query_jurisprudencia(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         r = requests.get(url, headers=_sb_headers(), timeout=20)
-        if r.status_code == 200:
+        if 200 <= r.status_code < 300:
             results = r.json()
             # Truncar ementas longas para não saturar contexto do Claude
             for item in results:
@@ -304,6 +303,11 @@ SYSTEM_PROMPT = (
     "- Para precedentes/jurisprudência, use query_jurisprudencia.\n"
     "- Você pode chamar várias ferramentas em sequência se precisar.\n"
     "- Se uma busca retorna vazia, tente reformular (sinônimos, sem filtro de ano, etc.) antes de desistir.\n\n"
+    "QUANDO UMA FERRAMENTA RETORNA ERRO:\n"
+    "- NUNCA improvise dados ou liste tribunais/magistrados/varas sem números reais.\n"
+    "- Diga claramente ao usuário: 'Houve uma instabilidade técnica ao consultar a base. Erro: <error>'.\n"
+    "- Sugira reformular a pergunta ou tentar novamente.\n"
+    "- É melhor admitir falha do que apresentar dados inventados.\n\n"
     "RESPOSTA:\n"
     "- Sintetize em português jurídico claro e objetivo.\n"
     "- Cite os números reais retornados pelas ferramentas.\n"
