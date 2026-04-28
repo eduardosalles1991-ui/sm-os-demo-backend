@@ -110,10 +110,11 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
             "Agrega estatísticas sobre processos. Use para perguntas tipo: "
             "'qual magistrado é mais favorável a horas extras', "
             "'qual a taxa de êxito na 5ª vara', "
-            "'quantos processos por tribunal'. "
+            "'distribuição por ano'. "
             "Aplica filtros antes de agrupar e ordena resultados por volume. "
             "Retorna total, favoráveis (procedente+parcial+acordo) e taxa de êxito por grupo. "
-            "Limite: amostra de até 1000 processos para a agregação."
+            "IMPORTANTE: trabalha sobre AMOSTRA de até 5000 processos (a base tem ~284 mil). "
+            "Para contagem exata por TRIBUNAL sem filtros, prefira count_processos_by_tribunal."
         ),
         "input_schema": {
             "type": "object",
@@ -131,6 +132,20 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
                 "ano_max": {"type": "integer"}
             },
             "required": ["group_by"]
+        }
+    },
+    {
+        "name": "count_processos_by_tribunal",
+        "description": (
+            "Retorna contagem EXATA de processos por tribunal sobre TODA a base (~284 mil), "
+            "sem amostragem. Use sempre que o usuário pedir totais ou distribuição por tribunal "
+            "SEM outros filtros. É mais preciso que aggregate_processos para essa pergunta. "
+            "Retorna lista ordenada por volume com total, procedente, improcedente, parcial, acordo, "
+            "indeterminado, favoráveis (proc+parcial+acordo) e taxa de êxito por tribunal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {}
         }
     }
 ]
@@ -165,6 +180,9 @@ def _build_processos_filters(args: Dict[str, Any]) -> List[str]:
 def _fetch_processos(args: Dict[str, Any], hard_max: int) -> Dict[str, Any]:
     """
     Função interna que busca processos no Supabase.
+    PostgREST tem tope default de 1000 linhas por request — paginamos automaticamente
+    quando o limit pedido excede isso.
+
     hard_max: teto absoluto de linhas (100 para chamadas diretas do Claude,
     5000 para uso interno do aggregate).
     """
@@ -172,20 +190,45 @@ def _fetch_processos(args: Dict[str, Any], hard_max: int) -> Dict[str, Any]:
         return {"error": "Supabase não configurado"}
 
     filters = _build_processos_filters(args)
-    requested = int(args.get("limit") or 50)
-    limit = max(1, min(requested, hard_max))
+    requested = max(1, min(int(args.get("limit") or 50), hard_max))
 
     fields = "numero_cnj,tribunal,orgao_julgador,magistrado,data_ajuizamento,valor_causa,assuntos,resultado,duracao_dias"
-    qs = "&".join(filters + [f"select={fields}", f"limit={limit}", "order=data_ajuizamento.desc.nullslast"])
-    url = f"{SUPABASE_URL}/rest/v1/processos_base?{qs}"
+    base_qs_parts = filters + [f"select={fields}", "order=data_ajuizamento.desc.nullslast"]
+
+    PAGE_SIZE = 1000  # PostgREST default cap
+    all_results: List[Dict[str, Any]] = []
+    offset = 0
 
     try:
-        r = requests.get(url, headers=_sb_headers(), timeout=30)
-        if 200 <= r.status_code < 300:
-            results = r.json()
-            return {"ok": True, "count": len(results), "results": results}
-        return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
+        while len(all_results) < requested:
+            page_size = min(PAGE_SIZE, requested - len(all_results))
+            qs = "&".join(base_qs_parts + [f"limit={page_size}", f"offset={offset}"])
+            url = f"{SUPABASE_URL}/rest/v1/processos_base?{qs}"
+
+            r = requests.get(url, headers=_sb_headers(), timeout=30)
+            if not (200 <= r.status_code < 300):
+                # Se já temos resultados parciais, retornar o que conseguimos
+                if all_results:
+                    log.warning(f"[_fetch_processos] HTTP {r.status_code} no offset {offset}, retornando {len(all_results)} parciais")
+                    break
+                return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
+
+            page_rows = r.json() or []
+            if not page_rows:
+                break  # acabaram os dados
+
+            all_results.extend(page_rows)
+            offset += len(page_rows)
+
+            # Última página (PostgREST devolveu menos do que pedimos)
+            if len(page_rows) < page_size:
+                break
+
+        return {"ok": True, "count": len(all_results), "results": all_results}
     except Exception as e:
+        if all_results:
+            log.warning(f"[_fetch_processos] Exception no offset {offset}: {e}, retornando {len(all_results)} parciais")
+            return {"ok": True, "count": len(all_results), "results": all_results, "partial": True}
         return {"error": f"Erro ao consultar processos_base: {e}"}
 
 
@@ -296,6 +339,42 @@ def execute_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def execute_count_tribunal() -> Dict[str, Any]:
+    """
+    Chama a RPC agg_processos_tribunal() criada no Supabase.
+    Retorna contagem exata sobre toda a base, sem amostragem.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {"error": "Supabase não configurado"}
+
+    url = f"{SUPABASE_URL}/rest/v1/rpc/agg_processos_tribunal"
+    try:
+        r = requests.post(url, headers=_sb_headers(), json={}, timeout=30)
+        if 200 <= r.status_code < 300:
+            results = r.json() or []
+            # Calcular favoráveis e taxa de êxito
+            for row in results:
+                total = row.get("total", 0) or 0
+                fav = (
+                    (row.get("procedente", 0) or 0)
+                    + (row.get("parcial", 0) or 0)
+                    + (row.get("acordo", 0) or 0)
+                )
+                row["favoraveis"] = fav
+                row["taxa_exito"] = round(fav / total * 100, 1) if total > 0 else 0.0
+            total_geral = sum((row.get("total", 0) or 0) for row in results)
+            return {
+                "ok": True,
+                "exact": True,
+                "total_geral": total_geral,
+                "count": len(results),
+                "groups": results,
+            }
+        return {"error": f"HTTP {r.status_code}: {r.text[:300]}"}
+    except Exception as e:
+        return {"error": f"Erro RPC agg_processos_tribunal: {e}"}
+
+
 def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if name == "query_processos_base":
         return execute_query_processos(args)
@@ -303,6 +382,8 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return execute_query_jurisprudencia(args)
     if name == "aggregate_processos":
         return execute_aggregate(args)
+    if name == "count_processos_by_tribunal":
+        return execute_count_tribunal()
     return {"error": f"Tool desconhecido: {name}"}
 
 
@@ -314,9 +395,11 @@ SYSTEM_PROMPT = (
     "FERRAMENTAS DISPONÍVEIS:\n"
     "1. query_processos_base — busca processos enriquecidos (~284 mil)\n"
     "2. query_jurisprudencia — busca decisões e ementas (~2 milhões)\n"
-    "3. aggregate_processos — estatísticas agregadas (taxa de êxito, contagens, padrões)\n\n"
+    "3. aggregate_processos — estatísticas agregadas com AMOSTRA (5000 processos)\n"
+    "4. count_processos_by_tribunal — contagem EXATA por tribunal sem amostra\n\n"
     "REGRAS DE USO:\n"
     "- Quando o usuário pergunta sobre dados, padrões, números, magistrados, varas, percentuais — USE as ferramentas. NUNCA invente números.\n"
+    "- Para 'quantos processos por tribunal' (sem outros filtros) → SEMPRE use count_processos_by_tribunal (contagem exata).\n"
     "- Para 'qual juiz é mais favorável a X', use aggregate_processos com group_by='magistrado' e filtro de assunto.\n"
     "- Para 'taxa de êxito em Y vara', use aggregate_processos com group_by='orgao_julgador' filtrando vara.\n"
     "- Para precedentes/jurisprudência, use query_jurisprudencia.\n"
@@ -330,7 +413,8 @@ SYSTEM_PROMPT = (
     "RESPOSTA:\n"
     "- Sintetize em português jurídico claro e objetivo.\n"
     "- Cite os números reais retornados pelas ferramentas.\n"
-    "- Se a base não tiver dados, diga isso claramente — não invente.\n"
+    "- Quando usar count_processos_by_tribunal, deixe claro que são dados EXATOS de toda a base.\n"
+    "- Quando usar aggregate_processos, mencione que é uma amostra.\n"
     "- Para conversas casuais (oi, obrigado, tchau), responda direto sem usar ferramentas.\n"
     "- Nunca prometa resultados processuais.\n"
     "- Apresente os dados como informações do próprio Jurimetrix, não cite 'Supabase' ou 'base externa'."
