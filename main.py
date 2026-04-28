@@ -277,6 +277,43 @@ PROC_TRIGGERS = [
     "partes","banco de decisões","timeline","histórico do processo",
 ]
 
+# Agent triggers — auto-route a /chat-agent quando a pergunta é estatística/jurimétrica
+AGENT_TRIGGERS = [
+    # Contagens explícitas
+    "quantos processos", "quantas decisões", "quantas decisoes",
+    "quantos juízes", "quantos juizes", "quantos magistrados",
+    "quantas varas", "quantos tribunais",
+    # Identificação de pessoas/entidades por critério
+    "qual juiz", "qual o juiz", "quais juízes", "quais juizes",
+    "qual magistrado", "qual o magistrado", "quais magistrados",
+    "qual a vara", "qual o orgão", "quais varas",
+    "qual tribunal", "qual o tribunal",
+    # Taxas e percentuais
+    "qual a taxa", "qual o percentual", "qual a porcentagem",
+    "taxa de êxito", "taxa de exito", "taxa de procedência",
+    "taxa de improcedência",
+    # Médias e estatísticas
+    "tempo médio", "tempo medio", "duração média", "duracao media",
+    "valor médio", "valor medio", "média de", "media de",
+    "estatística", "estatisticas", "estatística", "estatistica",
+    # Rankings e ordenações
+    "ranking", "top 10", "top 5", "top 20",
+    "mais favorável", "mais favoravel", "menos favorável", "menos favoravel",
+    "mais ativo", "mais comum", "mais frequente",
+    # Distribuições e comparações
+    "distribuição", "distribuicao", "distribuir por",
+    "compare os", "compare a", "comparar tribunais", "comparar varas",
+    # Referência explícita à base
+    "na base do jurimetrix", "na base de processos", "no banco do jurimetrix",
+    "todos os processos do", "todas as decisões",
+]
+
+def detect_agent_intent(msg: str) -> bool:
+    """Detecta se a pergunta deve ser delegada ao agente Claude com tool use."""
+    m = (msg or "").lower()
+    return any(t in m for t in AGENT_TRIGGERS)
+
+
 def classify_prompt(message:str, has_proc:bool)->str:
     msg=message.lower().strip()
     words=set(msg.split())
@@ -2670,6 +2707,34 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     numbers=detect_numbers(message)
     has_proc=bool(numbers) or bool(s.get("last_process_numero"))
     plevel=classify_prompt(message,has_proc)
+
+    # ── Auto-route ao agente (perguntas estatísticas/jurimétricas) ────
+    # Se a pergunta tem trigger estatístico E não tem número CNJ específico,
+    # delega ao /chat-agent (Claude com tool use sobre Supabase).
+    if AGENT_OK and AGENT_MOD and not numbers and detect_agent_intent(message):
+        try:
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in s["messages"][:-1][-8:]
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            ag_result = AGENT_MOD.run_agent(
+                user_message=message,
+                conversation_history=history,
+            )
+            if not ag_result.get("error"):
+                reply = ag_result.get("message", "Sem resposta")
+                s["messages"].append({"role": "assistant", "content": reply})
+                s["messages"] = s["messages"][-20:]
+                if user_id and SUPABASE_OK:
+                    SB.registrar_tokens_resposta(user_id, len(reply))
+                tool_names = [tc.get("name") for tc in (ag_result.get("tool_calls") or [])]
+                log.info(f"[/chat → agent] Tools: {tool_names}")
+                return ChatOut(message=reply, state=state, prompt_level="agent", conversa_id=payload.conversa_id)
+            # Se erro, cai no fluxo normal (não retorna)
+            log.warning(f"[/chat → agent] Erro no agent, fallback: {ag_result.get('message','')[:120]}")
+        except Exception as _ag_err:
+            log.warning(f"[/chat → agent] Exception, fallback: {_ag_err}")
 
     # ── BACEN SGS — índices econômicos e cálculos trabalhistas ─────
     bacen_tipo = detect_bacen_intent(message) if BACEN_OK else None
