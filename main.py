@@ -1,8 +1,9 @@
 """
-SM OS Chat — Jurimetrix v8.0
+SM OS Chat — Jurimetrix v9.0 (Claude Sonnet 4.6)
 ════════════════════════════════════════════════════════
 Backend completo: DataJud + MNI/PJe + OS 6.1 + Auth + Asaas
 Domínio: https://jurimetrix.com
+LLM: Claude Sonnet 4.6 (migrado de GPT-4o em 28/abr/26)
 ════════════════════════════════════════════════════════
 """
 import os, re, io, uuid, json, base64, textwrap, logging
@@ -35,8 +36,11 @@ except Exception:
 # ═══════════════════════════════════════════════════════
 def _e(k, d=""): return (os.getenv(k) or d).strip()
 
-OPENAI_API_KEY        = _e("OPENAI_API_KEY")
-OPENAI_MODEL          = _e("OPENAI_MODEL", "gpt-4o")
+# ── Anthropic / Claude ────────────────────────────────────────────
+ANTHROPIC_API_KEY     = _e("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL       = _e("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_VERSION     = _e("ANTHROPIC_VERSION", "2023-06-01")
+
 DEMO_KEY              = _e("DEMO_KEY")
 ALLOWED_ORIGIN        = _e("ALLOWED_ORIGIN", "https://jurimetrix.com")
 OS_6_1_PROMPT         = _e("OS_6_1_PROMPT")
@@ -454,7 +458,7 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
         # V2 retorna objeto direto do processo
         # V1 retorna lista em items/data
         items = result.get("items") or result.get("data") or []
-        
+
         # Se o resultado é o processo direto (V2)
         if not items and (result.get("numero_cnj") or result.get("numero")):
             items = [result]
@@ -462,12 +466,12 @@ def enrich_with_escavador(proc: dict, numero: str) -> dict:
         # Percorre resultados buscando o processo exato
         for item in (items if isinstance(items, list) else [items] if isinstance(items, dict) else []):
             num_item = re.sub(r'\D', '', str(item.get("numero_cnj") or item.get("numero_novo") or item.get("numero") or ""))
-            
+
             # Match exato ou parcial
             if num_item == numero_limpo or numero_limpo in num_item or num_item in numero_limpo:
                 # Extrair partes de múltiplos formatos
                 if not proc.get("polo_ativo"):
-                    pa = (item.get("titulo_polo_ativo") or 
+                    pa = (item.get("titulo_polo_ativo") or
                           item.get("polo_ativo") or
                           item.get("partes_polo_ativo") or "")
                     if isinstance(pa, list):
@@ -640,7 +644,7 @@ def classif_mov(mov:dict)->str:
 def extract_mag_datajud(movs:list, src:dict=None)->Optional[str]:
     """
     Extrai nome do magistrado das movimentações DataJud.
-    Busca em: campos do source, magistradoProlator, responsavelMovimento, 
+    Busca em: campos do source, magistradoProlator, responsavelMovimento,
     orgaoJulgador, complementos e texto das movimentações.
     """
     # 0. Campos diretos no source (top-level)
@@ -934,7 +938,7 @@ INSTRUCAO:Dict[str,str]={
 }
 
 # ═══════════════════════════════════════════════════════
-# OPENAI
+# CLAUDE (Anthropic) — substituiu OpenAI/GPT em 28/abr/26
 # ═══════════════════════════════════════════════════════
 MAX_TOKENS_PER_LEVEL = {
     "simples":    400,
@@ -946,31 +950,113 @@ MAX_TOKENS_PER_LEVEL = {
     "erro":       200,
 }
 
-def call_openai(messages:List[dict], temperature:float=0.15, max_tokens:int=None) -> str:
-    if not OPENAI_API_KEY: raise RuntimeError("OPENAI_API_KEY não configurado.")
-    body = {"model":OPENAI_MODEL, "messages":messages, "temperature":temperature}
-    if max_tokens:
-        # Modelos novos (gpt-4o, gpt-5+) usam max_completion_tokens
-        body["max_completion_tokens"] = max_tokens
-    r=requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"},
-        json=body, timeout=90,
-    )
-    try: r.raise_for_status()
+def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int = 1500) -> str:
+    """
+    Drop-in replacement para call_openai.
+
+    Aceita o MESMO formato de messages que OpenAI: [{"role":"system",...}, {"role":"user",...}, ...]
+    A função extrai automaticamente o(s) bloco(s) "system" e os passa como parâmetro top-level
+    para a API Anthropic. Os call sites NÃO precisam ser alterados além do nome da função.
+
+    Notas:
+    - max_tokens é OBRIGATÓRIO no Anthropic (default 1500 se não informado).
+    - Usa prompt caching (ephemeral, 5min) no system prompt — reduz ~90% do custo
+      quando o mesmo system se repete em chamadas próximas (típico do OS 6.1).
+    """
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY não configurado.")
+
+    # Extrai system messages (OpenAI permite system no array; Anthropic exige top-level)
+    system_parts: List[str] = []
+    user_assistant_msgs: List[dict] = []
+    for m in messages or []:
+        role = m.get("role")
+        content = m.get("content", "")
+        if role == "system":
+            if content:
+                system_parts.append(content)
+        elif role in ("user", "assistant"):
+            # Anthropic não aceita content vazio
+            if content:
+                user_assistant_msgs.append({"role": role, "content": content})
+
+    # Anthropic requer pelo menos uma mensagem user
+    if not user_assistant_msgs:
+        raise RuntimeError("call_claude: nenhuma mensagem user/assistant fornecida.")
+
+    # Garante que a primeira mensagem é do user (Anthropic requirement)
+    if user_assistant_msgs[0]["role"] != "user":
+        user_assistant_msgs.insert(0, {"role": "user", "content": "(continuação)"})
+
+    body: Dict[str, Any] = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": user_assistant_msgs,
+    }
+
+    # System como bloco com cache_control (prompt caching ephemeral 5min)
+    # System curto não vale a pena cachear (mínimo ~1024 tokens), mas Anthropic ignora
+    # cache_control silenciosamente se for muito pequeno — então sempre marcamos.
+    if system_parts:
+        system_text = "\n\n".join(system_parts)
+        body["system"] = [{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json=body,
+            timeout=120,
+        )
+        r.raise_for_status()
     except requests.HTTPError as e:
-        raise RuntimeError(f"Erro OpenAI: {(e.response.text if e.response else '')[:400]}")
+        err_body = (e.response.text if e.response else "")[:400]
+        log.error(f"[Claude] HTTP error: {err_body}")
+        raise RuntimeError(f"Erro Anthropic: {err_body}")
+    except requests.RequestException as e:
+        log.error(f"[Claude] connection error: {e}")
+        raise RuntimeError(f"Erro Anthropic conexão: {e}")
+
     data = r.json()
-    # Log actual token usage from OpenAI
+
+    # Log token usage (incluindo cache hits para monitorar economia)
     usage = data.get("usage", {})
     if usage:
-        log.info(f"[OpenAI] tokens: input={usage.get('prompt_tokens',0)} output={usage.get('completion_tokens',0)} total={usage.get('total_tokens',0)}")
-    return (data.get("choices") or [{}])[0].get("message",{}).get("content","").strip() or "Sem resposta."
+        log.info(
+            f"[Claude] tokens: input={usage.get('input_tokens',0)} "
+            f"output={usage.get('output_tokens',0)} "
+            f"cache_read={usage.get('cache_read_input_tokens',0)} "
+            f"cache_create={usage.get('cache_creation_input_tokens',0)}"
+        )
+
+    # Extrai texto dos content blocks (pode haver vários)
+    content_blocks = data.get("content") or []
+    text_parts = [
+        block.get("text", "")
+        for block in content_blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    result = "\n".join(p for p in text_parts if p).strip()
+    return result or "Sem resposta."
+
+
+# Alias retrocompatível: caso algum endpoint externo ainda chame call_openai,
+# ele cai automaticamente no Claude. Pode ser removido depois de validar.
+call_openai = call_claude
 
 # ═══════════════════════════════════════════════════════
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════
-app = FastAPI(title="Jurimetrix OS Chat", version="8.0.0")
+app = FastAPI(title="Jurimetrix OS Chat", version="9.0.0")
 app.add_middleware(CORSMiddleware,
     allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com", "https://chat.jurimetrix.com", "https://painel.jurimetrix.com", "https://admin.jurimetrix.com"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -1113,16 +1199,16 @@ async def mp_webhook(body: dict):
             pagamento = MP.verificar_pagamento(str(payment_id))
             status = pagamento.get("status")
             ext_ref = pagamento.get("external_reference", "")
-            
+
             log.info(f"[MP Webhook] payment_id={payment_id} status={status} ext_ref={ext_ref}")
-            
+
             if status == "approved" and ext_ref and "|" in ext_ref and SUPABASE_OK:
                 parts = ext_ref.split("|")
                 user_id = parts[0]
                 plano_slug = parts[1] if len(parts) > 1 else "free"
                 plano_info = MP.PLANOS.get(plano_slug, {})
                 tokens = plano_info.get("tokens")
-                
+
                 SB.atualizar_plano_usuario(
                     user_id=user_id,
                     plano_slug=plano_slug,
@@ -1130,7 +1216,7 @@ async def mp_webhook(body: dict):
                     payment_id=str(payment_id),
                 )
                 log.info(f"[MP Webhook] ✅ Plano {plano_slug} ativado para user {user_id}")
-        
+
         return {"ok": True}
     except Exception as e:
         log.error(f"[MP Webhook] Erro: {e}")
@@ -2050,8 +2136,8 @@ class InsightsIn(BaseModel):
 @app.post("/api/jurimetria/insights")
 def api_jurimetria_insights(body: InsightsIn):
     """Gera insights estratégicos com IA baseado nos dados jurimétricos."""
-    if not OPENAI_API_KEY:
-        raise HTTPException(503, "OpenAI não configurado")
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(503, "Anthropic não configurado")
 
     # Build context from analysis data
     ctx_lines = [
@@ -2127,7 +2213,7 @@ REGRAS:
 - Máximo 500 palavras"""
 
     try:
-        reply = call_openai(
+        reply = call_claude(
             [
                 {"role": "system", "content": "Você é um jurimetrista sênior especializado em análise estratégica processual. Analise dados estatísticos e gere insights acionáveis para advogados."},
                 {"role": "user", "content": f"{contexto}\n\n{prompt}"},
@@ -2346,15 +2432,15 @@ async def speech_to_text(
     authorization: Optional[str] = Header(default=None),
 ):
     import base64, json, os
-    
+
     GOOGLE_CREDS = os.getenv("GOOGLE_VISION_CREDENTIALS")
     if not GOOGLE_CREDS:
         raise HTTPException(503, "Google Cloud não configurado")
-    
+
     try:
         audio_data = await audio.read()
         audio_b64 = base64.b64encode(audio_data).decode()
-        
+
         if OCR_OK and OCR_MOD:
             token = OCR_MOD._get_access_token()
         else:
@@ -2423,7 +2509,7 @@ async def speech_to_text(
         raise HTTPException(500, f"Erro na transcrição: {str(e)}")
 
 @app.get("/ping")
-def ping(): return {"ok":True,"version":"8.0.0"}
+def ping(): return {"ok":True,"version":"9.0.0","llm":"claude-sonnet-4-6"}
 
 @app.get("/painel")
 def serve_painel():
@@ -2458,7 +2544,10 @@ def serve_chat():
 @app.get("/health")
 def health():
     return {
-        "ok":True,"version":"8.0.0","model":OPENAI_MODEL,
+        "ok":True,"version":"9.0.0",
+        "llm_provider":"anthropic",
+        "model": ANTHROPIC_MODEL,
+        "anthropic":{"ok": bool(ANTHROPIC_API_KEY), "model": ANTHROPIC_MODEL},
         "os_61_loaded":bool(OS_6_1_PROMPT),
         "datajud":{"enabled":DATAJUD_ENABLED,"alias":DATAJUD_DEFAULT_ALIAS},
         "mni":{"enabled":MNI_ENABLED},
@@ -2534,7 +2623,11 @@ def gerar_relatorio(
             "PENDÊNCIAS\nALERTAS\nResposta em português formal."
         )
         sys_p=build_system_prompt("os61",context)
-        analise_texto=call_openai([{"role":"system","content":sys_p},{"role":"user","content":instrucao}],temperature=0.1)
+        analise_texto=call_claude(
+            [{"role":"system","content":sys_p},{"role":"user","content":instrucao}],
+            temperature=0.1,
+            max_tokens=MAX_TOKENS_PER_LEVEL["os61"],
+        )
         analise_dict=parse_analise_gpt(analise_texto)
         pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
         s["last_analise"]=analise_dict; s["last_analise_texto"]=analise_texto
@@ -2572,14 +2665,14 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     if bacen_tipo:
         try:
             bacen_dados = {}
-            
+
             bacen_dados["indices"] = BACEN_MOD.BACEN.indices_atuais()
-            
+
             valor_match = re.search(r'r\$\s*([\d.,]+)', message.lower())
             if valor_match:
                 valor_str = valor_match.group(1).replace('.','').replace(',','.')
                 valor = float(valor_str)
-                
+
                 data_match = re.search(r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{4})', message)
                 if data_match:
                     data_raw = data_match.group(1)
@@ -2588,7 +2681,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     else:
                         data_inicio = data_raw
                     bacen_dados["correcao"] = BACEN_MOD.BACEN.calcular_correcao_inpc(valor, data_inicio)
-                
+
                 meses_match = re.search(r'(\d+)\s*m[eê]s', message.lower())
                 if meses_match:
                     meses = int(meses_match.group(1))
@@ -2599,13 +2692,13 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 "correcao": bacen_dados.get("correcao"),
                 "juros": bacen_dados.get("juros"),
             })
-            
+
             sys_p = build_system_prompt("juridico", ctx_bacen)
             msgs_bacen = [{"role":"system","content":sys_p}]
             for item in s["messages"][-6:]:
                 if item["role"] in {"user","assistant"}: msgs_bacen.append(item)
             msgs_bacen[-1] = {"role":"user","content":f"{message}\n\n[Use os dados econômicos fornecidos no contexto. Apresente os valores de forma direta e objetiva — não cite a fonte dos dados. Se algum índice não estiver disponível, informe que o dado está temporariamente indisponível. Responda em português, de forma concisa.]"}
-            reply = call_openai(msgs_bacen, 0.1, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
+            reply = call_claude(msgs_bacen, 0.1, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
             s["messages"].append({"role":"assistant","content":reply})
             return ChatOut(message=reply, state=state, prompt_level="juridico")
         except Exception as _bacen_err:
@@ -2640,7 +2733,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
                 msgs[-1] = {"role":"user","content":f"{message}\n\n[Use os dados fornecidos no contexto para responder com precisão. Nunca mencione a fonte dos dados nem o nome 'Escavador'. Apresente as informações como se fossem do próprio sistema Jurimetrix. Responda em português.]"}
-                reply = call_openai(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
+                reply = call_claude(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL["juridico"])
                 s["messages"].append({"role":"assistant","content":reply})
                 return ChatOut(message=reply,state=state,prompt_level="juridico")
         except Exception as _esc_err:
@@ -2670,7 +2763,11 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                         "PENDÊNCIAS\nALERTAS\nResposta em português formal."
                     )
                     sys_p=build_system_prompt("os61",context)
-                    analise_texto=call_openai([{"role":"system","content":sys_p},{"role":"user","content":instrucao}],temperature=0.1)
+                    analise_texto=call_claude(
+                        [{"role":"system","content":sys_p},{"role":"user","content":instrucao}],
+                        temperature=0.1,
+                        max_tokens=MAX_TOKENS_PER_LEVEL["os61"],
+                    )
                     analise_dict=parse_analise_gpt(analise_texto)
                     pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
                     # Save PDF
@@ -2789,7 +2886,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
 
                 ctx=build_ctx(proc,intent,alias)+extra
 
-                # Verificar tribunal async ANTES do GPT
+                # Verificar tribunal async ANTES do LLM
                 # O async teve tempo de processar enquanto fazíamos banco/NL/temático
                 if _trib_async_id and not proc.get("magistrado"):
                     import time as _time
@@ -2812,7 +2909,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 for item in s["messages"][-6:]:
                     if item["role"] in {"user","assistant"}: msgs.append(item)
                 msgs[-1]={"role":"user","content":f"{message}\n\n[INSTRUÇÃO: {instruc} {fmt_hint}]"}
-                reply=call_openai(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL.get(eff_lvl, 1500))
+                reply=call_claude(msgs, 0.15, max_tokens=MAX_TOKENS_PER_LEVEL.get(eff_lvl, 1500))
 
                 s["messages"].append({"role":"assistant","content":reply})
                 if user_id and SUPABASE_OK:
@@ -2841,7 +2938,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
 
     temp=0.1 if plevel=="os61" else (0.2 if plevel in ("juridico","doc_medio") else 0.35)
     try:
-        reply=call_openai(msgs, temp, max_tokens=MAX_TOKENS_PER_LEVEL.get(plevel, 1200))
+        reply=call_claude(msgs, temp, max_tokens=MAX_TOKENS_PER_LEVEL.get(plevel, 1200))
     except Exception as e:
         reply=f"Erro: {str(e)}"
 
