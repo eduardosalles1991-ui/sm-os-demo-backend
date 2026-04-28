@@ -1135,6 +1135,16 @@ except Exception as _stf_e:
     STF_OK = False
     log.warning(f"⚠️ stf_client não carregado: {_stf_e}")
 
+# ── Claude Agent (tool use sobre Supabase) ─────────────────────────
+try:
+    import agent as AGENT_MOD
+    AGENT_OK = AGENT_MOD.is_configured()
+    log.info(f"{'✅' if AGENT_OK else '⚠️ '} Claude Agent {'configurado' if AGENT_OK else 'não configurado'}")
+except Exception as _ag_e:
+    AGENT_MOD = None
+    AGENT_OK = False
+    log.warning(f"⚠️  agent.py não carregado: {_ag_e}")
+
 # ── Auth + planos + pagamentos ───────────────────────────────────────
 from database import criar_tabelas
 from rotas_auth_planos import registrar_rotas
@@ -2556,6 +2566,7 @@ def health():
         "escavador":{"ok":ESCAVADOR_OK,"configured":bool(os.getenv("ESCAVADOR_API_KEY"))},
         "pje_scraper":{"ok":PJE_OK},
         "stf_jurisprudencia":{"ok":STF_OK},
+        "agent":{"ok": AGENT_OK, "model": ANTHROPIC_MODEL if AGENT_OK else None},
         "bacen":{"ok":BACEN_OK},
         "ocr":{"ok":OCR_OK,"configured":bool(os.getenv("GOOGLE_VISION_CREDENTIALS"))},
         "nl":{"ok":NL_OK},
@@ -2947,3 +2958,83 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     if user_id and SUPABASE_OK:
         SB.registrar_tokens_resposta(user_id, len(reply))
     return ChatOut(message=reply,state=state,prompt_level=plevel)
+
+
+# ═══════════════════════════════════════════════════════
+# CLAUDE AGENT — endpoint /chat-agent (tool use sobre Supabase)
+# ═══════════════════════════════════════════════════════
+@app.post("/chat-agent", response_model=ChatOut)
+def chat_agent(
+    payload: ChatIn,
+    x_demo_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Chat com Claude usando tool use para consultar Supabase diretamente.
+    Diferente do /chat: aqui Claude decide sozinho quando consultar a base
+    de processos_base ou jurisprudencia. Útil para perguntas tipo:
+    - "Qual juiz é mais favorável a horas extras no TJSP?"
+    - "Quantos processos por tribunal sobre dano moral em 2024?"
+    - "Mostre precedentes do STJ sobre periculosidade"
+    """
+    auth401(x_demo_key)
+    if not AGENT_OK or not AGENT_MOD:
+        raise HTTPException(503, "Agent não disponível — verifique ANTHROPIC_API_KEY e SUPABASE_SERVICE_KEY")
+
+    s = sess(payload.session_id)
+    message = (payload.message or "").strip()
+    state = payload.state or {}
+
+    if not message:
+        raise HTTPException(400, "Mensagem vazia")
+
+    # Verificar e decrementar tokens
+    user_id = get_user_from_request(authorization) if authorization else None
+    if user_id and SUPABASE_OK:
+        tokens_check = SB.verificar_e_decrementar_tokens(user_id, len(message))
+        if tokens_check and not tokens_check.get("ok"):
+            return ChatOut(
+                message="Limite de tokens atingido! Faca upgrade em jurimetrix.com/pricing",
+                state=state,
+                prompt_level="limite",
+            )
+
+    # Construir histórico (últimas 10 mensagens user/assistant da sessão)
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in s.get("messages", [])[-10:]
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+
+    # Salvar a nova mensagem do usuário
+    s["messages"].append({"role": "user", "content": message})
+    s["messages"] = s["messages"][-20:]
+
+    try:
+        result = AGENT_MOD.run_agent(
+            user_message=message,
+            conversation_history=history,
+        )
+    except Exception as e:
+        log.exception("Erro chat-agent")
+        return ChatOut(message=f"Erro: {e}", state=state, prompt_level="erro")
+
+    reply = result.get("message", "Sem resposta")
+
+    if not result.get("error"):
+        s["messages"].append({"role": "assistant", "content": reply})
+        s["messages"] = s["messages"][-20:]
+        if user_id and SUPABASE_OK:
+            SB.registrar_tokens_resposta(user_id, len(reply))
+
+    # Log das tools chamadas (visível no Render)
+    tool_calls = result.get("tool_calls", []) or []
+    if tool_calls:
+        log.info(f"[chat-agent] Tools usadas: {[tc.get('name') for tc in tool_calls]}")
+
+    return ChatOut(
+        message=reply,
+        state=state,
+        prompt_level="agent",
+        conversa_id=payload.conversa_id,
+    )
