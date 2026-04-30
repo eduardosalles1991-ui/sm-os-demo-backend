@@ -1,9 +1,15 @@
 """
-SM OS Chat — Jurimetrix v9.0 (Claude Sonnet 4.6)
+SM OS Chat — Jurimetrix v9.1.0 (Claude Sonnet 4.6)
 ════════════════════════════════════════════════════════
 Backend completo: DataJud + MNI/PJe + OS 6.1 + Auth + Asaas
 Domínio: https://jurimetrix.com
 LLM: Claude Sonnet 4.6 (migrado de GPT-4o em 28/abr/26)
+
+NOVO em v9.1.0 (Onda 1 — Lazy Enrichment):
+  - 5 endpoints /api/v2/... (Tela Landing + CNJ específico + Camadas 3 e 5)
+  - persist_enrichment() salva COALESCE-only no Supabase via RPC
+  - _supabase_rpc() helper genérico para chamar RPCs
+  - Não toca em /chat, /chat-agent, /api/jurimetria/* (compatível 100%)
 ════════════════════════════════════════════════════════
 """
 import os, re, io, uuid, json, base64, textwrap, logging
@@ -655,6 +661,122 @@ def enrich_with_tribunal(proc: dict, numero: str) -> dict:
 # Cache global para IDs de busca assíncrona
 _tribunal_cache = {}
 
+
+# ═══════════════════════════════════════════════════════════════════
+# LAZY ENRICHMENT (Onda 1) — persiste enrichment no Supabase
+# ═══════════════════════════════════════════════════════════════════
+
+def persist_enrichment(numero_cnj: str, proc: dict) -> dict:
+    """
+    Persiste enriquecimento de volta em processos_base usando COALESCE-only:
+    sobrescreve APENAS campos que estão NULL/vazios na base.
+    Preserva qualquer dado já existente (incluindo regex extractions).
+    """
+    if not SUPABASE_OK or not SB or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return {"persisted": False, "reason": "Supabase não configurado"}
+
+    if not proc:
+        return {"persisted": False, "reason": "Processo vazio"}
+
+    numero_limpo = re.sub(r"\D", "", numero_cnj)
+    if len(numero_limpo) != 20:
+        return {"persisted": False, "reason": "CNJ inválido (esperado 20 dígitos)"}
+
+    payload: Dict[str, Any] = {}
+
+    if proc.get("magistrado") and isinstance(proc.get("magistrado"), str):
+        if len(proc["magistrado"].strip()) > 3:
+            payload["magistrado"] = proc["magistrado"].strip()
+
+    polo_ativo = proc.get("polo_ativo") or []
+    if isinstance(polo_ativo, list) and len(polo_ativo) > 0:
+        payload["polo_ativo"] = [str(p) for p in polo_ativo if p]
+
+    polo_passivo = proc.get("polo_passivo") or []
+    if isinstance(polo_passivo, list) and len(polo_passivo) > 0:
+        payload["polo_passivo"] = [str(p) for p in polo_passivo if p]
+
+    valor_causa = proc.get("valor_causa")
+    if valor_causa:
+        try:
+            v = float(valor_causa) if not isinstance(valor_causa, (int, float)) else valor_causa
+            if v > 0:
+                payload["valor_causa"] = v
+        except (TypeError, ValueError):
+            pass
+
+    # Calcula duracao_dias se temos data_ajuizamento + data_sentenca
+    data_aj = proc.get("data_ajuizamento")
+    data_sent = None
+    sentencas = proc.get("sentencas") or []
+    if sentencas:
+        ds_raw = sentencas[0].get("dataHora") or ""
+        if len(str(ds_raw)) >= 10:
+            data_sent = str(ds_raw)[:10]
+
+    if data_aj and data_sent:
+        try:
+            from datetime import datetime as _dt
+            d1 = _dt.fromisoformat(str(data_aj)[:10])
+            d2 = _dt.fromisoformat(data_sent)
+            dias = (d2 - d1).days
+            if dias > 0:
+                payload["duracao_dias"] = dias
+        except Exception:
+            pass
+
+    if not payload:
+        return {"persisted": False, "reason": "Nada novo para persistir"}
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/rpc/persist_cnj_enrichment"
+        body = {
+            "p_numero_limpo": numero_limpo,
+            "p_data": payload,
+        }
+        r = requests.post(
+            url,
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=10,
+        )
+        if 200 <= r.status_code < 300:
+            result = r.json() or {}
+            updated = result.get("updated_fields") or []
+            log.info(f"[Enrich] CNJ={numero_cnj}: persistido — updated_fields={updated}")
+            return {"persisted": True, **result}
+        else:
+            log.warning(f"[Enrich] persist_enrichment HTTP {r.status_code}: {r.text[:200]}")
+            return {"persisted": False, "reason": f"HTTP {r.status_code}", "detail": r.text[:200]}
+    except Exception as e:
+        log.warning(f"[Enrich] persist_enrichment exception: {e}")
+        return {"persisted": False, "reason": str(e)}
+
+
+def _supabase_rpc(rpc_name: str, body: dict, timeout: int = 15) -> dict:
+    """Helper genérico para chamar RPCs do Supabase via REST API."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        raise RuntimeError("Supabase não configurado")
+
+    url = f"{SUPABASE_URL}/rest/v1/rpc/{rpc_name}"
+    r = requests.post(
+        url,
+        headers={
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=body or {},
+        timeout=timeout,
+    )
+    if 200 <= r.status_code < 300:
+        return r.json()
+    raise RuntimeError(f"RPC {rpc_name} HTTP {r.status_code}: {r.text[:300]}")
+
 # ═══════════════════════════════════════════════════════
 # DATAJUD
 # ═══════════════════════════════════════════════════════
@@ -692,10 +814,7 @@ def extract_mag_datajud(movs:list, src:dict=None)->Optional[str]:
                 nome = (mag.get("nome") or mag.get("nomeServidor")) if isinstance(mag, dict) else str(mag)
                 if nome and len(str(nome).strip()) > 3:
                     return str(nome).strip()
-        # orgaoJulgador pode ter codigoMunicipioIBGE e nome do juiz
         orgao = src.get("orgaoJulgador") or {}
-        orgao_cod = orgao.get("codigoMunicipioIBGE") or ""
-        # Algumas instâncias incluem magistrado no orgaoJulgador
         for field in ("magistrado", "juiz", "nomeJuiz"):
             mag = orgao.get(field)
             if mag and len(str(mag).strip()) > 3:
@@ -714,7 +833,6 @@ def extract_mag_datajud(movs:list, src:dict=None)->Optional[str]:
     for m in movs:
         for comp in (m.get("complementosTabelados") or []):
             if isinstance(comp, dict):
-                # Check all text fields in the complement
                 for fld in ("descricao", "nome", "valor", "texto"):
                     desc = str(comp.get(fld) or "")
                     if not desc or len(desc) < 5:
@@ -779,16 +897,14 @@ def extract_valor_from_movs(movs: list) -> Optional[float]:
                 texto = comp.get("descricao") or comp.get("valor") or comp.get("texto") or comp.get("nome") or ""
             if not texto:
                 continue
-            # Padrões de valor: R$ 50.000,00 ou R$50000
             match = re.search(r'R\$\s*([\d.,]+)', texto)
             if match:
                 try:
                     val_str = match.group(1).strip()
-                    # "50.000,00" → 50000.00
                     if ',' in val_str:
                         val_str = val_str.replace('.', '').replace(',', '.')
                     val = float(val_str)
-                    if val > 100:  # Filtrar valores muito pequenos (provavelmente custas)
+                    if val > 100:
                         return val
                 except:
                     pass
@@ -990,20 +1106,13 @@ MAX_TOKENS_PER_LEVEL = {
 def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int = 1500) -> str:
     """
     Drop-in replacement para call_openai.
-
     Aceita o MESMO formato de messages que OpenAI: [{"role":"system",...}, {"role":"user",...}, ...]
     A função extrai automaticamente o(s) bloco(s) "system" e os passa como parâmetro top-level
-    para a API Anthropic. Os call sites NÃO precisam ser alterados além do nome da função.
-
-    Notas:
-    - max_tokens é OBRIGATÓRIO no Anthropic (default 1500 se não informado).
-    - Usa prompt caching (ephemeral, 5min) no system prompt — reduz ~90% do custo
-      quando o mesmo system se repete em chamadas próximas (típico do OS 6.1).
+    para a API Anthropic.
     """
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY não configurado.")
 
-    # Extrai system messages (OpenAI permite system no array; Anthropic exige top-level)
     system_parts: List[str] = []
     user_assistant_msgs: List[dict] = []
     for m in messages or []:
@@ -1013,15 +1122,12 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
             if content:
                 system_parts.append(content)
         elif role in ("user", "assistant"):
-            # Anthropic não aceita content vazio
             if content:
                 user_assistant_msgs.append({"role": role, "content": content})
 
-    # Anthropic requer pelo menos uma mensagem user
     if not user_assistant_msgs:
         raise RuntimeError("call_claude: nenhuma mensagem user/assistant fornecida.")
 
-    # Garante que a primeira mensagem é do user (Anthropic requirement)
     if user_assistant_msgs[0]["role"] != "user":
         user_assistant_msgs.insert(0, {"role": "user", "content": "(continuação)"})
 
@@ -1032,9 +1138,6 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
         "messages": user_assistant_msgs,
     }
 
-    # System como bloco com cache_control (prompt caching ephemeral 5min)
-    # System curto não vale a pena cachear (mínimo ~1024 tokens), mas Anthropic ignora
-    # cache_control silenciosamente se for muito pequeno — então sempre marcamos.
     if system_parts:
         system_text = "\n\n".join(system_parts)
         body["system"] = [{
@@ -1065,7 +1168,6 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
 
     data = r.json()
 
-    # Log token usage (incluindo cache hits para monitorar economia)
     usage = data.get("usage", {})
     if usage:
         log.info(
@@ -1075,7 +1177,6 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
             f"cache_create={usage.get('cache_creation_input_tokens',0)}"
         )
 
-    # Extrai texto dos content blocks (pode haver vários)
     content_blocks = data.get("content") or []
     text_parts = [
         block.get("text", "")
@@ -1086,14 +1187,13 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
     return result or "Sem resposta."
 
 
-# Alias retrocompatível: caso algum endpoint externo ainda chame call_openai,
-# ele cai automaticamente no Claude. Pode ser removido depois de validar.
+# Alias retrocompatível
 call_openai = call_claude
 
 # ═══════════════════════════════════════════════════════
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════
-app = FastAPI(title="Jurimetrix OS Chat", version="9.0.0")
+app = FastAPI(title="Jurimetrix OS Chat", version="9.1.0")
 app.add_middleware(CORSMiddleware,
     allow_origins=["*"] if ALLOWED_ORIGIN=="*" else [ALLOWED_ORIGIN, "https://jurimetrix.com", "http://localhost", "https://sm-os-demo-backend.onrender.com", "https://chat.jurimetrix.com", "https://painel.jurimetrix.com", "https://admin.jurimetrix.com"],
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -1476,11 +1576,9 @@ def _classificar_processo(proc: dict) -> str:
     movs = proc.get("movimentos_todos") or []
     for m in movs:
         nome = (m.get("nome") or "").lower()
-        # Checar keywords
         for kw, resultado in KW_RESULTADO_MOV.items():
             if kw in nome:
                 return resultado
-        # Checar complementos
         for comp in (m.get("complementosTabelados") or []):
             desc = (comp.get("descricao") or comp.get("nome") or "").lower()
             for kw, resultado in KW_RESULTADO_MOV.items():
@@ -1493,10 +1591,8 @@ def _parse_datajud_date(raw) -> Optional[str]:
     if not raw:
         return None
     s = str(raw).strip()
-    # ISO: 2019-10-21T10:00:00
     if len(s) >= 10 and s[4] == '-':
         return s[:10]
-    # Compact: 20191021 ou 20191021100000
     digits = re.sub(r'\D', '', s)
     if len(digits) >= 8:
         return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
@@ -1531,7 +1627,6 @@ def _calcular_duracao_dias(proc: dict) -> Optional[int]:
         inicio = _dt.fromisoformat(data_inicio)
     except:
         return None
-    # Procura data da sentença
     for s in (proc.get("sentencas") or []):
         ds = _parse_datajud_date(s.get("dataHora"))
         if ds:
@@ -1541,7 +1636,6 @@ def _calcular_duracao_dias(proc: dict) -> Optional[int]:
                     return dias
             except:
                 pass
-    # Fallback: última movimentação
     ult_raw = proc.get("ultima_movimentacao_data") or ""
     ult = _parse_datajud_date(ult_raw)
     if ult:
@@ -1565,7 +1659,6 @@ ALIAS_TO_TRIBUNAL = {
     "api_publica_stj": "STJ", "api_publica_stf": "STF",
     "api_publica_tst": "TST",
 }
-# Gerar automaticamente para os restantes
 for i in range(1, 25):
     k = f"api_publica_trt{i}"
     if k not in ALIAS_TO_TRIBUNAL:
@@ -1590,7 +1683,6 @@ def query_processos_base(assunto: str, tribunal_alias: str = "", vara: str = "",
         return []
 
     try:
-        # Montar filtros
         filters = []
         if assunto:
             filters.append(f"assuntos=cs.{{{json.dumps(assunto)}}}")
@@ -1714,20 +1806,16 @@ def api_jurimetria(
 ):
     """Endpoint de jurimetria — tenta base Supabase primeiro, fallback DataJud."""
 
-    # 1. Tentar Supabase (instantâneo)
     rows = query_processos_base(assunto, tribunal, vara, limit=500)
     if len(rows) >= 5:
         return _analyze_base_processos(rows, assunto, tribunal, vara)
 
-    # 2. Fallback: DataJud ao vivo
     if not DATAJUD_ENABLED:
         if rows:
             return _analyze_base_processos(rows, assunto, tribunal, vara)
         raise HTTPException(503, "DataJud não habilitado e base vazia")
 
-    # Construir query
     must = []
-    # Assunto — busca por nome (mais confiável que código)
     ass_names = {
         "horas extras": "Horas Extras",
         "periculosidade": "Adicional de Periculosidade",
@@ -1737,7 +1825,6 @@ def api_jurimetria(
     nome_assunto = ass_names.get(ass_lower, assunto)
     must.append({"match_phrase": {"assuntos.nome": nome_assunto}})
 
-    # Vara
     if vara:
         must.append({"match_phrase": {"orgaoJulgador.nome": vara}})
 
@@ -1751,7 +1838,6 @@ def api_jurimetria(
     except Exception as e:
         raise HTTPException(500, f"Erro DataJud: {e}")
 
-    # Analisar cada processo
     resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
     duracoes = []
     valores = []
@@ -1769,7 +1855,6 @@ def api_jurimetria(
             duracoes.append(duracao)
 
         vc = proc.get("valor_causa")
-        # DataJud pode retornar como dict, string ou número
         if isinstance(vc, dict):
             vc = vc.get("valor") or vc.get("amount")
         if isinstance(vc, str):
@@ -1790,7 +1875,6 @@ def api_jurimetria(
         else:
             vc = None
 
-        # Por vara
         vara_nome = proc.get("orgao_julgador") or "Não identificada"
         if vara_nome not in por_vara:
             por_vara[vara_nome] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0}
@@ -1798,7 +1882,6 @@ def api_jurimetria(
         if resultado in por_vara[vara_nome]:
             por_vara[vara_nome][resultado] += 1
 
-        # Por ano
         ano_date = _parse_datajud_date(proc.get("data_ajuizamento"))
         ano = ano_date[:4] if ano_date else ""
         if ano and ano.isdigit():
@@ -1822,7 +1905,6 @@ def api_jurimetria(
     favoraveis = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
     taxa_exito = round(favoraveis / total * 100, 1) if total > 0 else 0
 
-    # Top 10 varas por volume
     varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
     varas_stats = []
     for v_nome, v_data in varas_sorted:
@@ -1869,7 +1951,6 @@ def api_jurimetria_processo(numero: str):
     if not DATAJUD_ENABLED:
         raise HTTPException(503, "DataJud não habilitado")
 
-    # 1. Buscar o processo
     alias = infer_alias(numero) or DATAJUD_DEFAULT_ALIAS
     try:
         raw = DJ.get_process(numero, alias)
@@ -1886,10 +1967,8 @@ def api_jurimetria_processo(numero: str):
     assunto_principal = assuntos[0] if assuntos else ""
     assuntos_codigos = proc.get("assuntos_codigos") or []
 
-    # 2. Buscar processos similares (mesma vara + mesmo assunto)
     similares_items = []
 
-    # 2a. Por vara + assunto (mais específico)
     if orgao and assuntos_codigos:
         try:
             must = [{"match": {"orgaoJulgador.nome": orgao}}]
@@ -1900,7 +1979,6 @@ def api_jurimetria_processo(numero: str):
         except:
             pass
 
-    # 2b. Se poucos resultados, busca só por vara
     if len(similares_items) < 10 and orgao:
         try:
             r2 = DJ.search(alias, {"match_phrase": {"orgaoJulgador.nome": orgao}}, size=50)
@@ -1912,7 +1990,6 @@ def api_jurimetria_processo(numero: str):
         except:
             pass
 
-    # 2c. Se ainda poucos, busca por assunto no tribunal
     if len(similares_items) < 10 and assunto_principal:
         try:
             r3 = DJ.search(alias, {"match_phrase": {"assuntos.nome": assunto_principal}}, size=30)
@@ -1924,7 +2001,6 @@ def api_jurimetria_processo(numero: str):
         except:
             pass
 
-    # 3. Analisar similares
     resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
     duracoes = []
     valores = []
@@ -1944,7 +2020,6 @@ def api_jurimetria_processo(numero: str):
         if duracao and duracao > 0:
             duracoes.append(duracao)
 
-        # Valor da causa — múltiplos formatos
         vc = p.get("valor_causa") or item.get("valorCausa")
         if isinstance(vc, dict):
             vc = vc.get("valor") or vc.get("amount") or vc.get("valorCausa")
@@ -1969,7 +2044,6 @@ def api_jurimetria_processo(numero: str):
         else:
             vc = None
 
-        # Por vara — enriquecido com magistrado, valores, duração
         vara_nome = p.get("orgao_julgador") or "Não identificada"
         if vara_nome not in por_vara:
             por_vara[vara_nome] = {
@@ -1987,7 +2061,6 @@ def api_jurimetria_processo(numero: str):
         if mag:
             por_vara[vara_nome]["magistrados"].add(mag)
 
-        # Por magistrado
         if mag:
             if mag not in por_magistrado:
                 por_magistrado[mag] = {"total": 0, "procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "vara": vara_nome}
@@ -1995,7 +2068,6 @@ def api_jurimetria_processo(numero: str):
             if resultado in por_magistrado[mag]:
                 por_magistrado[mag][resultado] += 1
 
-        # Por assunto (tese)
         for ass in (p.get("assuntos") or []):
             if ass:
                 if ass not in por_assunto:
@@ -2028,13 +2100,11 @@ def api_jurimetria_processo(numero: str):
     favoraveis = resultados["procedente"] + resultados["parcial"] + resultados["acordo"]
     taxa_exito = round(favoraveis / total * 100, 1) if total > 0 else 0
 
-    # Probabilidade calculada
     desfavoraveis = resultados["improcedente"]
     determinados = total - resultados["indeterminado"]
     prob_favoravel = round(favoraveis / determinados * 100, 1) if determinados > 0 else None
     prob_desfavoravel = round(desfavoraveis / determinados * 100, 1) if determinados > 0 else None
 
-    # Top 10 varas — estruturadas com valor médio, duração média, magistrado
     varas_sorted = sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
     varas_stats = []
     for v_nome, v_data in varas_sorted:
@@ -2055,7 +2125,6 @@ def api_jurimetria_processo(numero: str):
             "magistrados": list(v_data["magistrados"])[:3],
         })
 
-    # Valores por resultado
     def _val_stats(lst):
         if not lst:
             return None
@@ -2066,7 +2135,6 @@ def api_jurimetria_processo(numero: str):
         if v:
             valores_resultado[k] = _val_stats(v)
 
-    # Top assuntos (teses)
     assuntos_sorted = sorted(por_assunto.items(), key=lambda x: x[1]["total"], reverse=True)[:15]
     teses_stats = []
     for a_nome, a_data in assuntos_sorted:
@@ -2079,7 +2147,6 @@ def api_jurimetria_processo(numero: str):
             **a_data,
         })
 
-    # Top magistrados
     mag_sorted = sorted(por_magistrado.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
     magistrados_stats = []
     for m_nome, m_data in mag_sorted:
@@ -2133,7 +2200,6 @@ def api_jurimetria_processo(numero: str):
         "processos_similares": processos_analisados[:20],
     }
 
-    # Enriquecer com jurisprudência STF quando disponível
     if STF_OK and assunto_principal:
         try:
             stf_result = STF_MOD.STF.search(assunto_principal, base="acordaos", page_size=5)
@@ -2157,6 +2223,165 @@ def api_jurisprudencia(
         raise HTTPException(503, "STF client não configurado")
     result = STF_MOD.STF.search(query, base=base, page_size=min(limit, 20))
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# API V2 — Onda 1 Lazy Enrichment (RPCs Supabase)
+# ═══════════════════════════════════════════════════════════════════
+# Endpoints novos pra Tela Landing, Workspace e CNJ Específico do
+# novo frontend Next.js (chat.jurimetrix.com).
+#
+# Não substitui /api/jurimetria/* (essa continua funcionando).
+# ═══════════════════════════════════════════════════════════════════
+
+
+@app.get("/api/v2/landing/stats")
+def api_v2_landing_stats():
+    """
+    Estatísticas globais para tela landing.
+    Retorna: totais, mapa Brasil (volume por UF), top 10 tribunais,
+             atividade mensal últimos 12 meses, top 15 assuntos.
+    """
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado")
+    try:
+        return _supabase_rpc("landing_stats", {}, timeout=20)
+    except Exception as e:
+        log.error(f"[/api/v2/landing/stats] Erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/v2/cnj/load/{cnj}")
+def api_v2_cnj_load(cnj: str, authorization: Optional[str] = Header(default=None)):
+    """
+    Read-first: carrega processo da base + retorna flags needs_enrichment.
+    Frontend usa para renderizar Camadas básicas imediatamente.
+    Se needs_enrichment não vazio, frontend chama POST /api/v2/cnj/refresh.
+    """
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado")
+    try:
+        return _supabase_rpc("cnj_full_load", {"p_cnj": cnj}, timeout=15)
+    except Exception as e:
+        log.error(f"[/api/v2/cnj/load/{cnj}] Erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/v2/cnj/refresh/{cnj}")
+def api_v2_cnj_refresh(cnj: str, authorization: Optional[str] = Header(default=None)):
+    """
+    Lazy enrichment: enriquece via DataJud + Escavador + persiste no Supabase.
+    Latência esperada: 3-15s dependendo do Escavador async.
+    """
+    if not DATAJUD_ENABLED:
+        raise HTTPException(503, "DataJud não habilitado")
+
+    alias = infer_alias(cnj) or DATAJUD_DEFAULT_ALIAS
+
+    try:
+        raw = DJ.get_process(cnj, alias)
+        items = DJ.sources(raw)
+
+        if not items:
+            return {
+                "ok": False,
+                "error": f"Processo {cnj} não encontrado no DataJud",
+                "alias_tentado": alias,
+            }
+
+        proc = DJ.normalize(items[0])
+
+        if MNI_ENABLED:
+            proc = enrich_with_mni(proc, cnj)
+
+        proc = enrich_with_escavador(proc, cnj)
+
+        if not proc.get("magistrado"):
+            proc = enrich_with_tribunal(proc, cnj)
+
+        if PJE_OK and PJE:
+            try:
+                proc = PJE.enrich_processo(proc, cnj, alias)
+            except Exception as _pje_err:
+                log.warning(f"[/api/v2/cnj/refresh] PJe scraper falhou: {_pje_err}")
+
+        persist_result = persist_enrichment(cnj, proc)
+
+        return {
+            "ok": True,
+            "cnj": cnj,
+            "alias": alias,
+            "processo": proc,
+            "persist": persist_result,
+            "fontes_consultadas": [
+                f for f in [
+                    "datajud",
+                    "mni" if MNI_ENABLED and proc.get("mni_status") == "ok" else None,
+                    "escavador" if proc.get("escavador_enriched") else None,
+                    "tribunal_async" if proc.get("tribunal_enriched") else None,
+                ] if f
+            ],
+        }
+
+    except DataJudError as e:
+        raise HTTPException(502, f"Erro DataJud: {e}")
+    except Exception as e:
+        log.exception(f"[/api/v2/cnj/refresh/{cnj}] Erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+class V2JudgePatternIn(BaseModel):
+    juiz: str
+    assunto: Optional[str] = None
+
+
+@app.post("/api/v2/judge/pattern")
+def api_v2_judge_pattern(body: V2JudgePatternIn):
+    """
+    Camada 3 — Padrão decisório do magistrado.
+    """
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado")
+
+    if not body.juiz or len(body.juiz.strip()) < 3:
+        raise HTTPException(400, "Nome do juiz é obrigatório (mín 3 chars)")
+
+    try:
+        return _supabase_rpc(
+            "judge_thesis_pattern",
+            {"p_juiz": body.juiz.strip(), "p_assunto": body.assunto},
+            timeout=20,
+        )
+    except Exception as e:
+        log.error(f"[/api/v2/judge/pattern] Erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/v2/cnj/similar/{cnj}")
+def api_v2_cnj_similar(cnj: str, limit: int = 30):
+    """
+    Camada 5 — Casos similares com score de similaridade.
+    Input pra Claude argumentar (Camada 5: Argumentos Vencedores).
+    """
+    if not SUPABASE_OK:
+        raise HTTPException(503, "Supabase não configurado")
+
+    limit = max(1, min(limit, 100))
+
+    try:
+        return _supabase_rpc(
+            "similar_cases",
+            {"p_cnj": cnj, "p_limit": limit},
+            timeout=15,
+        )
+    except Exception as e:
+        log.error(f"[/api/v2/cnj/similar/{cnj}] Erro: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# /api/jurimetria/insights + /api/jurimetria/magistrado (continuam)
+# ═══════════════════════════════════════════════════════════════════
 
 
 class InsightsIn(BaseModel):
@@ -2186,7 +2411,6 @@ def api_jurimetria_insights(body: InsightsIn):
     if not ANTHROPIC_API_KEY:
         raise HTTPException(503, "Anthropic não configurado")
 
-    # Build context from analysis data
     ctx_lines = [
         "DADOS JURIMÉTRICOS PARA ANÁLISE ESTRATÉGICA:",
         f"Processo: {body.processo_numero} | {body.classe}",
@@ -2283,7 +2507,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
         raise HTTPException(503, "Base de dados não configurada")
 
     try:
-        # Buscar processos deste magistrado na base
         filters = [f"magistrado=ilike.*{nome}*"]
         if tribunal:
             tribunal_nome = ALIAS_TO_TRIBUNAL.get(tribunal, tribunal.replace("api_publica_", "").upper())
@@ -2299,7 +2522,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
         if not rows:
             return {"ok": False, "message": "Magistrado não encontrado na base", "nome": nome}
 
-        # Analisar
         resultados = {"procedente": 0, "improcedente": 0, "parcial": 0, "acordo": 0, "arquivado": 0, "extinto": 0, "indeterminado": 0}
         por_ano = {}
         por_assunto = {}
@@ -2319,7 +2541,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
             if vc and float(vc) > 0:
                 valores.append(float(vc))
 
-            # Por ano
             data_aj = str(row.get("data_ajuizamento") or "")
             ano = data_aj[:4] if len(data_aj) >= 4 and data_aj[:4].isdigit() else ""
             if ano:
@@ -2329,7 +2550,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
                 if res in por_ano[ano]:
                     por_ano[ano][res] += 1
 
-            # Por assunto
             for ass in (row.get("assuntos") or []):
                 if ass:
                     if ass not in por_assunto:
@@ -2338,7 +2558,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
                     if res in por_assunto[ass]:
                         por_assunto[ass][res] += 1
 
-            # Por vara
             vara = row.get("orgao_julgador") or ""
             if vara:
                 if vara not in por_vara:
@@ -2353,7 +2572,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
         taxa_favoravel = round(fav / det * 100, 1) if det > 0 else 0
         taxa_contrario = round(resultados["improcedente"] / det * 100, 1) if det > 0 else 0
 
-        # Top assuntos
         assuntos_sorted = sorted(por_assunto.items(), key=lambda x: x[1]["total"], reverse=True)[:15]
         assuntos_stats = []
         for a_nome, a_data in assuntos_sorted:
@@ -2365,7 +2583,6 @@ def api_jurimetria_magistrado(nome: str = "", tribunal: str = ""):
                 "taxa_exito": round(a_fav / a_total * 100, 1) if a_total > 0 else 0,
             })
 
-        # Varas
         varas_list = [{"vara": v, "total": d["total"]} for v, d in sorted(por_vara.items(), key=lambda x: x[1]["total"], reverse=True)[:5]]
 
         return {
@@ -2556,7 +2773,7 @@ async def speech_to_text(
         raise HTTPException(500, f"Erro na transcrição: {str(e)}")
 
 @app.get("/ping")
-def ping(): return {"ok":True,"version":"9.0.0","llm":"claude-sonnet-4-6"}
+def ping(): return {"ok":True,"version":"9.1.0","llm":"claude-sonnet-4-6"}
 
 @app.get("/painel")
 def serve_painel():
@@ -2591,7 +2808,7 @@ def serve_chat():
 @app.get("/health")
 def health():
     return {
-        "ok":True,"version":"9.0.0",
+        "ok":True,"version":"9.1.0",
         "llm_provider":"anthropic",
         "model": ANTHROPIC_MODEL,
         "anthropic":{"ok": bool(ANTHROPIC_API_KEY), "model": ANTHROPIC_MODEL},
@@ -2686,6 +2903,7 @@ def gerar_relatorio(
     except DataJudError as e: raise HTTPException(502,f"Erro DataJud: {e}")
     except Exception as e: log.exception("Erro relatório"); raise HTTPException(500,f"Erro interno: {e}")
 
+
 @app.post("/chat", response_model=ChatOut)
 def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authorization:Optional[str]=Header(default=None)):
     auth401(x_demo_key)
@@ -2709,8 +2927,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
     plevel=classify_prompt(message,has_proc)
 
     # ── Auto-route ao agente (perguntas estatísticas/jurimétricas) ────
-    # Se a pergunta tem trigger estatístico E não tem número CNJ específico,
-    # delega ao /chat-agent (Claude com tool use sobre Supabase).
     if AGENT_OK and AGENT_MOD and not numbers and detect_agent_intent(message):
         try:
             history = [
@@ -2731,7 +2947,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 tool_names = [tc.get("name") for tc in (ag_result.get("tool_calls") or [])]
                 log.info(f"[/chat → agent] Tools: {tool_names}")
                 return ChatOut(message=reply, state=state, prompt_level="agent", conversa_id=payload.conversa_id)
-            # Se erro, cai no fluxo normal (não retorna)
             log.warning(f"[/chat → agent] Erro no agent, fallback: {ag_result.get('message','')[:120]}")
         except Exception as _ag_err:
             log.warning(f"[/chat → agent] Exception, fallback: {_ag_err}")
@@ -2821,7 +3036,7 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
         if numero:
             alias_pdf = (infer_alias(numero) if numero else None) or s.get("last_alias") or DATAJUD_DEFAULT_ALIAS
             try:
-                import re as _re  # safety import for PDF block
+                import re as _re
                 raw=DJ.get_process(numero, alias_pdf); items=DJ.sources(raw)
                 if items:
                     proc=DJ.normalize(items[0]); proc=enrich_with_mni(proc, numero)
@@ -2846,7 +3061,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                     )
                     analise_dict=parse_analise_gpt(analise_texto)
                     pdf_bytes=build_relatorio_pdf(processo=proc,analise_os61=analise_dict,mandataria_nome=MANDATARIA_NOME,mandataria_oab=MANDATARIA_OAB)
-                    # Save PDF
                     numero_safe=_re.sub(r"[^\w\-]","_",numero)
                     pdf_filename = f"relatorio_{numero_safe}_{uuid.uuid4().hex[:8]}.pdf"
                     pdf_path = os.path.join(_reports_dir, pdf_filename)
@@ -2912,17 +3126,14 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                         r2=DJ.search(alias,{"bool":{"must":must}},size=8)
                         s2=[f for f in DJ.sources(r2) if norm_num(f.get("numeroProcesso",""))!=norm_num(numero)][:6]
                         extra=ctx_banco(s2,orgao,ast)
-                        # NL API — análise automática das sentenças
                         if NL_OK and NL_MOD and s2:
                             try:
                                 decisoes_para_nl = []
                                 for src in s2:
                                     p_tmp = DJ.normalize(src)
                                     for sent in (p_tmp.get("sentencas") or [])[:3]:
-                                        # Combinar todos os campos de texto disponíveis
                                         partes_texto = []
                                         partes_texto.append(sent.get("nome") or "")
-                                        # Complementos podem ter texto mais rico
                                         for comp in (sent.get("complementosTabelados") or []):
                                             partes_texto.append(comp.get("descricao") or comp.get("nome") or "")
                                         for comp in (sent.get("complementos") or []):
@@ -2936,7 +3147,6 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                                                 "numero_processo": p_tmp.get("numero_processo",""),
                                                 "texto": texto_completo,
                                             })
-                                    # Também inclui última movimentação como contexto
                                     ult = p_tmp.get("ultima_movimentacao_nome") or ""
                                     if ult and len(ult) > 5:
                                         decisoes_para_nl.append({
@@ -2963,15 +3173,12 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
                 ctx=build_ctx(proc,intent,alias)+extra
 
                 # Verificar tribunal async ANTES do LLM
-                # O async teve tempo de processar enquanto fazíamos banco/NL/temático
                 if _trib_async_id and not proc.get("magistrado"):
                     import time as _time
-                    # Poll rápido: até 12 segundos esperando o resultado
                     for _poll in range(4):
                         _time.sleep(3)
                         proc = check_tribunal_result(proc, _trib_async_id)
                         if proc.get("magistrado"):
-                            # Rebuild context com magistrado
                             ctx = build_ctx(proc, intent, alias) + extra
                             s["last_process"]["magistrado"] = proc["magistrado"]
                             log.info(f"[Tribunal] Magistrado injetado no contexto: {proc['magistrado']}")
@@ -3036,11 +3243,6 @@ def chat_agent(
 ):
     """
     Chat com Claude usando tool use para consultar Supabase diretamente.
-    Diferente do /chat: aqui Claude decide sozinho quando consultar a base
-    de processos_base ou jurisprudencia. Útil para perguntas tipo:
-    - "Qual juiz é mais favorável a horas extras no TJSP?"
-    - "Quantos processos por tribunal sobre dano moral em 2024?"
-    - "Mostre precedentes do STJ sobre periculosidade"
     """
     auth401(x_demo_key)
     if not AGENT_OK or not AGENT_MOD:
@@ -3053,7 +3255,6 @@ def chat_agent(
     if not message:
         raise HTTPException(400, "Mensagem vazia")
 
-    # Verificar e decrementar tokens
     user_id = get_user_from_request(authorization) if authorization else None
     if user_id and SUPABASE_OK:
         tokens_check = SB.verificar_e_decrementar_tokens(user_id, len(message))
@@ -3064,14 +3265,12 @@ def chat_agent(
                 prompt_level="limite",
             )
 
-    # Construir histórico (últimas 10 mensagens user/assistant da sessão)
     history = [
         {"role": m["role"], "content": m["content"]}
         for m in s.get("messages", [])[-10:]
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]
 
-    # Salvar a nova mensagem do usuário
     s["messages"].append({"role": "user", "content": message})
     s["messages"] = s["messages"][-20:]
 
@@ -3092,7 +3291,6 @@ def chat_agent(
         if user_id and SUPABASE_OK:
             SB.registrar_tokens_resposta(user_id, len(reply))
 
-    # Log das tools chamadas (visível no Render)
     tool_calls = result.get("tool_calls", []) or []
     if tool_calls:
         log.info(f"[chat-agent] Tools usadas: {[tc.get('name') for tc in tool_calls]}")
