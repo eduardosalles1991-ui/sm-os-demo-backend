@@ -1247,13 +1247,22 @@ def call_claude_with_tools_raw(
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY não configurado.")
 
+    target_model = model or ANTHROPIC_MODEL_TOOLS
+
+    # Modelos "thinking" mais novos (Opus 4.7+) não aceitam temperature.
+    # Lista de modelos onde temperature é DEPRECATED:
+    NO_TEMPERATURE_MODELS = ("opus-4-7",)
+    supports_temperature = not any(m in target_model for m in NO_TEMPERATURE_MODELS)
+
     body: Dict[str, Any] = {
-        "model": model or ANTHROPIC_MODEL_TOOLS,
+        "model": target_model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "messages": messages,
         "tools": tools,
     }
+    if supports_temperature:
+        body["temperature"] = temperature
+
     if system:
         body["system"] = [{
             "type": "text",
