@@ -3090,7 +3090,7 @@ input, textarea { font-family: inherit; outline: none; }
           <p class="hero-deck">
             Análise computacional de <strong>4,84 milhões de processos</strong> em
             <strong>62 tribunais</strong>. Padrões decisórios, predição de êxito,
-            jurimetria de magistrados. Construído com Claude Opus 4.7.
+            jurimetria de magistrados. Motor JurimetrixIA 4.7.
           </p>
 
           <div class="hero-search" onclick="openCmdK()">
@@ -3517,7 +3517,7 @@ input, textarea { font-family: inherit; outline: none; }
         <div class="card cat-purple" style="padding: 18px;">
           <div class="card-header" style="margin-bottom: 12px;">
             <span class="pill pill-purple">MAGISTRADO TITULAR ✦</span>
-            <span style="font-size: 11px; color: var(--s-text-3);">Claude leu 3.421 decisões</span>
+            <span style="font-size: 11px; color: var(--s-text-3);">JurimetrixIA leu 3.421 decisões</span>
           </div>
 
           <div class="magist-row">
@@ -3566,7 +3566,7 @@ input, textarea { font-family: inherit; outline: none; }
         <div class="card-header" style="margin-bottom: 14px;">
           <div>
             <span class="pill pill-purple">ARGUMENTOS VENCEDORES ✦</span>
-            <span style="font-size: 11px; color: var(--s-text-3); margin-left: 6px;">Claude extraiu de 2,7M decisões · ranqueado por probabilidade de êxito</span>
+            <span style="font-size: 11px; color: var(--s-text-3); margin-left: 6px;">JurimetrixIA extraiu de 2,7M decisões · ranqueado por probabilidade de êxito</span>
           </div>
         </div>
 
@@ -3646,11 +3646,11 @@ input, textarea { font-family: inherit; outline: none; }
         <div class="card-header" style="margin-bottom: 12px;">
           <div>
             <div class="card-eyebrow purple">PERGUNTE SOBRE ESTE PROCESSO</div>
-            <div class="card-subtitle">Claude Sonnet 4.6 com contexto carregado</div>
+            <div class="card-subtitle">JurimetrixIA 4.7 com contexto carregado</div>
           </div>
           <div class="chat-model-pill">
             <div class="dot"></div>
-            <span>Sonnet 4.6</span>
+            <span>JurimetrixIA 4.7</span>
           </div>
         </div>
 
@@ -4239,7 +4239,7 @@ input, textarea { font-family: inherit; outline: none; }
       <div class="consol-card">
         <div class="consol-eyebrow">
           <span style="width: 4px; height: 4px; background: var(--p-300); border-radius: 50%;"></span>
-          ANÁLISE CONSOLIDADA · CLAUDE OPUS 4.7
+          ANÁLISE CONSOLIDADA · JURIMETRIXIA 4.7
         </div>
         <h2 class="consol-title">
           O que <em>247 casos análogos</em> nos dizem sobre o seu processo
@@ -4453,7 +4453,7 @@ input, textarea { font-family: inherit; outline: none; }
             <div class="status-row"><div class="status-row-name">Supabase Pro<span class="sub">8 vCPU · 32GB · 22GB usado</span></div><span class="status-row-value">99,99%</span><span class="status-pill ok">Up</span></div>
             <div class="status-row"><div class="status-row-name">Hostinger SMTP<span class="sub">smtp.hostinger.com:465</span></div><span class="status-row-value">100%</span><span class="status-pill ok">Up</span></div>
             <div class="status-row"><div class="status-row-name">Google Vision OCR<span class="sub">jurimetrix-vision SA</span></div><span class="status-row-value">100%</span><span class="status-pill ok">Up</span></div>
-            <div class="status-row"><div class="status-row-name">Anthropic Claude<span class="sub">opus-4-7 · sonnet-4-6</span></div><span class="status-row-value">100%</span><span class="status-pill ok">Up</span></div>
+            <div class="status-row"><div class="status-row-name">Engine IA<span class="sub">opus-4-7 · sonnet-4-6 · provider Anthropic</span></div><span class="status-row-value">100%</span><span class="status-pill ok">Up</span></div>
             <div class="status-row"><div class="status-row-name">Escavador API<span class="sub">async · 5 req/s</span></div><span class="status-row-value">98,2%</span><span class="status-pill warn">Throttle</span></div>
           </div>
         </div>
@@ -4841,12 +4841,13 @@ async function sendMessage() {
   appendThinking();
 
   try {
-    const res = await fetch(`${API_BASE}/chat`, {
+    // Sprint 2: chama /chat-tools (Claude com tool use real: Postgres + Escavador + web)
+    // Se falhar, faz fallback automático pra /chat clássico
+    let res = await fetch(`${API_BASE}/chat-tools`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Sprint 1: sem auth real ainda. Sprint LauraJud Auth vai adicionar:
-        // 'Authorization': 'Bearer ' + getJWTFromLauraJud()
+        // TODO Sprint LauraJud Auth: 'Authorization': 'Bearer ' + getJWTFromLauraJud()
       },
       body: JSON.stringify({
         session_id: SESSION_ID,
@@ -4855,6 +4856,21 @@ async function sendMessage() {
         conversa_id: conversaId
       })
     });
+
+    // Fallback elegante para o /chat clássico se /chat-tools não estiver no ar ainda
+    if (!res.ok && res.status === 404) {
+      console.warn('[chat] /chat-tools não disponível, fallback para /chat');
+      res = await fetch(`${API_BASE}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: SESSION_ID,
+          message: message,
+          state: chatState,
+          conversa_id: conversaId
+        })
+      });
+    }
 
     removeThinking();
 
