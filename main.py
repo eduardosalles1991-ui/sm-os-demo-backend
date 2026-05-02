@@ -3543,8 +3543,11 @@ def chat_tools(
       - Tudo que vem do Escavador é UPSERTado em processos_base
       - Histórico salvo em sess() pra continuidade
       - Tokens contabilizados (mas SEM gate de assinatura — Sprint LauraJud Auth)
+
+    Auth: TODO Sprint LauraJud Auth — gate por assinatura LauraJud.
+    Por ora, endpoint público (Jurimetrix vira extensão do LauraJud).
     """
-    auth401(x_demo_key)
+    # auth401(x_demo_key)  # COMENTADO 02/05/2026 — sem assinatura própria
     s = sess(payload.session_id)
     message = (payload.message or "").strip()
     state = payload.state or {}
