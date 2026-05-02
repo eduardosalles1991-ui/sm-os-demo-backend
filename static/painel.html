@@ -4857,9 +4857,10 @@ async function sendMessage() {
       })
     });
 
-    // Fallback elegante para o /chat clássico se /chat-tools não estiver no ar ainda
-    if (!res.ok && res.status === 404) {
-      console.warn('[chat] /chat-tools não disponível, fallback para /chat');
+    // Fallback elegante para o /chat clássico se /chat-tools não estiver disponível
+    // (404 = endpoint não existe ainda; 401/500 = erro temporário; tenta o /chat antigo)
+    if (!res.ok && (res.status === 404 || res.status === 401 || res.status >= 500)) {
+      console.warn(`[chat] /chat-tools retornou ${res.status}, fallback para /chat`);
       res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
