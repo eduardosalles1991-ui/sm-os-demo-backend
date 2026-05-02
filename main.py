@@ -1216,6 +1216,194 @@ def call_claude(messages: List[dict], temperature: float = 0.15, max_tokens: int
 # Alias retrocompatível
 call_openai = call_claude
 
+
+# ═══════════════════════════════════════════════════════
+# CLAUDE com TOOL USE (Sprint 2)
+# Usado por /chat-tools — Claude decide quando chamar tools.
+# ═══════════════════════════════════════════════════════
+
+# Modelo poderoso pra tool use (override via env var)
+ANTHROPIC_MODEL_TOOLS = os.getenv("ANTHROPIC_MODEL_TOOLS", "claude-opus-4-7")
+
+def call_claude_with_tools_raw(
+    system: str,
+    messages: List[dict],
+    tools: List[dict],
+    temperature: float = 0.15,
+    max_tokens: int = 4096,
+    model: Optional[str] = None,
+) -> dict:
+    """
+    Versão de call_claude que retorna a response RAW (com content blocks
+    completos, incluindo tool_use). Usada no loop de tool use.
+
+    'messages' deve estar no formato Anthropic puro:
+       [{"role":"user","content":"..."},
+        {"role":"assistant","content":[{"type":"tool_use", ...}]},
+        {"role":"user","content":[{"type":"tool_result", ...}]}, ...]
+    """
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY não configurado.")
+
+    body: Dict[str, Any] = {
+        "model": model or ANTHROPIC_MODEL_TOOLS,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": messages,
+        "tools": tools,
+    }
+    if system:
+        body["system"] = [{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json=body,
+            timeout=180,
+        )
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        err_body = (e.response.text if e.response else "")[:500]
+        log.error(f"[Claude tools] HTTP error: {err_body}")
+        raise RuntimeError(f"Erro Anthropic (tools): {err_body}")
+    except requests.RequestException as e:
+        log.error(f"[Claude tools] connection: {e}")
+        raise RuntimeError(f"Erro conexão Anthropic: {e}")
+
+    data = r.json()
+    usage = data.get("usage", {})
+    log.info(
+        f"[Claude tools] tokens in={usage.get('input_tokens',0)} "
+        f"out={usage.get('output_tokens',0)} "
+        f"cache_r={usage.get('cache_read_input_tokens',0)} "
+        f"stop_reason={data.get('stop_reason')}"
+    )
+    return data
+
+
+def chat_with_tool_loop(
+    user_message: str,
+    history: List[dict],
+    system_prompt: str,
+    max_iterations: int = 5,
+) -> Dict[str, Any]:
+    """
+    Loop completo de tool use:
+      1. Chama Claude com tools no schema
+      2. Se retornar tool_use, executa cada tool e devolve tool_result
+      3. Re-chama Claude até ele responder em texto puro (stop_reason=end_turn)
+      4. Retorna {"text": resposta_final, "tool_calls": [...], "iterations": N}
+
+    Importa lazy de tools_jurimetrix pra não quebrar import se módulo
+    estiver ausente (instala simples por hot-deploy).
+    """
+    try:
+        from tools_jurimetrix import TOOLS_SCHEMA, execute_tool
+    except ImportError as e:
+        log.error(f"[chat_with_tool_loop] tools_jurimetrix.py ausente: {e}")
+        # Fallback: chamada simples sem tools
+        text = call_claude(
+            [{"role": "system", "content": system_prompt}]
+            + history
+            + [{"role": "user", "content": user_message}],
+            max_tokens=2000,
+        )
+        return {"text": text, "tool_calls": [], "iterations": 0, "error": "tools_module_missing"}
+
+    # Construir mensagens iniciais (formato Anthropic, sem 'system' aqui)
+    messages: List[dict] = []
+    for m in (history or []):
+        role = m.get("role")
+        if role in ("user", "assistant") and m.get("content"):
+            messages.append({"role": role, "content": m["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    tool_calls_log: List[Dict[str, Any]] = []
+    final_text = ""
+    iterations = 0
+
+    for i in range(max_iterations):
+        iterations = i + 1
+        try:
+            resp = call_claude_with_tools_raw(
+                system=system_prompt,
+                messages=messages,
+                tools=TOOLS_SCHEMA,
+            )
+        except Exception as e:
+            log.error(f"[chat_with_tool_loop] iter {i} falhou: {e}")
+            return {"text": f"❌ Erro de IA: {e}", "tool_calls": tool_calls_log, "iterations": iterations, "error": str(e)}
+
+        content_blocks = resp.get("content", []) or []
+        stop_reason = resp.get("stop_reason")
+
+        # Extrair texto e tool_uses
+        tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
+        text_blocks = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+        partial_text = "\n".join(t for t in text_blocks if t).strip()
+
+        # Sem tool_use -> resposta final
+        if not tool_uses:
+            final_text = partial_text or "Sem resposta."
+            break
+
+        # Adicionar resposta do assistant ao histórico (com os blocos crus)
+        messages.append({"role": "assistant", "content": content_blocks})
+
+        # Executar cada tool e juntar resultados num user message
+        tool_results_blocks = []
+        for tu in tool_uses:
+            tool_name = tu.get("name", "")
+            tool_input = tu.get("input", {}) or {}
+            tool_id = tu.get("id", "")
+
+            log.info(f"[chat_with_tool_loop] iter {i} → tool {tool_name}")
+
+            # Injetar dependências do main.py
+            tool_result = execute_tool(
+                tool_name,
+                tool_input,
+                SB=SB if SUPABASE_OK else None,
+                ESC=ESC if ESCAVADOR_OK else None,
+                web_search_fn=None,  # web_search nativa pode ser ativada via TOOLS_SCHEMA
+            )
+
+            tool_calls_log.append({
+                "name": tool_name,
+                "input": tool_input,
+                "ok": tool_result.get("ok", False),
+            })
+
+            tool_results_blocks.append({
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": json.dumps(tool_result, ensure_ascii=False, default=str),
+            })
+
+        messages.append({"role": "user", "content": tool_results_blocks})
+
+        # Se Claude já passou texto + tool_use juntos, guardar como prefixo
+        if partial_text:
+            final_text = partial_text  # será sobrescrito na próxima iter
+
+    if not final_text:
+        final_text = "Não consegui completar a análise dentro do limite de iterações. Pode reformular a pergunta?"
+
+    return {
+        "text": final_text,
+        "tool_calls": tool_calls_log,
+        "iterations": iterations,
+    }
+
 # ═══════════════════════════════════════════════════════
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════
@@ -3329,5 +3517,92 @@ def chat_agent(
         message=reply,
         state=state,
         prompt_level="agent",
+        conversa_id=payload.conversa_id,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# /chat-tools — Sprint 2: Claude com tool use real
+# Postgres + Escavador + (web opcional). Decide tool, executa, persiste.
+# ═══════════════════════════════════════════════════════════════════
+@app.post("/chat-tools", response_model=ChatOut)
+def chat_tools(
+    payload: ChatIn,
+    x_demo_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Endpoint principal do Sprint 2.
+
+    Claude (Opus 4.7) recebe a pergunta + schema das 6 tools Jurimetrix.
+    Decide quando consultar o banco, quando enriquecer via Escavador,
+    quando buscar jurisprudência. O loop pode iterar até 5x antes de
+    responder em texto.
+
+    Side effects:
+      - Tudo que vem do Escavador é UPSERTado em processos_base
+      - Histórico salvo em sess() pra continuidade
+      - Tokens contabilizados (mas SEM gate de assinatura — Sprint LauraJud Auth)
+    """
+    auth401(x_demo_key)
+    s = sess(payload.session_id)
+    message = (payload.message or "").strip()
+    state = payload.state or {}
+    if not message:
+        raise HTTPException(400, "Mensagem vazia")
+
+    user_id = get_user_from_request(authorization) if authorization else None
+    # TODO Sprint LauraJud Auth: gate por assinatura LauraJud aqui
+
+    # Histórico recente (últimas 10 trocas, max)
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in s.get("messages", [])[-10:]
+        if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"]
+    ]
+
+    # System prompt (já vem com identidade JurimetrixIA via build_system_prompt)
+    sys_prompt = build_system_prompt("os61", "")
+
+    s["messages"].append({"role": "user", "content": message})
+    s["messages"] = s["messages"][-20:]
+
+    try:
+        result = chat_with_tool_loop(
+            user_message=message,
+            history=history,
+            system_prompt=sys_prompt,
+            max_iterations=5,
+        )
+    except Exception as e:
+        log.exception("[chat-tools] erro no loop")
+        return ChatOut(
+            message=f"❌ Erro ao processar com tool use: {e}",
+            state=state,
+            prompt_level="erro",
+            conversa_id=payload.conversa_id,
+        )
+
+    reply = result.get("text") or "Sem resposta."
+    tool_calls = result.get("tool_calls") or []
+    iters = result.get("iterations", 0)
+
+    s["messages"].append({"role": "assistant", "content": reply})
+    s["messages"] = s["messages"][-20:]
+
+    if user_id and SUPABASE_OK:
+        try:
+            SB.registrar_tokens_resposta(user_id, len(reply))
+        except Exception:
+            pass
+
+    if tool_calls:
+        names = [t.get("name") for t in tool_calls]
+        log.info(f"[/chat-tools] {iters} iter, tools: {names}")
+
+    return ChatOut(
+        message=reply,
+        state=state,
+        prompt_level="tools",
         conversa_id=payload.conversa_id,
     )
