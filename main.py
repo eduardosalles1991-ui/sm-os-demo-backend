@@ -1223,7 +1223,9 @@ call_openai = call_claude
 # ═══════════════════════════════════════════════════════
 
 # Modelo poderoso pra tool use (override via env var)
-ANTHROPIC_MODEL_TOOLS = os.getenv("ANTHROPIC_MODEL_TOOLS", "claude-opus-4-7")
+# IMPORTANTE: usa o mesmo default do /chat antigo pra garantir compatibilidade.
+# Se quiser Opus, seta ANTHROPIC_MODEL_TOOLS=claude-opus-4-5 (ou nome correto) no Render.
+ANTHROPIC_MODEL_TOOLS = os.getenv("ANTHROPIC_MODEL_TOOLS") or ANTHROPIC_MODEL
 
 def call_claude_with_tools_raw(
     system: str,
@@ -1272,12 +1274,23 @@ def call_claude_with_tools_raw(
         )
         r.raise_for_status()
     except requests.HTTPError as e:
-        err_body = (e.response.text if e.response else "")[:500]
-        log.error(f"[Claude tools] HTTP error: {err_body}")
-        raise RuntimeError(f"Erro Anthropic (tools): {err_body}")
+        # Captura status + corpo, mesmo que e.response seja None
+        status = getattr(getattr(e, "response", None), "status_code", "?")
+        err_body = ""
+        if e.response is not None:
+            try:
+                err_body = e.response.text[:600]
+            except Exception:
+                err_body = "(corpo ilegível)"
+        msg = f"HTTP {status} · {err_body or str(e)[:200]}"
+        log.error(f"[Claude tools] HTTP error: {msg}")
+        raise RuntimeError(f"Erro Anthropic (tools): {msg}")
     except requests.RequestException as e:
         log.error(f"[Claude tools] connection: {e}")
-        raise RuntimeError(f"Erro conexão Anthropic: {e}")
+        raise RuntimeError(f"Erro conexão Anthropic (tools): {type(e).__name__}: {str(e)[:200]}")
+    except Exception as e:
+        log.exception("[Claude tools] erro inesperado")
+        raise RuntimeError(f"Erro Anthropic (tools): {type(e).__name__}: {str(e)[:200]}")
 
     data = r.json()
     usage = data.get("usage", {})
