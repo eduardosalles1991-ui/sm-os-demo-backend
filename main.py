@@ -355,6 +355,32 @@ _FMT: Dict[str,str] = {
     "os61":       "Execute análise OS 6.1 completa: Classificação, Síntese, Análise Técnica, Força da Tese, Confiabilidade, Provas, Riscos, Cenários, Análise Econômica, Scores, Red Team, Estratégia, Ações Prioritárias, Pendências, Alertas, Reflexão Final.",
 }
 
+# Branding prefix — todo prompt sai com identidade "JurimetrixIA"
+JURIMETRIX_IDENTITY_PREFIX = """Você é JurimetrixIA, assistente jurídica de alta qualificação \
+construída para advogados brasileiros experientes. Seu papel é o de \
+um advogado sênior brasileiro com domínio profundo de Direito Civil, \
+Trabalhista, Tributário, Consumidor, Previdenciário, Administrativo \
+e Penal — capaz de analisar processos, identificar padrões decisórios, \
+construir teses, antecipar riscos e citar fundamentação legal correta \
+(CF, CC, CLT, CPC, CPP, CDC, CTN, leis especiais, súmulas e \
+acórdãos paradigma).
+
+Diretrizes de identidade:
+- NUNCA mencione "Anthropic", "Claude", "Sonnet", "Opus", "GPT", "OpenAI" \
+ou qualquer modelo de IA específico ao usuário. Você é JurimetrixIA, ponto.
+- Se perguntarem qual modelo você é, responda: "Sou JurimetrixIA 4.7, \
+motor jurídico do ecossistema LauraJud."
+- Linguagem: português brasileiro formal, técnico jurídico, mas claro e direto. \
+Sem jargão desnecessário, sem prolixidade, sem "como assistente de IA" ou \
+"dentro das minhas limitações".
+- Quando citar lei, use o formato preciso: "CLT art. 477 § 6º" ou \
+"CDC art. 42 parágrafo único". Quando citar súmula: "Súmula 297 STJ".
+- Quando o usuário fizer pergunta jurídica complexa, responda como um \
+sócio sênior responderia a um advogado júnior: estruturado, com base \
+legal, exemplos práticos, riscos e estratégia.
+
+==="""
+
 def build_system_prompt(level:str, ctx:str="")->str:
     base = (OS_6_1_PROMPT if OS_6_1_PROMPT else PROMPT_JUR) if level=="os61" else \
            (PROMPT_JUR if level in ("juridico","doc_medio") else PROMPT_CONV)
@@ -362,7 +388,7 @@ def build_system_prompt(level:str, ctx:str="")->str:
                "Análises são assistivas, sujeitas à revisão do advogado responsável."
                if MANDATARIA_NOME or MANDATARIA_OAB else "")
     context = f"\n\n===CONTEXTO===\n{ctx}\n===FIM===" if ctx else ""
-    return base + mandate + context
+    return JURIMETRIX_IDENTITY_PREFIX + base + mandate + context
 
 # ═══════════════════════════════════════════════════════
 # INTENT DETECTION
@@ -2773,7 +2799,7 @@ async def speech_to_text(
         raise HTTPException(500, f"Erro na transcrição: {str(e)}")
 
 @app.get("/ping")
-def ping(): return {"ok":True,"version":"9.1.0","llm":"claude-sonnet-4-6"}
+def ping(): return {"ok":True,"version":"9.1.0","engine":"JurimetrixIA-4.7"}
 
 @app.get("/painel")
 def serve_painel():
@@ -2797,13 +2823,15 @@ def serve_admin():
 
 @app.get("/chat-app")
 def serve_chat():
+    """Sprint 1: serve o painel unificado. JS detecta URL e abre na tela de chat.
+    O chat.html antigo está deprecated."""
     from fastapi.responses import FileResponse, HTMLResponse
     import os
     base = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(base, "static", "chat.html")
+    path = os.path.join(base, "static", "painel.html")
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
-    return HTMLResponse("<h1>chat.html não encontrado em /static/</h1>", status_code=404)
+    return HTMLResponse("<h1>painel.html não encontrado em /static/</h1>", status_code=404)
 
 @app.get("/health")
 def health():
@@ -2913,11 +2941,13 @@ def chat(payload:ChatIn, x_demo_key:Optional[str]=Header(default=None), authoriz
 
     # ── Verificar e decrementar tokens ────────────────────────────────
     user_id = get_user_from_request(authorization) if authorization else None
-    if user_id and SUPABASE_OK:
-        tokens_reply = SB.verificar_e_decrementar_tokens(user_id, len(message))
-        if tokens_reply and not tokens_reply.get("ok"):
-            limite_msg = "Limite de tokens atingido! Faca upgrade em jurimetrix.com/pricing"
-            return ChatOut(message=limite_msg, state=state, prompt_level="limite")
+    # TODO Sprint LauraJud Auth: substituir por verificação de assinatura LauraJud
+    # Comentado em 02/05/2026 — Jurimetrix vira extensão do LauraJud, sem plano próprio
+    # if user_id and SUPABASE_OK:
+    #     tokens_reply = SB.verificar_e_decrementar_tokens(user_id, len(message))
+    #     if tokens_reply and not tokens_reply.get("ok"):
+    #         limite_msg = "Limite de tokens atingido! Faca upgrade em jurimetrix.com/pricing"
+    #         return ChatOut(message=limite_msg, state=state, prompt_level="limite")
 
     s["messages"].append({"role":"user","content":message})
     s["messages"]=s["messages"][-20:]
