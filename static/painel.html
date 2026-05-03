@@ -5102,9 +5102,11 @@ async function handleCnjSearch() {
   }
 
   setCnjState('loading');
-  document.getElementById('cnj-loading-status').textContent = 'Buscando na base Jurimetrix…';
+  const statusEl = document.getElementById('cnj-loading-status');
+  if (statusEl) statusEl.textContent = 'Buscando processo…';
 
   try {
+    // 1. Carrega da base
     const res = await fetch(`${API_BASE}/api/v2/cnj/load/${cnj}`, {
       headers: { 'Accept': 'application/json' }
     });
@@ -5113,125 +5115,331 @@ async function handleCnjSearch() {
       throw new Error(`Backend respondeu ${res.status}`);
     }
 
-    const data = await res.json();
-    cnjCurrentData = data;
+    let data = await res.json();
 
-    // Se backend sinaliza needs_enrichment, oferece enriquecer via Escavador
+    // 2. Se vier sinalização de dados parciais OU dados claramente vazios,
+    //    enriquece AUTOMATICAMENTE em background — sem botão, sem mencionar fonte
     const needs = data?.needs_enrichment || data?.precisa_enriquecer;
-    if (needs && (Array.isArray(needs) ? needs.length > 0 : true)) {
-      // Render parcial primeiro
-      renderCnjContent(data);
-      // Pergunta se quer enriquecer (sutil — botão no canto)
-      offerEnrichment(cnj);
-      return;
+    const precisaDatajud = data?.precisa_buscar_datajud === true;
+    const semDadosBasicos = data?.tem_dados_basicos === false || data?.tem_dados_minimos === false;
+    const isEmpty = isProcessoEmpty(data);
+
+    if ((needs && (Array.isArray(needs) ? needs.length > 0 : true)) || precisaDatajud || semDadosBasicos || isEmpty) {
+      if (statusEl) statusEl.textContent = 'Atualizando informações em tempo real…';
+      try {
+        const refreshRes = await fetch(`${API_BASE}/api/v2/cnj/refresh/${cnj}`, {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          // Se refresh devolveu dados, tenta um reload pra pegar a versão persistida + enriquecida
+          if (refreshData && refreshData.ok !== false) {
+            // Espera 500ms pra o banco persistir antes do reload
+            await new Promise(r => setTimeout(r, 500));
+            const reloadRes = await fetch(`${API_BASE}/api/v2/cnj/load/${cnj}`, {
+              headers: { 'Accept': 'application/json' }
+            });
+            if (reloadRes.ok) {
+              data = await reloadRes.json();
+            } else {
+              // Fallback: usa o próprio retorno do refresh
+              data = refreshData;
+            }
+          }
+        }
+      } catch (enrichErr) {
+        // Falha no enrichment é silenciosa — segue com o que tem
+        console.warn('[cnj] enrichment falhou, seguindo com dados parciais', enrichErr);
+      }
     }
 
+    cnjCurrentData = data;
+
+    // Após render, verifica se ainda está vazio — se sim, oferece análise via Chat IA
     renderCnjContent(data);
+
+    // Se mesmo após enrichment os dados continuam fracos, mostra fallback inteligente
+    if (isProcessoEmpty(data)) {
+      offerChatFallback(cnj);
+    }
+
   } catch (err) {
     console.error('[cnj] erro', err);
     showCnjError(
       'Não foi possível carregar o processo',
-      `${err.message}. Se o backend está hibernado (Render free tier), aguarde 30s e tente novamente.`
+      `${err.message}. Se o servidor está acordando, aguarde 30s e tente novamente.`
     );
   }
 }
 
-function offerEnrichment(cnj) {
-  // Adiciona um banner em cima do conteúdo oferecendo refresh
+// Quando o processo está fora da base e DataJud não retornou nada,
+// oferece análise via Chat IA (que pode acionar Escavador + análise Claude)
+function offerChatFallback(cnj) {
   const content = document.getElementById('cnj-content');
   if (!content) return;
+
   // Remove banner anterior se houver
-  const existing = document.getElementById('cnj-enrich-banner');
+  const existing = document.getElementById('cnj-chat-fallback');
   if (existing) existing.remove();
 
+  const formatted = formatCnjMask(cnj);
   const banner = document.createElement('div');
-  banner.id = 'cnj-enrich-banner';
-  banner.style.cssText = 'background: linear-gradient(135deg, var(--a-50), white); border: 1px solid var(--a-300); border-radius: var(--r-lg); padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px;';
+  banner.id = 'cnj-chat-fallback';
+  banner.style.cssText = 'background: linear-gradient(135deg, var(--p-50, #f5f4fe), white); border: 1px solid var(--p-300, #cecbf6); border-radius: var(--r-lg, 10px); padding: 18px 22px; margin: 16px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px;';
   banner.innerHTML = `
-    <div>
-      <div style="font-size: 13px; font-weight: 500; color: var(--a-700);">Dados parciais — alguns campos precisam ser enriquecidos</div>
-      <div style="font-size: 11.5px; color: var(--s-text-2); margin-top: 2px;">Buscar via Escavador atualiza os dados em tempo real (5-15s).</div>
+    <div style="flex: 1;">
+      <div style="font-size: 14px; font-weight: 500; color: var(--p-700);">Processo fora da base estruturada</div>
+      <div style="font-size: 12px; color: var(--s-text-2); margin-top: 4px; line-height: 1.5;">
+        Os dados estruturados deste processo ainda não foram coletados. JurimetrixIA pode buscar via Escavador e fazer análise jurimétrica completa em conversa.
+      </div>
     </div>
-    <button class="btn btn-primary btn-sm" onclick="enrichCurrentCnj('${cnj}')" id="cnj-enrich-btn">
-      Atualizar via Escavador
+    <button class="btn btn-primary btn-sm" onclick="askChatAboutCnj('${cnj}')" style="white-space: nowrap;">
+      Analisar via JurimetrixIA →
     </button>
   `;
   content.insertBefore(banner, content.firstChild);
 }
 
-async function enrichCurrentCnj(cnj) {
-  const btn = document.getElementById('cnj-enrich-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Enriquecendo… (até 15s)'; btn.style.opacity = '0.6'; }
-  try {
-    const res = await fetch(`${API_BASE}/api/v2/cnj/refresh/${cnj}`, { method: 'POST' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data?.ok === false) {
-      if (btn) { btn.disabled = false; btn.textContent = 'Tentar novamente'; btn.style.opacity = ''; }
-      alert(`Escavador: ${data.error || 'falha no enriquecimento'}`);
-      return;
+function askChatAboutCnj(cnj) {
+  const formatted = formatCnjMask(cnj);
+  // Navega pra tela de chat e prepara a pergunta
+  navigate('chat');
+  setTimeout(() => {
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+      chatInput.value = `Analise o processo ${formatted}. Use as ferramentas disponíveis para buscar dados via Escavador e fazer análise jurimétrica completa: classe, partes, magistrado titular (se houver), valor da causa, padrão decisório esperado e estratégia recomendada.`;
+      autoResize(chatInput);
+      // Auto-envia após 200ms pra dar tempo do user ver a pergunta
+      setTimeout(() => sendMessage(), 200);
     }
-    // Reload da view com dados novos — chama o load de novo (já tá persistido no banco agora)
-    document.getElementById('cnj-search-input').value = cnj;
-    handleCnjSearch();
-  } catch (err) {
-    console.error('[enrich] erro', err);
-    if (btn) { btn.disabled = false; btn.textContent = 'Tentar novamente'; btn.style.opacity = ''; }
-    alert(`Erro no enriquecimento: ${err.message}`);
+  }, 100);
+}
+
+// Detecta se o resultado veio "vazio" (sem dados úteis)
+function isProcessoEmpty(data) {
+  const proc = data?.processo || data?.proc || data?.data || data;
+  if (!proc) return true;
+  const camposChave = [
+    pick(proc, 'classe', 'classe_processual', 'classe_nome'),
+    pick(proc, 'magistrado', 'juiz', 'relator'),
+    pick(proc, 'vara', 'orgao_julgador', 'orgao'),
+    pick(proc, 'data_distribuicao', 'data_ajuizamento', 'distribuicao'),
+    pickNum(proc, 'valor_causa', 'valor'),
+  ];
+  // Se 4 ou mais campos chave estão vazios, considera "empty"
+  const vazios = camposChave.filter(v => v === null || v === undefined || v === '').length;
+  return vazios >= 4;
+}
+
+// Funções de enrichment manual (offerEnrichment / enrichCurrentCnj) foram
+// removidas — o handleCnjSearch agora faz enrichment automático em
+// background quando detecta dados parciais.
+
+// Busca recursiva por campo em estrutura aninhada
+// Retorna o primeiro valor não-vazio encontrado em qualquer nível
+function deepFind(obj, keyPatterns, maxDepth = 4) {
+  if (!obj || maxDepth < 0) return null;
+
+  // Se obj é primitivo, não tem o que procurar
+  if (typeof obj !== 'object') return null;
+
+  // Se obj é array, busca em cada item
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = deepFind(item, keyPatterns, maxDepth - 1);
+      if (found !== null && found !== undefined && found !== '') return found;
+    }
+    return null;
   }
+
+  // Procura keys exatas primeiro
+  for (const pattern of keyPatterns) {
+    if (obj[pattern] !== undefined && obj[pattern] !== null && obj[pattern] !== '') {
+      const v = obj[pattern];
+      if (typeof v !== 'object' || (Array.isArray(v) && v.length > 0) || (Object.keys(v).length > 0)) {
+        return v;
+      }
+    }
+  }
+
+  // Procura keys que CONTÊM o pattern (case-insensitive)
+  for (const pattern of keyPatterns) {
+    const patLow = pattern.toLowerCase();
+    for (const k of Object.keys(obj)) {
+      if (k.toLowerCase().includes(patLow) || patLow.includes(k.toLowerCase())) {
+        const v = obj[k];
+        if (v !== null && v !== undefined && v !== '') {
+          if (typeof v !== 'object' || (Array.isArray(v) && v.length > 0) || (Object.keys(v).length > 0)) {
+            return v;
+          }
+        }
+      }
+    }
+  }
+
+  // Recursão em sub-objetos
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v && typeof v === 'object') {
+      const found = deepFind(v, keyPatterns, maxDepth - 1);
+      if (found !== null && found !== undefined && found !== '') return found;
+    }
+  }
+
+  return null;
+}
+
+function deepFindNum(obj, keyPatterns, maxDepth = 4) {
+  const v = deepFind(obj, keyPatterns, maxDepth);
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const str = String(v).replace(/[^\d.,-]/g, '');
+  if (!str) return null;
+  // Detecta formato BR (vírgula decimal): "47.800,00" -> 47800.00
+  // vs formato US: "47,800.00" -> 47800
+  const lastComma = str.lastIndexOf(',');
+  const lastDot = str.lastIndexOf('.');
+  let normalized;
+  if (lastComma > lastDot) {
+    // BR: tira pontos, troca vírgula por ponto
+    normalized = str.replace(/\./g, '').replace(',', '.');
+  } else {
+    // US ou só ponto: tira vírgulas
+    normalized = str.replace(/,/g, '');
+  }
+  const n = parseFloat(normalized);
+  return Number.isFinite(n) ? n : null;
 }
 
 function renderCnjContent(data) {
-  // O backend retorna o resultado do RPC cnj_full_load — pode vir em vários
-  // formatos (raw row, objeto envolvido, etc). Tentamos vários campos.
-  const proc = data?.processo || data?.proc || data?.data || data;
+  // Desempacota possíveis envelopes
+  let proc = data;
+  // Se data é array, pega o primeiro
+  if (Array.isArray(data)) proc = data[0] || {};
+  // Tenta vários níveis de envelope
+  proc = data?.processo || data?.proc || data?.data || data?.result || data?.row || proc;
+  if (Array.isArray(proc)) proc = proc[0] || {};
 
-  // CNJ
-  const cnjShown = pick(proc, 'cnj_formatado', 'cnj', 'numero_processo', 'numero');
+  // ─ CNJ ─────────────────────────────────────────
+  const cnjShown = deepFind(data, [
+    'cnj', 'cnj_formatado', 'numero_processo', 'numero_cnj', 'numero',
+    'processo_numero', 'numero_unico', 'process_number', 'numeroUnico',
+    'numeroProcesso'
+  ]);
   safeText(document.getElementById('proc-cnj'), formatCnjMask(cnjShown));
 
-  // Classe + assunto
-  const classe = pick(proc, 'classe', 'classe_processual', 'classe_nome');
-  const assunto = pick(proc, 'assunto', 'assuntos_principais', 'assunto_principal');
-  const classeText = [classe, assunto].filter(Boolean).join(' · ') || '—';
+  // ─ Classe + assunto ────────────────────────────
+  const classe = deepFind(data, [
+    'classe', 'classe_processual', 'classe_processo', 'classe_nome',
+    'classeProcessual', 'classe_descricao', 'tipo_classe', 'class_name'
+  ]);
+  const assunto = deepFind(data, [
+    'assunto', 'assuntos_principais', 'assunto_principal', 'assunto_descricao',
+    'assuntos', 'subject', 'tema_principal', 'assunto_nome'
+  ]);
+  let assuntoStr = assunto;
+  if (Array.isArray(assunto)) {
+    assuntoStr = assunto.map(a => {
+      if (typeof a === 'string') return a;
+      if (a && typeof a === 'object') return a.nome || a.descricao || a.name || a.titulo || JSON.stringify(a);
+      return String(a);
+    }).filter(Boolean).slice(0, 2).join(', ');
+  } else if (assunto && typeof assunto === 'object') {
+    assuntoStr = assunto.nome || assunto.descricao || assunto.titulo || '';
+  }
+  const classeText = [classe, assuntoStr].filter(Boolean).join(' · ') || '—';
   safeText(document.getElementById('proc-classe'), classeText);
 
-  // Pills (tribunal, instância, status)
+  // ─ Pills (tribunal/instância/status) ──────────
   const pills = document.getElementById('proc-pills');
   if (pills) {
-    const tribunal = pick(proc, 'tribunal', 'sigla_tribunal', 'sigla');
-    const instancia = pick(proc, 'instancia', 'grau');
-    const status = pick(proc, 'status', 'situacao');
+    const tribunal = deepFind(data, [
+      'tribunal', 'sigla_tribunal', 'sigla', 'tribunal_nome', 'tribunal_sigla',
+      'orgao_tribunal', 'court_name'
+    ]);
+    const instancia = deepFind(data, [
+      'instancia', 'grau', 'grau_jurisdicao', 'instance', 'instancia_nome'
+    ]);
+    const status = deepFind(data, [
+      'status', 'situacao', 'fase_processual', 'fase', 'state', 'situacao_atual'
+    ]);
+    let statusStr = '';
+    if (status) {
+      statusStr = typeof status === 'object' ? (status.nome || status.descricao || JSON.stringify(status)) : String(status);
+    }
+    let tribStr = typeof tribunal === 'object' ? (tribunal?.nome || tribunal?.sigla || '') : (tribunal || '');
+    let instStr = typeof instancia === 'object' ? (instancia?.nome || instancia?.descricao || '') : (instancia || '');
+
     pills.innerHTML = `
-      ${status ? `<span class="pill pill-purple-solid">${escapeHtml(String(status).toUpperCase())}</span>` : '<span class="pill pill-purple-solid">PROCESSO</span>'}
-      ${tribunal ? `<span class="pill pill-purple">${escapeHtml(tribunal)}</span>` : ''}
-      ${instancia ? `<span class="pill pill-purple">${escapeHtml(String(instancia))}</span>` : ''}
+      <span class="pill pill-purple-solid">${escapeHtml(statusStr ? statusStr.toUpperCase().slice(0, 24) : 'PROCESSO')}</span>
+      ${tribStr ? `<span class="pill pill-purple">${escapeHtml(String(tribStr).slice(0, 16))}</span>` : ''}
+      ${instStr ? `<span class="pill pill-purple">${escapeHtml(String(instStr).slice(0, 16))}</span>` : ''}
     `;
   }
 
-  // Distribuição
-  const dataDist = pick(proc, 'data_distribuicao', 'data_ajuizamento', 'distribuicao');
+  // ─ Distribuição ────────────────────────────────
+  const dataDist = deepFind(data, [
+    'data_distribuicao', 'data_ajuizamento', 'distribuicao',
+    'dt_distribuicao', 'dt_ajuizamento', 'dataDistribuicao',
+    'distribuido_em', 'created_at', 'criado_em'
+  ]);
   safeText(document.getElementById('proc-distribuicao'), fmtDateBr(dataDist));
   safeText(document.getElementById('proc-distribuicao-meta'), relativeMonths(dataDist));
 
-  // Vara
-  safeText(document.getElementById('proc-vara'), pick(proc, 'vara', 'orgao_julgador', 'orgao'));
-  safeText(document.getElementById('proc-vara-meta'), pick(proc, 'jurisdicao', 'comarca'));
+  // ─ Vara ────────────────────────────────────────
+  const vara = deepFind(data, [
+    'vara', 'orgao_julgador', 'orgao', 'unidade_judiciaria',
+    'orgaoJulgador', 'vara_nome', 'unidade', 'lotacao_vara', 'judicial_unit'
+  ]);
+  let varaStr = vara;
+  if (vara && typeof vara === 'object') {
+    varaStr = vara.nome || vara.descricao || vara.titulo || '';
+  }
+  safeText(document.getElementById('proc-vara'), varaStr || '—');
 
-  // Magistrado
-  const mag = pick(proc, 'magistrado', 'juiz', 'relator');
-  safeText(document.getElementById('proc-magistrado'), mag);
-  safeText(document.getElementById('proc-magistrado-meta'), mag ? 'clique para analisar padrão decisório' : '');
+  const jurisdicao = deepFind(data, ['jurisdicao', 'comarca', 'foro', 'circunscricao', 'regiao']);
+  let jurStr = jurisdicao;
+  if (jurisdicao && typeof jurisdicao === 'object') jurStr = jurisdicao.nome || '';
+  safeText(document.getElementById('proc-vara-meta'), jurStr || '');
 
-  // Valor
-  const valor = pickNum(proc, 'valor_causa', 'valor');
+  // ─ Magistrado ──────────────────────────────────
+  const mag = deepFind(data, [
+    'magistrado', 'juiz', 'relator', 'magistrado_nome',
+    'juiz_titular', 'judge_name', 'nome_magistrado', 'nome_juiz', 'titular'
+  ]);
+  let magStr = mag;
+  if (mag && typeof mag === 'object') {
+    magStr = mag.nome || mag.nome_completo || mag.name || '';
+  }
+  safeText(document.getElementById('proc-magistrado'), magStr || '—');
+  safeText(document.getElementById('proc-magistrado-meta'), magStr ? 'clique para analisar padrão' : '');
+
+  // ─ Valor ───────────────────────────────────────
+  const valor = deepFindNum(data, [
+    'valor_causa', 'valor', 'valorCausa', 'amount',
+    'valor_da_causa', 'value', 'valor_estimado'
+  ]);
   safeText(document.getElementById('proc-valor'), valor !== null ? fmtMoney(valor) : '—');
   safeText(document.getElementById('proc-valor-meta'), '');
 
-  // Movimentações
-  const movs = pickNum(proc, 'movimentacoes_count', 'total_movimentos', 'qtd_movimentos');
+  // ─ Movimentações ───────────────────────────────
+  const movs = deepFindNum(data, [
+    'movimentacoes_count', 'total_movimentos', 'qtd_movimentos',
+    'movements_count', 'movimentacoes_total', 'total_movements',
+    'andamentos_count', 'qtd_andamentos'
+  ]);
   safeText(document.getElementById('proc-movs'), movs !== null ? fmtPt(movs) : '—');
-  safeText(document.getElementById('proc-movs-meta'), '');
+
+  const ultMov = deepFind(data, [
+    'ultimo_movimento', 'ultima_movimentacao', 'data_ultimo_andamento',
+    'last_movement_date', 'ultimo_andamento_data'
+  ]);
+  if (ultMov) {
+    safeText(document.getElementById('proc-movs-meta'), 'última: ' + fmtDateBr(ultMov));
+  } else {
+    safeText(document.getElementById('proc-movs-meta'), '');
+  }
 
   setCnjState('content');
 }
@@ -5297,99 +5505,219 @@ async function handleJudgeSearch() {
 
   setJudgeState('loading');
 
-  try {
-    const url = `${API_BASE}/api/jurimetria/magistrado?nome=${encodeURIComponent(nome)}`;
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  // Estratégia em camadas:
+  // 1. Tenta o nome como digitado
+  // 2. Se não achar, tenta título-case + acentos típicos brasileiros
+  // 3. Se não achar, tenta só primeiro+último nome (palavras de 4+ letras)
+  // 4. Se não achar mesmo assim, mostra erro elegante
+  const variantes = buildJudgeNameVariants(nome);
 
-    if (!res.ok) throw new Error(`Backend respondeu ${res.status}`);
+  for (const tentativa of variantes) {
+    try {
+      const url = `${API_BASE}/api/jurimetria/magistrado?nome=${encodeURIComponent(tentativa)}`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
 
-    const data = await res.json();
+      if (!res.ok) {
+        if (res.status >= 500) throw new Error(`Backend respondeu ${res.status}`);
+        // 4xx -> tenta próxima variante
+        continue;
+      }
 
-    if (data?.ok === false) {
-      showJudgeError(
-        'Magistrado não encontrado',
-        `Não encontramos "${nome}" na base. Cobertura atual: TJSP (3.491 magistrados). Para outros tribunais, posso buscar via chat IA filtrando por relator.`
-      );
+      const data = await res.json();
+
+      // Backend pode sinalizar "não achou" de várias formas
+      if (data?.ok === false) continue;
+      if (Array.isArray(data) && data.length === 0) continue;
+
+      // Achou! Renderiza
+      renderJudgeContent(data, tentativa);
       return;
+    } catch (err) {
+      console.warn(`[judge] tentativa "${tentativa}" falhou`, err);
+      // Continua tentando outras variantes
     }
-
-    renderJudgeContent(data, nome);
-  } catch (err) {
-    console.error('[judge] erro', err);
-    showJudgeError(
-      'Erro ao consultar magistrado',
-      `${err.message}. Se o backend está hibernado, aguarde 30s.`
-    );
   }
+
+  // Nenhuma variante funcionou
+  showJudgeError(
+    'Magistrado não encontrado',
+    `Não encontramos "${nome}" na base. Cobertura atual: TJSP (3.491 magistrados oficiais). Para outros tribunais, recomendo usar o Chat IA filtrando jurisprudência por relator.`
+  );
+}
+
+// Gera variantes do nome pra aumentar chance de match no banco
+function buildJudgeNameVariants(nome) {
+  const variantes = new Set();
+  variantes.add(nome);
+
+  // Title case sem acentos extras
+  const titleCase = nome.split(/\s+/).map(w => w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w).join(' ');
+  variantes.add(titleCase);
+
+  // Apenas primeira palavra (frequente em base que indexa por nome simples)
+  const palavras = nome.split(/\s+/).filter(w => w.length >= 3);
+  if (palavras.length >= 1) {
+    variantes.add(palavras[0]);
+  }
+
+  // Primeira + última palavra significativa
+  if (palavras.length >= 2) {
+    variantes.add(`${palavras[0]} ${palavras[palavras.length - 1]}`);
+  }
+
+  // Sem acentos (alguns bancos não normalizam)
+  const semAcento = nome.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  variantes.add(semAcento);
+
+  return Array.from(variantes);
 }
 
 function renderJudgeContent(data, nomeQuery) {
-  // Backend pode retornar com vários formatos - tenta ser tolerante
+  // Backend retorna estrutura plana: {ok, nome, total_processos, taxa_favoravel,
+  // resultados, duracao_media, valor_medio, por_ano, assuntos, varas, processos}
+  // Vou ser tolerante a envelope, mas o caso comum é data === objeto direto.
   const m = data?.magistrado || data?.data || data;
 
-  // Identidade
+  // ─ Identidade ─────────────────────────────────────
   const nome = pick(m, 'nome', 'magistrado', 'nome_completo') || nomeQuery;
   safeText(document.getElementById('judge-name'), nome);
 
-  // Avatar (iniciais)
-  const initials = String(nome).split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
-  safeText(document.getElementById('judge-avatar'), initials || 'JU');
+  // Avatar (iniciais — pega 1ª e última palavra)
+  const palavras = String(nome).trim().split(/\s+/).filter(Boolean);
+  let initials = '';
+  if (palavras.length === 0) initials = 'JU';
+  else if (palavras.length === 1) initials = palavras[0].slice(0, 2).toUpperCase();
+  else initials = (palavras[0][0] + palavras[palavras.length - 1][0]).toUpperCase();
+  safeText(document.getElementById('judge-avatar'), initials);
 
-  // Cargo / vara
-  const cargo = pick(m, 'cargo', 'cargo_atual') || 'Magistrado';
-  const vara = pick(m, 'vara', 'orgao_julgador', 'orgao');
-  const tribunal = pick(m, 'tribunal', 'sigla_tribunal') || 'TJSP';
-  const cargoText = [cargo, vara, tribunal].filter(Boolean).join(' · ');
-  safeText(document.getElementById('judge-cargo'), cargoText);
-
-  // Tags
-  const tags = document.getElementById('judge-tags');
-  if (tags) {
-    const uf = pick(m, 'uf', 'estado');
-    const matricula = pick(m, 'matricula', 'matr');
-    const especialidade = pick(m, 'especializacao', 'especialidade', 'area_principal');
-    const anos = pick(m, 'anos_magistratura', 'tempo_magistratura');
-    tags.innerHTML = `
-      ${uf ? `<span class="pill pill-purple">Lotado em ${escapeHtml(uf)}</span>` : ''}
-      ${especialidade ? `<span class="pill pill-purple">${escapeHtml(String(especialidade))}</span>` : ''}
-      ${anos ? `<span class="pill pill-purple">${escapeHtml(String(anos))} anos magistratura</span>` : ''}
-      ${matricula ? `<span class="pill pill-purple pill-mono">Matr. ${escapeHtml(String(matricula))}</span>` : ''}
-    `;
+  // ─ Cargo / lotação ────────────────────────────────
+  // Backend não retorna "cargo" explícito, mas a vara dá pista (ex: "GABINETE DO DESEMBARGADOR ...")
+  let cargo = pick(m, 'cargo', 'cargo_atual');
+  const varas = m?.varas || [];
+  let varaPrincipal = '';
+  if (varas.length > 0 && varas[0]?.vara) {
+    varaPrincipal = String(varas[0].vara);
+    // Tenta inferir cargo da string da vara
+    if (!cargo) {
+      const upper = varaPrincipal.toUpperCase();
+      if (upper.includes('DESEMBARGADOR')) cargo = 'Desembargador';
+      else if (upper.includes('JUIZ DE DIREITO')) cargo = 'Juiz de Direito';
+      else if (upper.includes('JUIZ FEDERAL')) cargo = 'Juiz Federal';
+      else if (upper.includes('JUIZ DO TRABALHO')) cargo = 'Juiz do Trabalho';
+      else if (upper.includes('MINISTRO')) cargo = 'Ministro';
+      else cargo = 'Magistrado';
+    }
+  } else {
+    cargo = cargo || 'Magistrado';
   }
 
-  // Donut (resultados)
-  const resultados = m?.resultados || data?.resultados || {};
-  const total = Object.values(resultados).reduce((a, b) => a + (Number(b) || 0), 0) || 1;
-  const pct = (k) => Math.round(((resultados[k] || 0) / total) * 100);
-  const pProc = pct('procedente');
-  const pImpr = pct('improcedente');
-  const pParc = pct('parcial');
-  const pAcc = 100 - pProc - pImpr - pParc;
-  safeText(document.getElementById('j-pct-procedente'), pProc + '%');
-  safeText(document.getElementById('j-pct-improcedente'), pImpr + '%');
-  safeText(document.getElementById('j-pct-parcial'), pParc + '%');
-  safeText(document.getElementById('j-pct-acordo'), Math.max(0, pAcc) + '%');
+  // Inferir tribunal pela vara (TJ-AM, TJSP, etc) ou deixar genérico
+  const tribunal = pick(m, 'tribunal', 'sigla_tribunal') || '';
+  const cargoText = [cargo, varaPrincipal, tribunal].filter(Boolean).join(' · ');
+  safeText(document.getElementById('judge-cargo'), cargoText);
 
-  // Métricas
-  const totalJulgados = pickNum(m, 'total_julgados', 'total_processos') || total;
-  safeText(document.getElementById('j-total-julgados'), fmtPt(totalJulgados));
+  // ─ Tags ───────────────────────────────────────────
+  const tags = document.getElementById('judge-tags');
+  if (tags) {
+    const totalProc = pickNum(m, 'total_processos', 'total_julgados') || 0;
+    const totalAssuntos = (m?.assuntos || []).length;
 
-  const tempoMedio = pickNum(m, 'tempo_medio_sentenca', 'duracao_mediana_dias', 'mediana_dias');
-  safeText(document.getElementById('j-tempo-sentenca'), tempoMedio !== null ? fmtPt(tempoMedio) : '—');
+    // Inferir área principal pelo top assunto
+    let areaPrincipal = '';
+    if (m?.assuntos && m.assuntos.length > 0) {
+      const topAssunto = m.assuntos[0]?.assunto || '';
+      const lower = topAssunto.toLowerCase();
+      if (lower.includes('bancário') || lower.includes('bancários') || lower.includes('cartão') || lower.includes('crédito')) {
+        areaPrincipal = 'Direito Bancário';
+      } else if (lower.includes('consumidor') || lower.includes('cadastro de inadimplentes')) {
+        areaPrincipal = 'Direito do Consumidor';
+      } else if (lower.includes('tributári') || lower.includes('imposto') || lower.includes('icms') || lower.includes('iss')) {
+        areaPrincipal = 'Direito Tributário';
+      } else if (lower.includes('civil') || lower.includes('indenização') || lower.includes('contrato')) {
+        areaPrincipal = 'Direito Civil';
+      } else if (lower.includes('trabalh') || lower.includes('insalubridade')) {
+        areaPrincipal = 'Direito do Trabalho';
+      }
+    }
 
+    const html = [];
+    if (areaPrincipal) html.push(`<span class="pill pill-purple">${escapeHtml(areaPrincipal)}</span>`);
+    if (totalProc > 0) html.push(`<span class="pill pill-purple">${fmtPt(totalProc)} processos</span>`);
+    if (totalAssuntos > 0) html.push(`<span class="pill pill-purple">${totalAssuntos} áreas</span>`);
+    tags.innerHTML = html.join('');
+  }
+
+  // ─ Donut (distribuição de resultados) ─────────────
+  // Importante: backend tem "indeterminado" que pode dominar (99% dos casos)
+  // Vamos calcular percentuais SOBRE OS CLASSIFICADOS, não sobre o total
+  const resultados = m?.resultados || {};
+  const procN = Number(resultados.procedente) || 0;
+  const imprN = Number(resultados.improcedente) || 0;
+  const parcN = Number(resultados.parcial) || 0;
+  const accN = (Number(resultados.acordo) || 0) + (Number(resultados.extinto) || 0) + (Number(resultados.arquivado) || 0);
+  const indetN = Number(resultados.indeterminado) || 0;
+  const totalClassificado = procN + imprN + parcN + accN;
+  const totalGeral = totalClassificado + indetN;
+
+  if (totalClassificado > 0) {
+    const pProc = Math.round((procN / totalClassificado) * 100);
+    const pImpr = Math.round((imprN / totalClassificado) * 100);
+    const pParc = Math.round((parcN / totalClassificado) * 100);
+    const pAcc = Math.max(0, 100 - pProc - pImpr - pParc);
+    safeText(document.getElementById('j-pct-procedente'), pProc + '%');
+    safeText(document.getElementById('j-pct-improcedente'), pImpr + '%');
+    safeText(document.getElementById('j-pct-parcial'), pParc + '%');
+    safeText(document.getElementById('j-pct-acordo'), pAcc + '%');
+  } else {
+    safeText(document.getElementById('j-pct-procedente'), '—');
+    safeText(document.getElementById('j-pct-improcedente'), '—');
+    safeText(document.getElementById('j-pct-parcial'), '—');
+    safeText(document.getElementById('j-pct-acordo'), '—');
+  }
+
+  // ─ Métricas ───────────────────────────────────────
+  // Total julgados — usa total_processos do backend
+  safeText(document.getElementById('j-total-julgados'), totalGeral > 0 ? fmtPt(totalGeral) : '—');
+
+  // Tempo até sentença — backend retorna duracao_media (pode ser null)
+  const tempoMedio = pickNum(m, 'duracao_media', 'tempo_medio_sentenca', 'mediana_dias');
+  safeText(document.getElementById('j-tempo-sentenca'), tempoMedio !== null ? fmtPt(Math.round(tempoMedio)) : '—');
+
+  // Audiências — backend não retorna, fica "—"
   const audiencias = pickNum(m, 'audiencias', 'total_audiencias');
   safeText(document.getElementById('j-audiencias'), audiencias !== null ? fmtPt(audiencias) : '—');
 
+  // Reformado em recurso — backend não retorna, fica "—"
   const reformado = pickNum(m, 'taxa_reforma', 'reformado_pct', 'pct_reforma');
-  safeText(document.getElementById('j-reformado'), reformado !== null ? fmtPt(Math.round(reformado)) : '—');
+  safeText(document.getElementById('j-reformado'), reformado !== null ? fmtPt(Math.round(reformado)) + '%' : '—');
 
-  // Classes mais julgadas
-  const classes = m?.por_assunto || m?.classes_top || m?.classes || data?.por_assunto || [];
-  renderHbarList('j-classes-list', classes);
+  // ─ Especialização (label do top assunto) ──────────
+  const espEl = document.getElementById('j-especializacao');
+  if (espEl && m?.assuntos && m.assuntos.length > 0) {
+    const topAssunto = m.assuntos[0]?.assunto || '—';
+    espEl.textContent = String(topAssunto).toLowerCase();
+  }
 
-  // Vocab cloud
+  // ─ Classes mais julgadas (a partir de "assuntos") ─
+  const assuntos = m?.assuntos || [];
+  // Mapeia pra formato esperado por renderHbarList: {nome, count}
+  const classesMapped = assuntos.map(a => ({
+    nome: a.assunto || a.nome || '—',
+    count: Number(a.total) || 0
+  })).filter(x => x.count > 0);
+  renderHbarList('j-classes-list', classesMapped);
+
+  // ─ Vocabulário NLP ────────────────────────────────
+  // Backend não retorna vocabulário NLP. Mostra mensagem honesta.
   const vocab = m?.vocabulario || m?.padrao_textual || m?.palavras_chave || [];
-  renderVocabCloud('j-vocab-cloud', vocab);
+  if (Array.isArray(vocab) && vocab.length > 0) {
+    renderVocabCloud('j-vocab-cloud', vocab);
+  } else {
+    const el = document.getElementById('j-vocab-cloud');
+    if (el) {
+      el.innerHTML = '<div style="font-size: 12px; color: rgba(255,255,255,0.6); padding: 16px 0; line-height: 1.5;">Análise de vocabulário recorrente em sentenças requer processamento NLP — em desenvolvimento.</div>';
+    }
+  }
 
   setJudgeState('content');
 }
