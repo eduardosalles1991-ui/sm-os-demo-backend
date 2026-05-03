@@ -3361,17 +3361,92 @@ input, textarea { font-family: inherit; outline: none; }
          ═══════════════════════════════════════════════════════════════════ -->
     <main id="page-cnj" class="page">
 
+      <!-- ═══════════════════════════════════════════════════════════════
+           CNJ — Input de busca (sempre visível no topo)
+           ═══════════════════════════════════════════════════════════════ -->
+      <div class="cnj-input-wrap" style="margin-bottom: 16px;">
+        <div class="cnj-input-mesh"></div>
+        <div class="cnj-input-content">
+          <div class="cnj-input-eyebrow">
+            <span style="width: 5px; height: 5px; background: var(--g-500); border-radius: 50%;"></span>
+            CONSULTA DE PROCESSO · 4,84M na base + Escavador
+          </div>
+          <h2 class="cnj-input-title">
+            Digite o <em>número CNJ</em> do processo
+          </h2>
+          <p class="cnj-input-deck">
+            Carregamos da base instantaneamente. Se faltar dado, enriquecemos via Escavador em tempo real.
+          </p>
+
+          <form id="cnj-form" onsubmit="event.preventDefault(); handleCnjSearch();">
+            <div class="cnj-input-row">
+              <input
+                type="text"
+                id="cnj-search-input"
+                class="cnj-input"
+                placeholder="0000000-00.0000.0.00.0000"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button type="submit" class="cnj-submit" id="cnj-submit-btn">
+                Consultar
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+          </form>
+
+          <div class="cnj-recent">
+            <span class="cnj-recent-label">EXEMPLOS:</span>
+            <span class="cnj-recent-chip" onclick="searchCnjExample('0123456-78.2024.5.02.0001')">0123456-78.2024.5.02.0001</span>
+            <span class="cnj-recent-chip" onclick="searchCnjExample('1006453-71.2024.8.26.0024')">1006453-71.2024.8.26.0024</span>
+            <span class="cnj-recent-chip" onclick="searchCnjExample('0023891-12.2022.8.26.0100')">0023891-12.2022.8.26.0100</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           Estado: LOADING
+           ═══════════════════════════════════════════════════════════════ -->
+      <div id="cnj-loading" style="display: none; padding: 80px 20px; text-align: center;">
+        <div style="display: inline-flex; align-items: center; gap: 12px; padding: 20px 32px; background: var(--s-card); border: 0.5px solid var(--s-line); border-radius: var(--r-xl); box-shadow: var(--shadow-md);">
+          <div style="width: 24px; height: 24px; border: 3px solid var(--p-100); border-top-color: var(--p-600); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+          <div>
+            <div style="font-weight: 500; font-size: 14px;">Consultando processo…</div>
+            <div id="cnj-loading-status" style="font-size: 12px; color: var(--s-text-3); margin-top: 2px;">Buscando na base Jurimetrix</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           Estado: ERRO
+           ═══════════════════════════════════════════════════════════════ -->
+      <div id="cnj-error" style="display: none;">
+        <div class="card cat-red" style="padding: 32px; text-align: center; max-width: 600px; margin: 24px auto;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; background: var(--r-50); margin: 0 auto 16px; display: grid; place-items: center;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--r-500)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <div style="font-size: 18px; font-weight: 500; letter-spacing: -0.015em; margin-bottom: 6px;" id="cnj-error-title">Não foi possível carregar o processo</div>
+          <div style="font-size: 13px; color: var(--s-text-2); line-height: 1.5; margin-bottom: 20px;" id="cnj-error-msg">—</div>
+          <button class="btn btn-primary btn-sm" onclick="resetCnjView()">Tentar outro CNJ</button>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════════
+           Estado: CONTEÚDO (renderizado dinamicamente após load OK)
+           ═══════════════════════════════════════════════════════════════ -->
+      <div id="cnj-content" style="display: none;">
+
       <!-- Process header (loaded state) -->
       <div class="proc-head">
         <div class="proc-head-top">
           <div class="proc-head-l">
-            <div class="proc-pills">
+            <div class="proc-pills" id="proc-pills">
               <span class="pill pill-purple-solid">PROCESSO ATIVO</span>
               <span class="pill pill-purple">TRT-2 SP</span>
               <span class="pill pill-purple">2ª INSTÂNCIA</span>
             </div>
-            <div class="proc-cnj">0123456-78.2024.5.02.0001</div>
-            <div class="proc-classe">Reclamação Trabalhista · Verbas rescisórias + adicional periculosidade</div>
+            <div class="proc-cnj" id="proc-cnj">0123456-78.2024.5.02.0001</div>
+            <div class="proc-classe" id="proc-classe">Reclamação Trabalhista · Verbas rescisórias + adicional periculosidade</div>
           </div>
           <div class="proc-actions">
             <button class="btn btn-sm">
@@ -3395,28 +3470,28 @@ input, textarea { font-family: inherit; outline: none; }
         <div class="proc-meta-grid">
           <div>
             <div class="pmg-label">Distribuição</div>
-            <div class="pmg-value">15/03/2024</div>
-            <div class="pmg-meta">há 13 meses</div>
+            <div class="pmg-value" id="proc-distribuicao">15/03/2024</div>
+            <div class="pmg-meta" id="proc-distribuicao-meta">há 13 meses</div>
           </div>
           <div>
             <div class="pmg-label">Vara</div>
-            <div class="pmg-value">12ª VT São Paulo</div>
-            <div class="pmg-meta">jurisdição central</div>
+            <div class="pmg-value" id="proc-vara">12ª VT São Paulo</div>
+            <div class="pmg-meta" id="proc-vara-meta">jurisdição central</div>
           </div>
           <div>
             <div class="pmg-label">Magistrado</div>
-            <div class="pmg-value link" onclick="navigate('judge')">Santos, José</div>
-            <div class="pmg-meta">titular desde 2018</div>
+            <div class="pmg-value link" id="proc-magistrado" onclick="searchMagistradoFromCnj()">Santos, José</div>
+            <div class="pmg-meta" id="proc-magistrado-meta">titular desde 2018</div>
           </div>
           <div>
             <div class="pmg-label">Valor da causa</div>
-            <div class="pmg-value mono">R$ 47.800</div>
-            <div class="pmg-meta">acima do teto JEC</div>
+            <div class="pmg-value mono" id="proc-valor">R$ 47.800</div>
+            <div class="pmg-meta" id="proc-valor-meta">acima do teto JEC</div>
           </div>
           <div>
             <div class="pmg-label">Movimentações</div>
-            <div class="pmg-value mono">37</div>
-            <div class="pmg-meta">última: há 4 dias</div>
+            <div class="pmg-value mono" id="proc-movs">37</div>
+            <div class="pmg-meta" id="proc-movs-meta">última: há 4 dias</div>
           </div>
         </div>
       </div>
@@ -3684,6 +3759,8 @@ input, textarea { font-family: inherit; outline: none; }
           </div>
         </div>
       </div>
+
+      </div><!-- /#cnj-content -->
     </main>
 
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -3918,26 +3995,47 @@ input, textarea { font-family: inherit; outline: none; }
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
           <span class="card-eyebrow purple">BUSCAR MAGISTRADO</span>
         </div>
-        <div class="judge-input-row">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--s-text-3)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="judge-input" value="Airton Luís Corrêa Gentil" placeholder="Digite o nome ou matrícula do magistrado…">
-          <button class="btn btn-primary btn-sm">Analisar</button>
-        </div>
+        <form id="judge-form" onsubmit="event.preventDefault(); handleJudgeSearch();">
+          <div class="judge-input-row">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--s-text-3)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="judge-input" class="judge-input" placeholder="Digite o nome do magistrado (ex: Airton Luís Corrêa Gentil)" autocomplete="off">
+            <button type="submit" class="btn btn-primary btn-sm" id="judge-submit-btn">Analisar</button>
+          </div>
+        </form>
         <div style="margin-top: 8px; font-size: 11.5px; color: var(--s-text-3);">
-          Autocomplete via <code style="font-family: var(--font-mono); background: var(--s-soft); padding: 1px 6px; border-radius: 3px;">/api/v2/magistrado/autocomplete</code> · trigram fuzzy · encoding-aware
+          Cobertura atual: TJSP (3.491 magistrados oficiais via DadosJusBr + CNJ).
         </div>
       </div>
+
+      <!-- Loading -->
+      <div id="judge-loading" style="display: none; padding: 60px 20px; text-align: center;">
+        <div style="display: inline-flex; align-items: center; gap: 12px; padding: 18px 28px; background: var(--s-card); border: 0.5px solid var(--s-line); border-radius: var(--r-xl); box-shadow: var(--shadow-md);">
+          <div style="width: 22px; height: 22px; border: 3px solid var(--p-100); border-top-color: var(--p-600); border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+          <div style="font-size: 13.5px; font-weight: 500;">Analisando padrão decisório…</div>
+        </div>
+      </div>
+
+      <!-- Erro -->
+      <div id="judge-error" style="display: none;">
+        <div class="card cat-red" style="padding: 28px; text-align: center; max-width: 560px; margin: 16px auto;">
+          <div style="font-size: 16px; font-weight: 500; margin-bottom: 6px;" id="judge-error-title">Magistrado não encontrado</div>
+          <div style="font-size: 12.5px; color: var(--s-text-2); line-height: 1.5;" id="judge-error-msg">—</div>
+        </div>
+      </div>
+
+      <!-- Conteúdo -->
+      <div id="judge-content" style="display: none;">
 
       <!-- Identity card -->
       <div class="card cat-purple judge-id-card" style="margin-bottom: 12px;">
         <div class="judge-name-row">
-          <div class="judge-id-avatar">AL</div>
+          <div class="judge-id-avatar" id="judge-avatar">AL</div>
           <div>
-            <div class="judge-id-name">Airton Luís Corrêa Gentil</div>
-            <div class="judge-id-cargo">Juiz de Direito de Entrância Final · 12ª Vara Cível Central · TJSP</div>
+            <div class="judge-id-name" id="judge-name">Airton Luís Corrêa Gentil</div>
+            <div class="judge-id-cargo" id="judge-cargo">Juiz de Direito de Entrância Final · 12ª Vara Cível Central · TJSP</div>
           </div>
         </div>
-        <div class="judge-id-tags">
+        <div class="judge-id-tags" id="judge-tags">
           <span class="pill pill-purple">Lotado em SP</span>
           <span class="pill pill-purple">Civil</span>
           <span class="pill pill-purple">17 anos magistratura</span>
@@ -3973,22 +4071,22 @@ input, textarea { font-family: inherit; outline: none; }
                 <div class="donut-stat-row">
                   <span class="donut-color pos"></span>
                   <span class="donut-stat-label">Procedente</span>
-                  <span class="donut-stat-pct">71%</span>
+                  <span class="donut-stat-pct" id="j-pct-procedente">71%</span>
                 </div>
                 <div class="donut-stat-row">
                   <span class="donut-color neg"></span>
                   <span class="donut-stat-label">Improcedente</span>
-                  <span class="donut-stat-pct">14%</span>
+                  <span class="donut-stat-pct" id="j-pct-improcedente">14%</span>
                 </div>
                 <div class="donut-stat-row">
                   <span class="donut-color parc"></span>
                   <span class="donut-stat-label">Parcial</span>
-                  <span class="donut-stat-pct">11%</span>
+                  <span class="donut-stat-pct" id="j-pct-parcial">11%</span>
                 </div>
                 <div class="donut-stat-row">
                   <span class="donut-color acc"></span>
                   <span class="donut-stat-label">Acordo / extinto</span>
-                  <span class="donut-stat-pct">4%</span>
+                  <span class="donut-stat-pct" id="j-pct-acordo">4%</span>
                 </div>
               </div>
             </div>
@@ -3998,23 +4096,23 @@ input, textarea { font-family: inherit; outline: none; }
           <div class="j-metrics">
             <div class="j-metric">
               <div class="j-metric-label">Total julgados</div>
-              <div class="j-metric-value">4.640</div>
-              <div class="j-metric-desc">desde 2008 · ativo na 12ª VC</div>
+              <div class="j-metric-value" id="j-total-julgados">4.640</div>
+              <div class="j-metric-desc" id="j-total-julgados-desc">desde 2008 · ativo na 12ª VC</div>
             </div>
             <div class="j-metric">
               <div class="j-metric-label">Tempo até sentença</div>
-              <div class="j-metric-value">812<sup>d</sup></div>
-              <div class="j-metric-desc">mediana 740d · da distribuição</div>
+              <div class="j-metric-value"><span id="j-tempo-sentenca">812</span><sup>d</sup></div>
+              <div class="j-metric-desc" id="j-tempo-sentenca-desc">mediana 740d · da distribuição</div>
             </div>
             <div class="j-metric">
               <div class="j-metric-label">Audiências realizadas</div>
-              <div class="j-metric-value">3.291</div>
-              <div class="j-metric-desc">71% com presença · taxa de comparecimento</div>
+              <div class="j-metric-value" id="j-audiencias">3.291</div>
+              <div class="j-metric-desc" id="j-audiencias-desc">71% com presença · taxa de comparecimento</div>
             </div>
             <div class="j-metric">
               <div class="j-metric-label">Reformado em recurso</div>
-              <div class="j-metric-value">23<sup>%</sup></div>
-              <div class="j-metric-desc">apelações que reformaram a sentença</div>
+              <div class="j-metric-value"><span id="j-reformado">23</span><sup>%</sup></div>
+              <div class="j-metric-desc" id="j-reformado-desc">apelações que reformaram a sentença</div>
             </div>
           </div>
         </div>
@@ -4025,10 +4123,10 @@ input, textarea { font-family: inherit; outline: none; }
           <div class="card cat-purple" style="padding: 22px; margin-bottom: 12px;">
             <div class="card-eyebrow purple">CLASSES MAIS JULGADAS</div>
             <div style="font-size: 18px; font-weight: 500; margin-top: 4px; letter-spacing: -0.015em;">
-              Especialização em <span style="color: var(--p-700); font-family: var(--font-serif); font-style: italic;">direito civil</span>
+              Especialização em <span id="j-especializacao" style="color: var(--p-700); font-family: var(--font-serif); font-style: italic;">direito civil</span>
             </div>
 
-            <div class="hbar-list">
+            <div class="hbar-list" id="j-classes-list">
               <div class="hbar"><span class="hbar-name">Procedimento Comum Cível</span><span class="hbar-count">2.184</span><div class="hbar-track"><div class="hbar-fill" style="width: 100%;"></div></div></div>
               <div class="hbar"><span class="hbar-name">Cumprimento de Sentença</span><span class="hbar-count">891</span><div class="hbar-track"><div class="hbar-fill" style="width: 41%; animation-delay: 0.1s;"></div></div></div>
               <div class="hbar"><span class="hbar-name">Execução Fiscal</span><span class="hbar-count">487</span><div class="hbar-track"><div class="hbar-fill" style="width: 22%; animation-delay: 0.2s;"></div></div></div>
@@ -4044,7 +4142,7 @@ input, textarea { font-family: inherit; outline: none; }
             <div class="vocab-eyebrow">PADRÕES TEXTUAIS NLP</div>
             <div class="vocab-title">Vocabulário recorrente em sentenças</div>
 
-            <div class="vocab-cloud">
+            <div class="vocab-cloud" id="j-vocab-cloud">
               <span class="vocab-term big">princípio da boa-fé objetiva</span>
               <span class="vocab-term sm">teoria do risco</span>
               <span class="vocab-term big">dano moral in re ipsa</span>
@@ -4065,6 +4163,8 @@ input, textarea { font-family: inherit; outline: none; }
           </div>
         </div>
       </div>
+
+      </div><!-- /#judge-content -->
     </main>
 
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -4899,8 +4999,458 @@ async function sendMessage() {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   AUTO-OPEN CHAT — quando entra via /chat-app, abre direto no chat
+   SPRINT 3 — Conexão real com endpoints /api/v2
+   - Tela CNJ: GET /api/v2/cnj/load/{cnj} + POST /api/v2/cnj/refresh/{cnj}
+   - Tela Magistrados: POST /api/v2/judge/pattern + GET /api/jurimetria/magistrado
+   - Render defensivo: tolera variações de nome de campo
    ═══════════════════════════════════════════════════════════════════════════ */
+
+// Helpers de leitura defensiva — tolera vários nomes possíveis de campo
+function pick(obj, ...keys) {
+  if (!obj) return null;
+  for (const k of keys) {
+    const v = obj[k];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return null;
+}
+function pickNum(obj, ...keys) {
+  const v = pick(obj, ...keys);
+  if (v === null) return null;
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^\d.,-]/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+function fmtPt(n) {
+  if (n === null || n === undefined) return '—';
+  return Number(n).toLocaleString('pt-BR');
+}
+function fmtMoney(n) {
+  if (n === null || n === undefined) return '—';
+  return 'R$ ' + Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+function fmtDateBr(iso) {
+  if (!iso) return '—';
+  const s = String(iso);
+  if (s.includes('/')) return s; // já formatado
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
+}
+function safeText(el, text) { if (el) el.textContent = text ?? '—'; }
+
+
+/* ───────── TELA CNJ ─────────────────────────────────────────── */
+
+let cnjCurrentData = null; // guarda último resultado pra refresh
+
+function searchCnjExample(cnj) {
+  const input = document.getElementById('cnj-search-input');
+  if (input) { input.value = cnj; handleCnjSearch(); }
+}
+
+function searchMagistradoFromCnj() {
+  // Pega nome do magistrado do processo carregado e abre tela judge
+  const nome = (document.getElementById('proc-magistrado')?.textContent || '').trim();
+  if (!nome || nome === '—') return;
+  navigate('judge');
+  setTimeout(() => {
+    const ji = document.getElementById('judge-input');
+    if (ji) { ji.value = nome; handleJudgeSearch(); }
+  }, 100);
+}
+
+function setCnjState(state) {
+  // state: 'idle' | 'loading' | 'error' | 'content'
+  const wrap = document.querySelector('.cnj-input-wrap');
+  const loading = document.getElementById('cnj-loading');
+  const error = document.getElementById('cnj-error');
+  const content = document.getElementById('cnj-content');
+  if (loading) loading.style.display = state === 'loading' ? '' : 'none';
+  if (error) error.style.display = state === 'error' ? '' : 'none';
+  if (content) content.style.display = state === 'content' ? '' : 'none';
+  // Input wrap fica sempre visível (o usuário pode trocar de CNJ a qualquer momento)
+  if (wrap) wrap.style.display = '';
+}
+
+function resetCnjView() {
+  setCnjState('idle');
+  const input = document.getElementById('cnj-search-input');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+function showCnjError(title, msg) {
+  safeText(document.getElementById('cnj-error-title'), title);
+  safeText(document.getElementById('cnj-error-msg'), msg);
+  setCnjState('error');
+}
+
+function normalizeCnj(raw) {
+  return String(raw || '').replace(/\D/g, '');
+}
+
+async function handleCnjSearch() {
+  const input = document.getElementById('cnj-search-input');
+  if (!input) return;
+  const raw = input.value.trim();
+  const cnj = normalizeCnj(raw);
+
+  if (cnj.length !== 20) {
+    showCnjError(
+      'Número CNJ inválido',
+      `O número precisa ter 20 dígitos (com ou sem máscara). Recebido: ${cnj.length} dígitos. Formato esperado: 0000000-00.0000.0.00.0000`
+    );
+    return;
+  }
+
+  setCnjState('loading');
+  document.getElementById('cnj-loading-status').textContent = 'Buscando na base Jurimetrix…';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/v2/cnj/load/${cnj}`, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (!res.ok) {
+      throw new Error(`Backend respondeu ${res.status}`);
+    }
+
+    const data = await res.json();
+    cnjCurrentData = data;
+
+    // Se backend sinaliza needs_enrichment, oferece enriquecer via Escavador
+    const needs = data?.needs_enrichment || data?.precisa_enriquecer;
+    if (needs && (Array.isArray(needs) ? needs.length > 0 : true)) {
+      // Render parcial primeiro
+      renderCnjContent(data);
+      // Pergunta se quer enriquecer (sutil — botão no canto)
+      offerEnrichment(cnj);
+      return;
+    }
+
+    renderCnjContent(data);
+  } catch (err) {
+    console.error('[cnj] erro', err);
+    showCnjError(
+      'Não foi possível carregar o processo',
+      `${err.message}. Se o backend está hibernado (Render free tier), aguarde 30s e tente novamente.`
+    );
+  }
+}
+
+function offerEnrichment(cnj) {
+  // Adiciona um banner em cima do conteúdo oferecendo refresh
+  const content = document.getElementById('cnj-content');
+  if (!content) return;
+  // Remove banner anterior se houver
+  const existing = document.getElementById('cnj-enrich-banner');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'cnj-enrich-banner';
+  banner.style.cssText = 'background: linear-gradient(135deg, var(--a-50), white); border: 1px solid var(--a-300); border-radius: var(--r-lg); padding: 14px 18px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px;';
+  banner.innerHTML = `
+    <div>
+      <div style="font-size: 13px; font-weight: 500; color: var(--a-700);">Dados parciais — alguns campos precisam ser enriquecidos</div>
+      <div style="font-size: 11.5px; color: var(--s-text-2); margin-top: 2px;">Buscar via Escavador atualiza os dados em tempo real (5-15s).</div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="enrichCurrentCnj('${cnj}')" id="cnj-enrich-btn">
+      Atualizar via Escavador
+    </button>
+  `;
+  content.insertBefore(banner, content.firstChild);
+}
+
+async function enrichCurrentCnj(cnj) {
+  const btn = document.getElementById('cnj-enrich-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enriquecendo… (até 15s)'; btn.style.opacity = '0.6'; }
+  try {
+    const res = await fetch(`${API_BASE}/api/v2/cnj/refresh/${cnj}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data?.ok === false) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Tentar novamente'; btn.style.opacity = ''; }
+      alert(`Escavador: ${data.error || 'falha no enriquecimento'}`);
+      return;
+    }
+    // Reload da view com dados novos — chama o load de novo (já tá persistido no banco agora)
+    document.getElementById('cnj-search-input').value = cnj;
+    handleCnjSearch();
+  } catch (err) {
+    console.error('[enrich] erro', err);
+    if (btn) { btn.disabled = false; btn.textContent = 'Tentar novamente'; btn.style.opacity = ''; }
+    alert(`Erro no enriquecimento: ${err.message}`);
+  }
+}
+
+function renderCnjContent(data) {
+  // O backend retorna o resultado do RPC cnj_full_load — pode vir em vários
+  // formatos (raw row, objeto envolvido, etc). Tentamos vários campos.
+  const proc = data?.processo || data?.proc || data?.data || data;
+
+  // CNJ
+  const cnjShown = pick(proc, 'cnj_formatado', 'cnj', 'numero_processo', 'numero');
+  safeText(document.getElementById('proc-cnj'), formatCnjMask(cnjShown));
+
+  // Classe + assunto
+  const classe = pick(proc, 'classe', 'classe_processual', 'classe_nome');
+  const assunto = pick(proc, 'assunto', 'assuntos_principais', 'assunto_principal');
+  const classeText = [classe, assunto].filter(Boolean).join(' · ') || '—';
+  safeText(document.getElementById('proc-classe'), classeText);
+
+  // Pills (tribunal, instância, status)
+  const pills = document.getElementById('proc-pills');
+  if (pills) {
+    const tribunal = pick(proc, 'tribunal', 'sigla_tribunal', 'sigla');
+    const instancia = pick(proc, 'instancia', 'grau');
+    const status = pick(proc, 'status', 'situacao');
+    pills.innerHTML = `
+      ${status ? `<span class="pill pill-purple-solid">${escapeHtml(String(status).toUpperCase())}</span>` : '<span class="pill pill-purple-solid">PROCESSO</span>'}
+      ${tribunal ? `<span class="pill pill-purple">${escapeHtml(tribunal)}</span>` : ''}
+      ${instancia ? `<span class="pill pill-purple">${escapeHtml(String(instancia))}</span>` : ''}
+    `;
+  }
+
+  // Distribuição
+  const dataDist = pick(proc, 'data_distribuicao', 'data_ajuizamento', 'distribuicao');
+  safeText(document.getElementById('proc-distribuicao'), fmtDateBr(dataDist));
+  safeText(document.getElementById('proc-distribuicao-meta'), relativeMonths(dataDist));
+
+  // Vara
+  safeText(document.getElementById('proc-vara'), pick(proc, 'vara', 'orgao_julgador', 'orgao'));
+  safeText(document.getElementById('proc-vara-meta'), pick(proc, 'jurisdicao', 'comarca'));
+
+  // Magistrado
+  const mag = pick(proc, 'magistrado', 'juiz', 'relator');
+  safeText(document.getElementById('proc-magistrado'), mag);
+  safeText(document.getElementById('proc-magistrado-meta'), mag ? 'clique para analisar padrão decisório' : '');
+
+  // Valor
+  const valor = pickNum(proc, 'valor_causa', 'valor');
+  safeText(document.getElementById('proc-valor'), valor !== null ? fmtMoney(valor) : '—');
+  safeText(document.getElementById('proc-valor-meta'), '');
+
+  // Movimentações
+  const movs = pickNum(proc, 'movimentacoes_count', 'total_movimentos', 'qtd_movimentos');
+  safeText(document.getElementById('proc-movs'), movs !== null ? fmtPt(movs) : '—');
+  safeText(document.getElementById('proc-movs-meta'), '');
+
+  setCnjState('content');
+}
+
+function relativeMonths(iso) {
+  if (!iso) return '';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  const then = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
+  const now = new Date();
+  const months = (now.getFullYear() - then.getFullYear()) * 12 + (now.getMonth() - then.getMonth());
+  if (months < 1) return 'este mês';
+  if (months === 1) return 'há 1 mês';
+  if (months < 12) return `há ${months} meses`;
+  const years = Math.floor(months / 12);
+  return years === 1 ? 'há 1 ano' : `há ${years} anos`;
+}
+
+function formatCnjMask(cnj) {
+  if (!cnj) return '—';
+  const s = String(cnj).replace(/\D/g, '');
+  if (s.length !== 20) return cnj;
+  // NNNNNNN-DD.AAAA.J.TR.OOOO
+  return `${s.slice(0,7)}-${s.slice(7,9)}.${s.slice(9,13)}.${s.slice(13,14)}.${s.slice(14,16)}.${s.slice(16,20)}`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+
+/* ───────── TELA MAGISTRADOS ─────────────────────────────────── */
+
+function setJudgeState(state) {
+  const loading = document.getElementById('judge-loading');
+  const error = document.getElementById('judge-error');
+  const content = document.getElementById('judge-content');
+  if (loading) loading.style.display = state === 'loading' ? '' : 'none';
+  if (error) error.style.display = state === 'error' ? '' : 'none';
+  if (content) content.style.display = state === 'content' ? '' : 'none';
+}
+
+function showJudgeError(title, msg) {
+  safeText(document.getElementById('judge-error-title'), title);
+  safeText(document.getElementById('judge-error-msg'), msg);
+  setJudgeState('error');
+}
+
+async function handleJudgeSearch() {
+  const input = document.getElementById('judge-input');
+  if (!input) return;
+  const nome = input.value.trim();
+
+  if (nome.length < 3) {
+    showJudgeError(
+      'Nome muito curto',
+      'Digite pelo menos 3 caracteres do nome do magistrado.'
+    );
+    return;
+  }
+
+  setJudgeState('loading');
+
+  try {
+    const url = `${API_BASE}/api/jurimetria/magistrado?nome=${encodeURIComponent(nome)}`;
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+
+    if (!res.ok) throw new Error(`Backend respondeu ${res.status}`);
+
+    const data = await res.json();
+
+    if (data?.ok === false) {
+      showJudgeError(
+        'Magistrado não encontrado',
+        `Não encontramos "${nome}" na base. Cobertura atual: TJSP (3.491 magistrados). Para outros tribunais, posso buscar via chat IA filtrando por relator.`
+      );
+      return;
+    }
+
+    renderJudgeContent(data, nome);
+  } catch (err) {
+    console.error('[judge] erro', err);
+    showJudgeError(
+      'Erro ao consultar magistrado',
+      `${err.message}. Se o backend está hibernado, aguarde 30s.`
+    );
+  }
+}
+
+function renderJudgeContent(data, nomeQuery) {
+  // Backend pode retornar com vários formatos - tenta ser tolerante
+  const m = data?.magistrado || data?.data || data;
+
+  // Identidade
+  const nome = pick(m, 'nome', 'magistrado', 'nome_completo') || nomeQuery;
+  safeText(document.getElementById('judge-name'), nome);
+
+  // Avatar (iniciais)
+  const initials = String(nome).split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+  safeText(document.getElementById('judge-avatar'), initials || 'JU');
+
+  // Cargo / vara
+  const cargo = pick(m, 'cargo', 'cargo_atual') || 'Magistrado';
+  const vara = pick(m, 'vara', 'orgao_julgador', 'orgao');
+  const tribunal = pick(m, 'tribunal', 'sigla_tribunal') || 'TJSP';
+  const cargoText = [cargo, vara, tribunal].filter(Boolean).join(' · ');
+  safeText(document.getElementById('judge-cargo'), cargoText);
+
+  // Tags
+  const tags = document.getElementById('judge-tags');
+  if (tags) {
+    const uf = pick(m, 'uf', 'estado');
+    const matricula = pick(m, 'matricula', 'matr');
+    const especialidade = pick(m, 'especializacao', 'especialidade', 'area_principal');
+    const anos = pick(m, 'anos_magistratura', 'tempo_magistratura');
+    tags.innerHTML = `
+      ${uf ? `<span class="pill pill-purple">Lotado em ${escapeHtml(uf)}</span>` : ''}
+      ${especialidade ? `<span class="pill pill-purple">${escapeHtml(String(especialidade))}</span>` : ''}
+      ${anos ? `<span class="pill pill-purple">${escapeHtml(String(anos))} anos magistratura</span>` : ''}
+      ${matricula ? `<span class="pill pill-purple pill-mono">Matr. ${escapeHtml(String(matricula))}</span>` : ''}
+    `;
+  }
+
+  // Donut (resultados)
+  const resultados = m?.resultados || data?.resultados || {};
+  const total = Object.values(resultados).reduce((a, b) => a + (Number(b) || 0), 0) || 1;
+  const pct = (k) => Math.round(((resultados[k] || 0) / total) * 100);
+  const pProc = pct('procedente');
+  const pImpr = pct('improcedente');
+  const pParc = pct('parcial');
+  const pAcc = 100 - pProc - pImpr - pParc;
+  safeText(document.getElementById('j-pct-procedente'), pProc + '%');
+  safeText(document.getElementById('j-pct-improcedente'), pImpr + '%');
+  safeText(document.getElementById('j-pct-parcial'), pParc + '%');
+  safeText(document.getElementById('j-pct-acordo'), Math.max(0, pAcc) + '%');
+
+  // Métricas
+  const totalJulgados = pickNum(m, 'total_julgados', 'total_processos') || total;
+  safeText(document.getElementById('j-total-julgados'), fmtPt(totalJulgados));
+
+  const tempoMedio = pickNum(m, 'tempo_medio_sentenca', 'duracao_mediana_dias', 'mediana_dias');
+  safeText(document.getElementById('j-tempo-sentenca'), tempoMedio !== null ? fmtPt(tempoMedio) : '—');
+
+  const audiencias = pickNum(m, 'audiencias', 'total_audiencias');
+  safeText(document.getElementById('j-audiencias'), audiencias !== null ? fmtPt(audiencias) : '—');
+
+  const reformado = pickNum(m, 'taxa_reforma', 'reformado_pct', 'pct_reforma');
+  safeText(document.getElementById('j-reformado'), reformado !== null ? fmtPt(Math.round(reformado)) : '—');
+
+  // Classes mais julgadas
+  const classes = m?.por_assunto || m?.classes_top || m?.classes || data?.por_assunto || [];
+  renderHbarList('j-classes-list', classes);
+
+  // Vocab cloud
+  const vocab = m?.vocabulario || m?.padrao_textual || m?.palavras_chave || [];
+  renderVocabCloud('j-vocab-cloud', vocab);
+
+  setJudgeState('content');
+}
+
+function renderHbarList(elId, items) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  // items pode vir como objeto {nome: count} ou array [{nome, total}]
+  let arr = [];
+  if (Array.isArray(items)) {
+    arr = items.map(x => ({
+      nome: pick(x, 'nome', 'classe', 'assunto', 'label') || '—',
+      count: pickNum(x, 'total', 'count', 'qtd') || 0
+    }));
+  } else if (items && typeof items === 'object') {
+    arr = Object.entries(items).map(([k, v]) => ({
+      nome: k,
+      count: typeof v === 'object' ? (v.total || v.count || 0) : Number(v) || 0
+    }));
+  }
+  arr.sort((a, b) => b.count - a.count);
+  arr = arr.slice(0, 7);
+  if (arr.length === 0) {
+    el.innerHTML = '<div style="font-size: 12px; color: var(--s-text-3); padding: 12px 0;">Sem dados de classes para este magistrado.</div>';
+    return;
+  }
+  const max = Math.max(...arr.map(x => x.count), 1);
+  el.innerHTML = arr.map((x, i) => `
+    <div class="hbar">
+      <span class="hbar-name">${escapeHtml(x.nome)}</span>
+      <span class="hbar-count">${fmtPt(x.count)}</span>
+      <div class="hbar-track"><div class="hbar-fill" style="width: ${Math.round((x.count / max) * 100)}%; animation-delay: ${i * 0.08}s;"></div></div>
+    </div>
+  `).join('');
+}
+
+function renderVocabCloud(elId, items) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  let arr = [];
+  if (Array.isArray(items)) {
+    arr = items.map(x => typeof x === 'string' ? { term: x, weight: 1 } : { term: pick(x, 'termo', 'palavra', 'term') || '—', weight: pickNum(x, 'peso', 'freq', 'count', 'weight') || 1 });
+  } else if (items && typeof items === 'object') {
+    arr = Object.entries(items).map(([k, v]) => ({ term: k, weight: Number(v) || 1 }));
+  }
+  if (arr.length === 0) {
+    el.innerHTML = '<div style="font-size: 12px; color: var(--s-text-3); padding: 12px 0;">Vocabulário NLP não disponível para este magistrado.</div>';
+    return;
+  }
+  arr.sort((a, b) => b.weight - a.weight);
+  arr = arr.slice(0, 14);
+  const max = Math.max(...arr.map(x => x.weight), 1);
+  el.innerHTML = arr.map(x => {
+    const ratio = x.weight / max;
+    const cls = ratio > 0.66 ? 'big' : ratio > 0.33 ? 'med' : 'sm';
+    return `<span class="vocab-term ${cls}">${escapeHtml(x.term)}</span>`;
+  }).join('');
+}
+
+
+
 function detectInitialPage() {
   // /chat-app → chat | /painel → landing | qualquer outra → landing
   const path = window.location.pathname;
